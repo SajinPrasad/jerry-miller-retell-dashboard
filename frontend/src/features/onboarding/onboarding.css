@@ -1,0 +1,92 @@
+.onboarding {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 2rem 16px 4rem;
+}
+
+.onboarding h1 {
+  margin: 0 0 0.25rem;
+}
+
+.onboarding h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.1rem;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.25rem;
+  margin-top: 1.25rem;
+}
+
+.banner {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  margin-top: 1rem;
+  border: 1px solid;
+}
+
+.banner.ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+}
+
+.banner.error {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+}
+
+.pill {
+  display: inline-block;
+  padding: 0.05rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-size: 0.8rem;
+  margin-right: 0.4rem;
+}
+
+.pill.ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+}
+
+.button {
+  display: inline-block;
+  margin-top: 1rem;
+  padding: 0.55rem 1.1rem;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+code {
+  font-size: 0.85em;
+}

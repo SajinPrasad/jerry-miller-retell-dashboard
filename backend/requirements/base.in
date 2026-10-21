@@ -1,0 +1,11 @@
+django>=5.1,<5.3
+djangorestframework
+django-cors-headers
+django-environ
+django-filter
+psycopg[binary]
+httpx
+cryptography
+whitenoise
+gunicorn
+celery[redis]

@@ -1,0 +1,8 @@
+-c base.txt
+-r base.in
+pytest
+pytest-django
+pytest-cov
+factory-boy
+respx
+ruff
