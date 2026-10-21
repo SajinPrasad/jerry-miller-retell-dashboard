@@ -34,11 +34,11 @@ The user has had to strip out over-engineering before. Build the simplest thing 
 
 ## GHL onboarding (Task 1, built)
 
-Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL install screen -> GHL redirects to `GET /api/ghl/oauth/callback/` -> backend exchanges the code for the agency token (`user_type=Company`; rejected unless `companyId == GHL_COMPANY_ID`), then syncs sub-accounts, then redirects to `FRONTEND_URL/onboarding?status=connected` (or `?error=install_cancelled|install_failed`).
+Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL install screen -> GHL redirects to `GET /api/oauth/callback/` -> backend exchanges the code for the agency token (`user_type=Company`; rejected if installed on a sub-account; the agency row stores `AGENCY_LOCATION_ID` as its `location_id`, and sync skips that location), then syncs sub-accounts, then redirects to `FRONTEND_URL/onboarding?status=connected` (or `?error=install_cancelled|install_failed`).
 
 - **Model** `GHLOAuthToken` (`apps/ghl/models.py`), fixed fields: `company_id`, `location_id` (blank on the agency row), `name`, `is_agency`, `is_active`, `access_token`, `refresh_token` (agency row only), `expires_at`. Tokens are Fernet-encrypted (`FIELD_ENCRYPTION_KEY`).
 - **Service** `GHLOAuthService` (`apps/ghl/services.py`): `install_url`, `exchange_code`, `get_agency`, `get_agency_token` (refreshes within 5 min of expiry; refresh tokens are single-use, so it locks the row), `get_location_token(location_id)` (re-mints from the agency token when expiring), `sync_locations` (`GET /oauth/installed-locations`, then `POST /oauth/locationToken` per new or expired sub-account; deactivates sub-accounts no longer listed).
-- **Endpoints:** `GET /api/ghl/onboarding/` (install link, agency, sub-accounts; no tokens), `POST /api/ghl/onboarding/sync/`, `GET /api/ghl/oauth/callback/`.
+- **Endpoints:** `GET /api/ghl/onboarding/` (install link, agency, sub-accounts; no tokens), `POST /api/ghl/onboarding/sync/`, `GET /api/oauth/callback/`.
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
 

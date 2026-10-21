@@ -52,7 +52,7 @@ class LocationSyncView(APIView):
 
 
 class OAuthCallbackView(APIView):
-    """GET /api/ghl/oauth/callback/: the redirect URI registered on the marketplace app."""
+    """GET /api/oauth/callback/: the redirect URI registered on the marketplace app."""
 
     def get(self, request):
         code = request.GET.get('code')

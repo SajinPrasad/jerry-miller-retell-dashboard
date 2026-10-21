@@ -44,12 +44,13 @@ class GHLOAuthService:
         data = self._token_request(
             {'grant_type': 'authorization_code', 'code': code, 'user_type': 'Company'}
         )
-        if data.get('userType') != 'Company' or data.get('companyId') != settings.GHL_COMPANY_ID:
-            raise GHLError('The app must be installed on the configured agency.')
+        if data.get('userType') != 'Company':
+            raise GHLError('The app must be installed on the agency, not a sub-account.')
         agency, _ = GHLOAuthToken.objects.update_or_create(
             is_agency=True,
             defaults={
                 'company_id': data['companyId'],
+                'location_id': settings.AGENCY_LOCATION_ID,
                 'is_active': True,
                 **self._token_fields(data),
             },
@@ -87,7 +88,9 @@ class GHLOAuthService:
         )
         if location.needs_refresh:
             agency = self.get_agency()
-            data = self._mint_location_token(self.get_agency_token(agency), location_id)
+            data = self._mint_location_token(
+                self.get_agency_token(agency), agency.company_id, location_id
+            )
             location.access_token = data['access_token']
             location.expires_at = self._expires_at(data)
             location.save()
@@ -97,6 +100,7 @@ class GHLOAuthService:
         """Store a token for each installed sub-account; deactivate ones no longer installed."""
         agency_token = self.get_agency_token(agency)
         installed = self._installed_locations(agency_token, agency.company_id)
+        installed.pop(settings.AGENCY_LOCATION_ID, None)
 
         for location_id, name in installed.items():
             existing = GHLOAuthToken.objects.filter(
@@ -108,7 +112,7 @@ class GHLOAuthService:
                     existing.save(update_fields=['name'])
                 continue
             try:
-                data = self._mint_location_token(agency_token, location_id)
+                data = self._mint_location_token(agency_token, agency.company_id, location_id)
             except GHLError:
                 logger.warning('ghl: could not get a token for location %s', location_id)
                 continue
@@ -142,12 +146,12 @@ class GHLOAuthService:
             raise GHLError('GHL token response was missing tokens.')
         return body
 
-    def _mint_location_token(self, agency_token: str, location_id: str) -> dict:
+    def _mint_location_token(self, agency_token: str, company_id: str, location_id: str) -> dict:
         return self._request(
             'POST',
             '/oauth/locationToken',
             token=agency_token,
-            data={'companyId': settings.GHL_COMPANY_ID, 'locationId': location_id},
+            data={'companyId': company_id, 'locationId': location_id},
         )
 
     def _installed_locations(self, agency_token: str, company_id: str) -> dict[str, str]:

@@ -95,7 +95,7 @@ def test_exchange_code_stores_encrypted_agency_token(service):
     sent = parse_qs(route.calls.last.request.content.decode())
     assert sent['grant_type'] == ['authorization_code']
     assert sent['user_type'] == ['Company']
-    assert agency.is_agency and agency.company_id == 'comp1' and agency.location_id == ''
+    assert agency.is_agency and agency.company_id == 'comp1' and agency.location_id == 'agency-loc'
     assert agency.refresh_token == 'agency-refresh'
     with db_connection.cursor() as cursor:
         cursor.execute('SELECT access_token FROM ghl_oauth_token')
@@ -118,10 +118,8 @@ def test_reinstall_updates_the_single_agency_row(service):
 
 @pytest.mark.django_db
 @respx.mock
-@pytest.mark.parametrize(
-    'overrides', [{'companyId': 'someone-else'}, {'userType': 'Location', 'locationId': 'loc1'}]
-)
-def test_exchange_code_rejects_other_agency_or_location_install(service, overrides):
+@pytest.mark.parametrize('overrides', [{'userType': 'Location', 'locationId': 'loc1'}])
+def test_exchange_code_rejects_location_install(service, overrides):
     respx.post(f'{BASE}/oauth/token').mock(
         return_value=httpx.Response(200, json=token_response(**overrides))
     )

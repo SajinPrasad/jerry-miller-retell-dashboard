@@ -48,7 +48,7 @@ def test_callback_connects_and_syncs(api):
     mock_installed(('loc1', 'Cool Breeze HVAC'))
     mock_location_token()
 
-    response = api.get('/api/ghl/oauth/callback/', {'code': 'abc'})
+    response = api.get('/api/oauth/callback/', {'code': 'abc'})
 
     assert response.status_code == 302
     assert response['Location'] == 'http://frontend.test/onboarding?status=connected'
@@ -57,16 +57,16 @@ def test_callback_connects_and_syncs(api):
 
 
 def test_callback_without_code(api):
-    response = api.get('/api/ghl/oauth/callback/', {'error': 'access_denied'})
+    response = api.get('/api/oauth/callback/', {'error': 'access_denied'})
     assert response['Location'] == 'http://frontend.test/onboarding?error=install_cancelled'
 
 
 @respx.mock
 def test_callback_failure(api):
     respx.post(f'{BASE}/oauth/token').mock(
-        return_value=httpx.Response(200, json=token_response(companyId='someone-else'))
+        return_value=httpx.Response(200, json=token_response(userType='Location'))
     )
-    response = api.get('/api/ghl/oauth/callback/', {'code': 'abc'})
+    response = api.get('/api/oauth/callback/', {'code': 'abc'})
     assert response['Location'] == 'http://frontend.test/onboarding?error=install_failed'
     assert not GHLOAuthToken.objects.exists()
 

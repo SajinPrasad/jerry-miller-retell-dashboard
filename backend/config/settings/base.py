@@ -91,14 +91,14 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
 GHL_CLIENT_ID = env('GHL_CLIENT_ID', default='')
 GHL_CLIENT_SECRET = env('GHL_CLIENT_SECRET', default='')
 GHL_APP_ID = env('GHL_APP_ID', default='')
-# Jerry's agency (GHL company id). Installs on any other agency are rejected.
-GHL_COMPANY_ID = env('GHL_COMPANY_ID', default='')
+# Jerry's agency location id; identifies the agency row and is skipped when syncing clients.
+AGENCY_LOCATION_ID = env('AGENCY_LOCATION_ID', default='')
 GHL_API_BASE_URL = env('GHL_API_BASE_URL', default='https://services.leadconnectorhq.com')
 GHL_API_VERSION = env('GHL_API_VERSION', default='2021-07-28')
 GHL_REQUEST_TIMEOUT = env.int('GHL_REQUEST_TIMEOUT', default=30)
 # Host of the app's Installation URL (Advanced Settings > Auth); white-label hosts differ.
 GHL_INSTALL_URL_BASE = env('GHL_INSTALL_URL_BASE', default='https://marketplace.gohighlevel.com')
-GHL_REDIRECT_URI = env('GHL_REDIRECT_URI', default='http://localhost:8000/api/ghl/oauth/callback/')
+GHL_REDIRECT_URI = env('GHL_REDIRECT_URI', default='http://localhost:8000/api/oauth/callback/')
 # Must match the scopes configured on the marketplace app.
 GHL_SCOPES = env(
     'GHL_SCOPES',
