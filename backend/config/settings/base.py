@@ -129,6 +129,8 @@ FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
 RETELL_API_KEY = env('RETELL_API_KEY', default='')
 # How a call's minutes are billed: 'per_second' or 'round_up_minute' (round each call up).
 RETELL_ROUNDING = env('RETELL_ROUNDING', default='per_second')
+RETELL_API_BASE_URL = env('RETELL_API_BASE_URL', default='https://api.retellai.com')
+RETELL_REQUEST_TIMEOUT = env.int('RETELL_REQUEST_TIMEOUT', default=30)
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')

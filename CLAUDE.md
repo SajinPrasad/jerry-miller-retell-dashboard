@@ -42,13 +42,15 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
 
-## Retell rebilling (Task 4, Phase 1 built)
+## Retell rebilling (Task 4, Phases 1-2 built)
 
-Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data model and the webhook; Phases 2-6 (nightly reconciliation, calculation, admin page, charging, alerts) are not started.
+Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data model and the webhook, Phase 2 the nightly audit; Phases 3-6 (calculation, admin page, charging, alerts) are not started.
 
 - **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25, `start_date`; a rate change adds a row), `RetellCall` (keyed on `call_id`, holds `duration_ms` and `retell_cost_cents` = `call_cost.combined_cost`), `UnassignedCall` (matched no client; never dropped).
 - **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
-- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute`.
+- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute`. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
+- **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` to fill `duration_ms`/`retell_cost_cents` for calls in the window still missing them. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
+- **Command:** `python manage.py reconcile_retell_calls`, meant for nightly cron. Nothing schedules it yet.
 - **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (docs don't say), and that no agent overrides the account-level webhook URL.
 
@@ -60,7 +62,7 @@ backend/                Django 5.2 + DRF
   apps/ghl/             Task 1: GHL onboarding (OAuth install, agency + sub-account tokens)
   apps/common/          EncryptedTextField for secrets
   apps/dashboards/      Tasks 2-3: KPI aggregation + settings endpoints
-  apps/rebilling/       Task 4: Retell webhook, call store, rates (Phase 1)
+  apps/rebilling/       Task 4: Retell webhook, call store, rates, nightly audit (Phases 1-2)
   requirements/         *.in (edit) -> *.txt (pip-compile output, committed)
 frontend/               React + TypeScript (Vite); src/{api,components,features,hooks,lib,types}
                         features/onboarding = GHL connect page (route /onboarding)
