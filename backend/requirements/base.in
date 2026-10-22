@@ -9,3 +9,4 @@ cryptography
 whitenoise
 gunicorn
 celery[redis]
+retell-sdk

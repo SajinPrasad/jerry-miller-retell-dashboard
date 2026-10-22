@@ -124,9 +124,11 @@ FIELD_ENCRYPTION_KEY = env('FIELD_ENCRYPTION_KEY', default='')
 # Where the OAuth callback sends the browser afterwards (the React app).
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
 
-# Retell voice rebilling (Task 4)
+# Retell voice rebilling (Task 4). The same key verifies webhook signatures, so it must be the
+# API key carrying the webhook badge in the Retell dashboard.
 RETELL_API_KEY = env('RETELL_API_KEY', default='')
-RETELL_WEBHOOK_SECRET = env('RETELL_WEBHOOK_SECRET', default='')
+# How a call's minutes are billed: 'per_second' or 'round_up_minute' (round each call up).
+RETELL_ROUNDING = env('RETELL_ROUNDING', default='per_second')
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')

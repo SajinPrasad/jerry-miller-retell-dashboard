@@ -16,7 +16,7 @@ Source docs live in `local_folder/pdfs/` (untracked): the backend tasks PDF (our
 1. **Marketplace app** – private GHL marketplace app, installed at agency level, auto-installed on every sub-account. Exchanges the agency token for a per-location token (agency token alone can't read sub-account contacts/opportunities). One custom menu link loads the React app: agency view shows all clients, sub-account view shows only that client (viewer/location come from the context GHL passes on page open). Scopes limited to locations, contacts, opportunities, calendars, conversations, SaaS. Test SaaS endpoints on Jerry's account first (subscription response format undocumented).
 2. **Agency dashboard** – MRR / live clients / clients in onboarding (SaaS API; real data only once Stripe + SaaS mode are on); leads, calls booked, clients signed by source (contacts/opportunities/calendars); clients at risk (lead-drop rules editable in settings, e.g. leads down 50% vs previous 30 days; NO login data, API lacks it); voice usage revenue (placeholder until Task 4). **Do not build** "builds finished within 10 business days" yet – only plan for it: start/end points (form, stage or field) must be settings.
 3. **Client dashboard** – same page scoped to one location: leads, booked jobs, response time (from conversation message times; verify data exists first), voice usage (after Task 4). Reviews and revenue by source are ON HOLD (no reviews API, source unconfirmed).
-4. **Retell voice rebilling** – per Retell call: get details (duration, agent/number) → match to sub-account by agent or phone number → store minutes per client → at period end minutes × per-client rate → charge → totals feed both dashboards. Rate is a per-client setting (works for any client, e.g. Branwynn). Charging: GHL has no wallet API; test invoice with auto-payment via GHL invoices API first, Stripe as backup. Verify in Retell docs whether a post-call webhook exists and which fields it sends. Open: monthly vs prepaid billing, Retell API access.
+4. **Retell voice rebilling** – split Retell's single bill per client (per sub-account), apply Jerry's per-client AI-minute rate, bill each client separately from their $397 plan. **Twilio is out of scope for now** (GHL may rebill SMS/calls natively). Phased plan in `local_folder/plan.md`; source PDF `local_folder/pdfs/SurPro Labs AI Rebilling (Retell and Twilio).pdf`.
 
 ## Engineering rules (read before building anything)
 
@@ -42,6 +42,16 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
 
+## Retell rebilling (Task 4, Phase 1 built)
+
+Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data model and the webhook; Phases 2-6 (nightly reconciliation, calculation, admin page, charging, alerts) are not started.
+
+- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25, `start_date`; a rate change adds a row), `RetellCall` (keyed on `call_id`, holds `duration_ms` and `retell_cost_cents` = `call_cost.combined_cost`), `UnassignedCall` (matched no client; never dropped).
+- **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
+- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute`.
+- **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills.
+- **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (docs don't say), and that no agent overrides the account-level webhook URL.
+
 ## Structure
 
 ```
@@ -50,11 +60,11 @@ backend/                Django 5.2 + DRF
   apps/ghl/             Task 1: GHL onboarding (OAuth install, agency + sub-account tokens)
   apps/common/          EncryptedTextField for secrets
   apps/dashboards/      Tasks 2-3: KPI aggregation + settings endpoints
-  apps/rebilling/       Task 4: Retell webhook, usage store, billing
+  apps/rebilling/       Task 4: Retell webhook, call store, rates (Phase 1)
   requirements/         *.in (edit) -> *.txt (pip-compile output, committed)
 frontend/               React + TypeScript (Vite); src/{api,components,features,hooks,lib,types}
                         features/onboarding = GHL connect page (route /onboarding)
-local_folder/           Untracked local files (gitignored); PDFs in local_folder/pdfs/
+local_folder/           Untracked local files (gitignored); PDFs in pdfs/, Task 4 plan in plan.md
 ```
 
 Conventions: business logic in each app's `services.py` (views stay thin); DRF serializers + APIViews; config via env vars (`backend/.env`, see `.env.example`); API under `/api/<app>/`.
