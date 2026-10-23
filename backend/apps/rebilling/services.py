@@ -1,19 +1,35 @@
-"""Matching a Retell call to a client, storing it, and the nightly audit that catches what the
-webhook missed.
+"""The two voice ingest paths, and the client each one belongs to.
+
+Retell: a webhook per call, plus a nightly audit that catches what the webhook missed.
+Twilio: a daily pull of regular call minutes, because Usage Records has no webhook.
+
+The two never touch. They share `ClientMapping` and nothing else: Retell is one row per call,
+written once; Twilio is one row per day, re-written every time we read it.
 
 Docs: https://docs.retellai.com/features/webhook-overview
+      https://www.twilio.com/docs/usage/api/usage-record
 """
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
+from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 from django.conf import settings
 from django.db.models import Q
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
-from .exceptions import RetellError
-from .models import UNBILLABLE, ClientMapping, RetellCall, UnassignedCall, billing_state
+from .exceptions import RetellError, TwilioError
+from .models import (
+    CALLS,
+    UNBILLABLE,
+    ClientMapping,
+    RetellCall,
+    TwilioUsageDay,
+    UnassignedCall,
+    billing_state,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +37,12 @@ logger = logging.getLogger(__name__)
 RECONCILE_WINDOW_HOURS = 48
 # Retell's maximum for /v3/list-calls.
 PAGE_SIZE = 1000
+
+# How many days back the daily Twilio pull re-reads, today included. A day keeps settling after
+# it ends and a re-pull only updates rows, so this is cheap insurance against a missed run.
+TWILIO_WINDOW_DAYS = 3
+# Twilio's maximum page size for Usage Records (the default is 50).
+TWILIO_PAGE_SIZE = 1000
 
 
 def normalise_number(value: str) -> str:
@@ -187,6 +209,121 @@ class RetellReconciliationService:
             raise RetellError(f'Retell {method} {path} failed: {exc}') from exc
 
 
+class TwilioUsageService:
+    """The daily pull of regular call minutes, one mapped Twilio subaccount at a time.
+
+    Only the `calls` category is read. Twilio's own definition of it excludes SIP and trunking
+    calls, which is where Retell's traffic lands, so an AI minute can never be billed twice.
+
+    Docs: https://www.twilio.com/docs/usage/api/usage-record
+    """
+
+    def __init__(self, client: httpx.Client | None = None):
+        self.client = client or httpx.Client(
+            base_url=settings.TWILIO_API_BASE_URL,
+            timeout=settings.TWILIO_REQUEST_TIMEOUT,
+            # The parent account's SID and token. A main-account API key is denied access to
+            # subaccount resources, so it cannot be used here.
+            auth=(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN),
+        )
+
+    def pull(self, start_date: date | None = None, end_date: date | None = None) -> dict:
+        """Read `calls` usage for every mapped client between the two GMT days, inclusive.
+
+        Defaults to the rolling window; pass both dates for a month-close run.
+        """
+        end_date = end_date or timezone.now().date()
+        start_date = start_date or end_date - timedelta(days=TWILIO_WINDOW_DAYS - 1)
+
+        result = {'clients': 0, 'days': 0, 'updated': 0, 'failed': 0}
+        clients = ClientMapping.objects.filter(active=True).exclude(twilio_subaccount_sid='')
+        for client in clients:
+            result['clients'] += 1
+            try:
+                records = list(
+                    self._list_records(client.twilio_subaccount_sid, start_date, end_date)
+                )
+            except TwilioError:
+                # One client's bad day must not cost the others theirs, and tomorrow's run
+                # re-reads the same window anyway.
+                logger.warning(
+                    'twilio: usage pull failed for %s', client.location_id, exc_info=True
+                )
+                result['failed'] += 1
+                continue
+
+            for record in records:
+                existed = self._store(client, record)
+                if existed is None:
+                    continue
+                result['days'] += 1
+                result['updated'] += existed
+        return result
+
+    def _list_records(self, subaccount_sid: str, start_date: date, end_date: date):
+        """Every `calls` usage record in the range, a page at a time."""
+        path = f'/2010-04-01/Accounts/{subaccount_sid}/Usage/Records/Daily.json'
+        params = {
+            'Category': CALLS,
+            'StartDate': start_date.isoformat(),
+            'EndDate': end_date.isoformat(),
+            # Defaults to true. Without this, a client whose own Twilio account has subaccounts
+            # would be billed for their usage too.
+            'IncludeSubaccounts': 'false',
+            'PageSize': TWILIO_PAGE_SIZE,
+        }
+        while True:
+            page = self._request('GET', path, params=params)
+            yield from page.get('usage_records') or []
+
+            next_uri = page.get('next_page_uri')
+            if not next_uri:
+                return
+            # Twilio builds the next page's path and query itself; following it verbatim keeps
+            # its cursor rather than us rebuilding one.
+            path, params = next_uri, None
+
+    def _store(self, client: ClientMapping, record: dict) -> bool | None:
+        """Write one day's usage. True if the row already existed, None if it was unusable.
+
+        `update_or_create` on purpose: Twilio keeps revising a day after it ends, so the newest
+        read wins. `store_call()`'s first-write-wins rule would freeze a day at whatever it
+        happened to look like the first time we saw it.
+        """
+        usage_date = record.get('start_date')
+        if not usage_date:
+            logger.warning(
+                'twilio: usage record without a start_date for %s, ignored', client.location_id
+            )
+            return None
+
+        _, created = TwilioUsageDay.objects.update_or_create(
+            client=client,
+            usage_date=date.fromisoformat(usage_date),
+            category=record.get('category') or CALLS,
+            defaults={
+                'subaccount_sid': record.get('account_sid') or client.twilio_subaccount_sid,
+                'call_count': int(record.get('count') or 0),
+                'usage_minutes': _usage_minutes(record),
+                'twilio_price_cents': _price_cents(record),
+                'as_of': _as_of(record.get('as_of')),
+            },
+        )
+        return not created
+
+    def _request(self, method: str, path: str, **kwargs) -> dict:
+        try:
+            response = self.client.request(
+                method, path, headers={'Accept': 'application/json'}, **kwargs
+            )
+            response.raise_for_status()
+            return response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            # Includes 429. Retrying here would stack requests behind a limit we can't see, and
+            # the rolling window re-reads the same days tomorrow.
+            raise TwilioError(f'Twilio {method} {path} failed: {exc}') from exc
+
+
 def _call_fields(call: dict) -> dict:
     duration_ms = _duration_ms(call)
     started_at = _timestamp(call.get('start_timestamp'))
@@ -238,3 +375,44 @@ def _timestamp(milliseconds: int | None) -> datetime | None:
 
 def _epoch_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
+
+
+def _usage_minutes(record: dict) -> Decimal:
+    """Twilio's `usage` for `calls`: minutes, already rounded per call by Twilio.
+
+    Parsed as a Decimal rather than a float because this number is multiplied by a rate in
+    Phase 3, and binary rounding error has no business anywhere near a bill.
+    """
+    return _decimal(record.get('usage'))
+
+
+def _price_cents(record: dict) -> int:
+    """Twilio's `price` (dollars, as a string) in whole cents. What Twilio charges Jerry.
+
+    Absolute: `UsageRecord.price` is positive, but the per-call `Call.price` is negative, so a
+    sign convention can't leak in if we ever read that endpoint too.
+    """
+    cents = _decimal(record.get('price')).copy_abs() * 100
+    return int(cents.to_integral_value(rounding=ROUND_HALF_UP))
+
+
+def _decimal(value) -> Decimal:
+    """Twilio sends its numbers as strings; an absent one means no usage."""
+    if value is None or value == '':
+        return Decimal(0)
+    return Decimal(str(value))
+
+
+def _as_of(value: str | None) -> datetime | None:
+    """Twilio's freshness stamp: the moment through which the day's data is current.
+
+    Not a billing input, only a staleness signal, so a stamp we can't read is left empty and
+    logged rather than failing the pull.
+    """
+    if not value:
+        return None
+    parsed = parse_datetime(value)
+    if parsed is None:
+        logger.warning('twilio: could not read as_of %r', value)
+        return None
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)

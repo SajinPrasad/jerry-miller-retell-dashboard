@@ -29,6 +29,10 @@ BILLABLE = 'billable'
 UNBILLABLE = 'unbillable'
 BILLING_STATUSES = [(BILLABLE, 'Billable'), (UNBILLABLE, 'Unbillable')]
 
+# The one Twilio usage category we bill. It excludes SIP and trunking calls by Twilio's own
+# definition, which is what keeps Retell's minutes (they run over a SIP trunk) out of it.
+CALLS = 'calls'
+
 
 def billable_minutes(duration_ms: int | None) -> Decimal:
     """Minutes we bill for a call, under the configured rounding rule."""
@@ -68,6 +72,8 @@ class ClientMapping(models.Model):
     retell_agent_ids = models.JSONField(default=list, blank=True)
     # Backup match, compared digits-only because these are typed in by hand.
     phone_numbers = models.JSONField(default=list, blank=True)
+    # The client's own Twilio subaccount. Blank = no Twilio voice billing for this client.
+    twilio_subaccount_sid = models.CharField(max_length=64, blank=True, default='')
     billing_mode = models.CharField(max_length=20, choices=BILLING_MODES, default=AUTO_CHARGE)
     stripe_customer_id = models.CharField(max_length=255, blank=True, default='')
     billing_contact_id = models.CharField(max_length=255, blank=True, default='')
@@ -82,14 +88,19 @@ class ClientMapping(models.Model):
 
 
 class RateHistory(models.Model):
-    """What Jerry charges one client per AI minute, from `start_date` onwards.
+    """What Jerry charges one client per minute, from `start_date` onwards.
 
     A rate change adds a row instead of editing one, so usage before the change still bills at the
-    rate that was in effect then.
+    rate that was in effect then. One timeline carries both rates, so a mid-month change splits
+    Retell and Twilio usage at the same point.
     """
 
     client = models.ForeignKey(ClientMapping, on_delete=models.CASCADE, related_name='rates')
+    # The Retell AI minute. Named before there was a second kind of voice minute; kept as-is
+    # because a rename costs a migration and a code sweep and buys no behaviour.
     voice_rate_cents = models.PositiveIntegerField(default=25)
+    # The Twilio regular-call minute.
+    call_rate_cents = models.PositiveIntegerField(default=5)
     start_date = models.DateField()
 
     class Meta:
@@ -98,7 +109,10 @@ class RateHistory(models.Model):
         unique_together = [('client', 'start_date')]
 
     def __str__(self):
-        return f'RateHistory({self.client_id}, {self.voice_rate_cents}c from {self.start_date})'
+        return (
+            f'RateHistory({self.client_id}, ai={self.voice_rate_cents}c, '
+            f'call={self.call_rate_cents}c from {self.start_date})'
+        )
 
 
 class RetellCall(models.Model):
@@ -162,3 +176,36 @@ class UnassignedCall(models.Model):
 
     def __str__(self):
         return f'UnassignedCall({self.call_id}, agent={self.agent_id!r})'
+
+
+class TwilioUsageDay(models.Model):
+    """One Twilio usage category, for one client, for one GMT day.
+
+    Twilio reports usage as a daily aggregate per category rather than per call, and keeps
+    revising a day after it ends, so a re-pull **updates** this row. That is the opposite of
+    `RetellCall`, which is written once on the first webhook and never touched again.
+    """
+
+    client = models.ForeignKey(ClientMapping, on_delete=models.PROTECT, related_name='twilio_usage')
+    subaccount_sid = models.CharField(max_length=64)
+    # Twilio's `start_date`: a GMT calendar day, not Jerry's local one.
+    usage_date = models.DateField()
+    # `calls` today. This column is what lets SMS arrive later as data rather than as schema.
+    category = models.CharField(max_length=64, default=CALLS)
+    call_count = models.PositiveIntegerField(default=0)
+    # Twilio has already rounded each call up to its billed increment before summing the day, so
+    # `RETELL_ROUNDING` must never be applied on top of this number.
+    usage_minutes = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal(0))
+    # Twilio's `price` in cents: what Twilio charges Jerry, kept so we can show his margin.
+    twilio_price_cents = models.PositiveIntegerField(default=0)
+    # Twilio's own freshness stamp — the moment through which this day's data is current.
+    as_of = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'rebilling_twilio_usage_day'
+        ordering = ['-usage_date']
+        # The idempotency key: Twilio's answer to `call_id`.
+        unique_together = [('client', 'usage_date', 'category')]
+
+    def __str__(self):
+        return f'TwilioUsageDay({self.client_id}, {self.usage_date}, {self.category})'

@@ -42,18 +42,21 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
 
-## Retell rebilling (Task 4, Phases 1-2 built)
+## Voice rebilling (Task 4, Phases 1, 2 and 2b built)
 
-Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data model and the webhook, Phase 2 the nightly audit; Phases 3-6 (calculation, admin page, charging, alerts) are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull; Phases 3-6 (calculation, admin page, charging, alerts) are not started.
 
-- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25, `start_date`; a rate change adds a row), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped).
+**Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
+
+- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `twilio_subaccount_sid`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25 = the Retell AI minute, `call_rate_cents` default 5 = the Twilio call minute, `start_date`; a rate change adds a row and splits both rates at the same point), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped), `TwilioUsageDay` (one client, one GMT day, one category; `unique_together` on all three).
 - **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
-- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute`. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
+- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute` — **Retell only**; Twilio minutes arrive pre-rounded and must never be rounded again. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`. `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` must be the **parent account's** (a main-account API key is denied subaccount resources), plus `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Billability:** every stored call carries `billing_status` (`billable`/`unbillable`, default unbillable) and `unbillable_reason` in plain words, set by `billing_state()` on store and on every re-read. A call is unbillable when its status isn't `ended`, or it has no duration or no start time. Nothing is ever dropped; Phase 3 bills `billable` rows only. Duration is taken from `duration_ms`, else `duration_seconds`, else `call_cost.total_duration_seconds`.
 - **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
-- **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` daily at 03:00 UTC (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); needs a worker and a beat process. `python manage.py reconcile_retell_calls` does the same work synchronously for a manual run.
-- **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills.
-- **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (docs don't say), and that no agent overrides the account-level webhook URL.
+- **Twilio pull** `TwilioUsageService.pull(start_date, end_date)`: for each `active` client with a `twilio_subaccount_sid`, `GET /2010-04-01/Accounts/{sid}/Usage/Records/Daily.json` with `Category=calls`, `IncludeSubaccounts=false` (its default is **true**) and `PageSize=1000`, paging on the `next_page_uri` Twilio hands back. Stored with `update_or_create` on `(client, usage_date, category)` because Twilio keeps revising a day after it ends. Defaults to a rolling 3-day window; pass both dates for the month-close run. Only `calls` is billed — it excludes SIP and trunking calls by Twilio's definition, which is where Retell's minutes land. A failed client is logged, counted in `failed` and skipped; the others still land.
+- **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
+- **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that.
+- **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 
 ## Structure
 
@@ -64,7 +67,7 @@ backend/                Django 5.2 + DRF
   apps/ghl/             Task 1: GHL onboarding (OAuth install, agency + sub-account tokens)
   apps/common/          EncryptedTextField for secrets
   apps/dashboards/      Tasks 2-3: KPI aggregation + settings endpoints
-  apps/rebilling/       Task 4: Retell webhook, call store, rates, nightly audit (Phases 1-2)
+  apps/rebilling/       Task 4: Retell webhook + audit, Twilio daily pull, rates (Ph. 1, 2, 2b)
   requirements/         *.in (edit) -> *.txt (pip-compile output, committed)
 frontend/               React + TypeScript (Vite); src/{api,components,features,hooks,lib,types}
                         features/onboarding = GHL connect page (route /onboarding)
@@ -85,7 +88,7 @@ pip-compile requirements/prod.in -o requirements/prod.txt
 cp .env.example .env                              # then fill in values
 python manage.py migrate && python manage.py runserver   # http://localhost:8000
 celery -A config worker -l info                   # background jobs (needs REDIS_URL up)
-celery -A config beat -l info                     # scheduled jobs (nightly Retell audit)
+celery -A config beat -l info                     # scheduled (Retell 03:00, Twilio 03:30 UTC)
 pytest                                            # tests (config.settings.test)
 ruff check . && ruff format .                     # lint / format
 ```

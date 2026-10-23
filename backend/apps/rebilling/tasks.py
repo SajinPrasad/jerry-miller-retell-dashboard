@@ -1,10 +1,10 @@
-"""Scheduled work for Retell rebilling."""
+"""Scheduled work for voice rebilling: the Retell audit and the Twilio pull."""
 
 import logging
 
 from celery import shared_task
 
-from .services import RetellReconciliationService
+from .services import RetellReconciliationService, TwilioUsageService
 
 logger = logging.getLogger(__name__)
 
@@ -18,4 +18,16 @@ def reconcile_retell_calls() -> dict:
     """
     result = RetellReconciliationService().reconcile()
     logger.info('retell: nightly reconciliation finished %s', result)
+    return result
+
+
+@shared_task
+def pull_twilio_usage() -> dict:
+    """The daily Twilio pull, on Celery beat. Same work as `manage.py pull_twilio_usage`.
+
+    Reads the rolling window. A single client's failure is counted rather than raised, so one
+    unreachable subaccount never costs the others their day; the count lands in the log line.
+    """
+    result = TwilioUsageService().pull()
+    logger.info('twilio: daily usage pull finished %s', result)
     return result

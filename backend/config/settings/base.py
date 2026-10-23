@@ -133,6 +133,14 @@ RETELL_ROUNDING = env('RETELL_ROUNDING', default='per_second')
 RETELL_API_BASE_URL = env('RETELL_API_BASE_URL', default='https://api.retellai.com')
 RETELL_REQUEST_TIMEOUT = env.int('RETELL_REQUEST_TIMEOUT', default=30)
 
+# Twilio regular voice minutes (Task 4, Phase 2b). Usage Records is a `/2010-04-01/` resource,
+# so the parent Account SID + Auth Token reach every subaccount. A main-account *API key* would
+# not: Twilio denies those access to subaccount resources.
+TWILIO_ACCOUNT_SID = env('TWILIO_ACCOUNT_SID', default='')
+TWILIO_AUTH_TOKEN = env('TWILIO_AUTH_TOKEN', default='')
+TWILIO_API_BASE_URL = env('TWILIO_API_BASE_URL', default='https://api.twilio.com')
+TWILIO_REQUEST_TIMEOUT = env.int('TWILIO_REQUEST_TIMEOUT', default=30)
+
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')
 
@@ -142,5 +150,10 @@ CELERY_BEAT_SCHEDULE = {
     'reconcile-retell-calls': {
         'task': 'apps.rebilling.tasks.reconcile_retell_calls',
         'schedule': crontab(hour=3, minute=0),
+    },
+    # Offset from the Retell audit so the two upstreams aren't hit at the same moment.
+    'pull-twilio-usage': {
+        'task': 'apps.rebilling.tasks.pull_twilio_usage',
+        'schedule': crontab(hour=3, minute=30),
     },
 }
