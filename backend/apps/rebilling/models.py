@@ -5,6 +5,7 @@ sub-account so each client can be billed at the rate Jerry set for them.
 """
 
 import math
+from datetime import datetime
 from decimal import Decimal
 
 from django.conf import settings
@@ -20,6 +21,14 @@ BILLING_MODES = [(AUTO_CHARGE, 'Auto charge'), (SEND_INVOICE, 'Send invoice')]
 PER_SECOND = 'per_second'
 ROUND_UP_MINUTE = 'round_up_minute'
 
+# The only call_status that can be billed. Calls are stored whatever their status.
+ENDED = 'ended'
+
+# Values for `billing_status` on a stored call.
+BILLABLE = 'billable'
+UNBILLABLE = 'unbillable'
+BILLING_STATUSES = [(BILLABLE, 'Billable'), (UNBILLABLE, 'Unbillable')]
+
 
 def billable_minutes(duration_ms: int | None) -> Decimal:
     """Minutes we bill for a call, under the configured rounding rule."""
@@ -28,6 +37,23 @@ def billable_minutes(duration_ms: int | None) -> Decimal:
     if settings.RETELL_ROUNDING == ROUND_UP_MINUTE:
         return Decimal(math.ceil(duration_ms / MS_PER_MINUTE))
     return Decimal(duration_ms) / MS_PER_MINUTE
+
+
+def billing_state(
+    duration_ms: int | None, started_at: datetime | None, call_status: str
+) -> tuple[str, str]:
+    """Whether a call can be billed, and in plain words why not.
+
+    A call missing any of this is marked rather than dropped: the nightly audit re-reads it while
+    it is still inside the window, so most of these resolve themselves within a day.
+    """
+    if call_status != ENDED:
+        return UNBILLABLE, f'Call status is {call_status or "missing"}, not {ENDED}.'
+    if duration_ms is None:
+        return UNBILLABLE, 'Retell has not reported a duration for this call.'
+    if started_at is None:
+        return UNBILLABLE, 'Retell has not reported a start time, so no rate period applies.'
+    return BILLABLE, ''
 
 
 class ClientMapping(models.Model):
@@ -90,6 +116,11 @@ class RetellCall(models.Model):
     # call_cost.combined_cost: what Retell charges Jerry, kept so we can show his margin.
     retell_cost_cents = models.PositiveIntegerField(null=True, blank=True)
     call_status = models.CharField(max_length=32, blank=True, default='')
+    # Set from `billing_state` whenever the call is stored or re-read. Defaults to unbillable so a
+    # row created by hand is never billed until something has checked it.
+    billing_status = models.CharField(max_length=20, choices=BILLING_STATUSES, default=UNBILLABLE)
+    # Why it can't be billed, for the admin page. Empty when it can.
+    unbillable_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         db_table = 'rebilling_retell_call'
@@ -119,6 +150,11 @@ class UnassignedCall(models.Model):
     duration_ms = models.PositiveIntegerField(null=True, blank=True)
     retell_cost_cents = models.PositiveIntegerField(null=True, blank=True)
     call_status = models.CharField(max_length=32, blank=True, default='')
+    # Set from `billing_state` whenever the call is stored or re-read. Defaults to unbillable so a
+    # row created by hand is never billed until something has checked it.
+    billing_status = models.CharField(max_length=20, choices=BILLING_STATUSES, default=UNBILLABLE)
+    # Why it can't be billed, for the admin page. Empty when it can.
+    unbillable_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         db_table = 'rebilling_unassigned_call'

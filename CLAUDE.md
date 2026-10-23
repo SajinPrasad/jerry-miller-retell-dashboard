@@ -46,11 +46,12 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 
 Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data model and the webhook, Phase 2 the nightly audit; Phases 3-6 (calculation, admin page, charging, alerts) are not started.
 
-- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25, `start_date`; a rate change adds a row), `RetellCall` (keyed on `call_id`, holds `duration_ms` and `retell_cost_cents` = `call_cost.combined_cost`), `UnassignedCall` (matched no client; never dropped).
+- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25, `start_date`; a rate change adds a row), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped).
 - **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
 - **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute`. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
-- **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` to fill `duration_ms`/`retell_cost_cents` for calls in the window still missing them. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
-- **Command:** `python manage.py reconcile_retell_calls`, meant for nightly cron. Nothing schedules it yet.
+- **Billability:** every stored call carries `billing_status` (`billable`/`unbillable`, default unbillable) and `unbillable_reason` in plain words, set by `billing_state()` on store and on every re-read. A call is unbillable when its status isn't `ended`, or it has no duration or no start time. Nothing is ever dropped; Phase 3 bills `billable` rows only. Duration is taken from `duration_ms`, else `duration_seconds`, else `call_cost.total_duration_seconds`.
+- **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
+- **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` daily at 03:00 UTC (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); needs a worker and a beat process. `python manage.py reconcile_retell_calls` does the same work synchronously for a manual run.
 - **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (docs don't say), and that no agent overrides the account-level webhook URL.
 
@@ -59,6 +60,7 @@ Phases and open questions live in `local_folder/plan.md`. Phase 1 is the data mo
 ```
 backend/                Django 5.2 + DRF
   config/settings/      base / development / production / test
+  config/celery.py      Celery app; scheduled jobs in settings CELERY_BEAT_SCHEDULE
   apps/ghl/             Task 1: GHL onboarding (OAuth install, agency + sub-account tokens)
   apps/common/          EncryptedTextField for secrets
   apps/dashboards/      Tasks 2-3: KPI aggregation + settings endpoints
@@ -82,6 +84,8 @@ pip-compile requirements/dev.in -o requirements/dev.txt
 pip-compile requirements/prod.in -o requirements/prod.txt
 cp .env.example .env                              # then fill in values
 python manage.py migrate && python manage.py runserver   # http://localhost:8000
+celery -A config worker -l info                   # background jobs (needs REDIS_URL up)
+celery -A config beat -l info                     # scheduled jobs (nightly Retell audit)
 pytest                                            # tests (config.settings.test)
 ruff check . && ruff format .                     # lint / format
 ```

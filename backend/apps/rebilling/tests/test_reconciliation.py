@@ -11,7 +11,13 @@ from django.core.management.base import CommandError
 from django.utils import timezone
 
 from apps.rebilling.exceptions import RetellError
-from apps.rebilling.models import RetellCall, UnassignedCall
+from apps.rebilling.models import (
+    BILLABLE,
+    UNBILLABLE,
+    RetellCall,
+    UnassignedCall,
+    billing_state,
+)
 from apps.rebilling.services import RetellReconciliationService
 
 from .test_services import call_payload, make_client
@@ -54,15 +60,20 @@ def recent_call(**overrides):
 
 
 def make_stored_call(client, call_id='call1', minutes_ago=60, **overrides):
+    """A call already in the table, marked the way `store_call` would have marked it."""
     fields = {
         'call_id': call_id,
         'client': client,
+        'call_status': 'ended',
         'started_at': timezone.now() - timedelta(minutes=minutes_ago),
         'duration_ms': None,
         'retell_cost_cents': None,
     }
     fields.update(overrides)
-    return RetellCall.objects.create(**fields)
+    status, reason = billing_state(
+        fields['duration_ms'], fields['started_at'], fields['call_status']
+    )
+    return RetellCall.objects.create(billing_status=status, unbillable_reason=reason, **fields)
 
 
 @respx.mock
@@ -297,3 +308,68 @@ def test_command_fails_when_retell_does():
 
     with pytest.raises(CommandError):
         call_command('reconcile_retell_calls', stdout=StringIO())
+
+
+@respx.mock
+def test_backfill_clears_the_unbillable_reason(service):
+    client = make_client()
+    make_stored_call(client)
+    mock_list(page())
+    mock_get_call('call1', duration_ms=90_000)
+
+    service.reconcile()
+
+    stored = RetellCall.objects.get(call_id='call1')
+    assert stored.billing_status == BILLABLE
+    assert stored.unbillable_reason == ''
+
+
+@respx.mock
+def test_a_call_that_has_since_ended_becomes_billable(service):
+    """The cost is already there, so only the status makes it a candidate for a re-read."""
+    client = make_client()
+    make_stored_call(client, call_status='ongoing', duration_ms=1000, retell_cost_cents=5)
+    mock_list(page())
+    mock_get_call('call1', duration_ms=90_000, call_status='ended')
+
+    result = service.reconcile()
+
+    assert result['backfilled'] == 1
+    stored = RetellCall.objects.get(call_id='call1')
+    assert stored.billing_status == BILLABLE
+    assert stored.duration_ms == 90_000
+    assert stored.call_status == 'ended'
+
+
+@respx.mock
+def test_a_call_still_missing_its_duration_keeps_its_reason(service):
+    client = make_client()
+    make_stored_call(client)
+    mock_list(page())
+    payload = call_payload(call_id='call1')
+    del payload['duration_ms']
+    del payload['call_cost']
+    respx.get(f'{BASE}/v2/get-call/call1').mock(return_value=httpx.Response(200, json=payload))
+
+    service.reconcile()
+
+    stored = RetellCall.objects.get(call_id='call1')
+    assert stored.duration_ms is None
+    assert stored.billing_status == UNBILLABLE
+    assert stored.unbillable_reason == 'Retell has not reported a duration for this call.'
+
+
+@respx.mock
+def test_backfill_takes_a_duration_given_in_seconds(service):
+    client = make_client()
+    make_stored_call(client)
+    mock_list(page())
+    payload = call_payload(call_id='call1')
+    del payload['duration_ms']  # leaves call_cost.total_duration_seconds = 15.8
+    respx.get(f'{BASE}/v2/get-call/call1').mock(return_value=httpx.Response(200, json=payload))
+
+    service.reconcile()
+
+    stored = RetellCall.objects.get(call_id='call1')
+    assert stored.duration_ms == 15_800
+    assert stored.billing_status == BILLABLE

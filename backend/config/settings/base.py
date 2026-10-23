@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import environ
+from celery.schedules import crontab
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
@@ -134,3 +135,12 @@ RETELL_REQUEST_TIMEOUT = env.int('RETELL_REQUEST_TIMEOUT', default=30)
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')
+
+# Scheduled jobs. Times are UTC (TIME_ZONE above); 03:00 is off-peak for client calls, and the
+# audit's 48-hour window means a missed run is covered by the next one.
+CELERY_BEAT_SCHEDULE = {
+    'reconcile-retell-calls': {
+        'task': 'apps.rebilling.tasks.reconcile_retell_calls',
+        'schedule': crontab(hour=3, minute=0),
+    },
+}

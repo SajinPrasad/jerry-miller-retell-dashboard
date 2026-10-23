@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .exceptions import RetellError
-from .models import ClientMapping, RetellCall, UnassignedCall
+from .models import UNBILLABLE, ClientMapping, RetellCall, UnassignedCall, billing_state
 
 logger = logging.getLogger(__name__)
 
@@ -132,28 +132,43 @@ class RetellReconciliationService:
                 return
 
     def _backfill(self, window_start) -> int:
-        """Fill in duration and cost for calls in the window that are still missing them.
+        """Re-read calls in the window we can't bill yet, or that are still missing a cost.
 
-        The webhook may not carry either field. Only the window is looked at, so a call that
-        legitimately has no duration (one that never connected) isn't re-fetched every night.
+        The webhook may carry neither duration nor cost, and a call that was still running when we
+        first saw it has ended by now. Only the window is looked at, so a call that will never be
+        billable (one that never connected) isn't re-fetched every night forever.
         """
-        incomplete = Q(duration_ms__isnull=True) | Q(retell_cost_cents__isnull=True)
-        pending = [
-            *RetellCall.objects.filter(incomplete, started_at__gte=window_start),
-            *UnassignedCall.objects.filter(incomplete, started_at__gte=window_start),
+        pending = Q(retell_cost_cents__isnull=True) | Q(billing_status=UNBILLABLE)
+        records = [
+            *RetellCall.objects.filter(pending, started_at__gte=window_start),
+            *UnassignedCall.objects.filter(pending, started_at__gte=window_start),
         ]
 
         filled = 0
-        for record in pending:
+        for record in records:
             try:
                 call = self._request('GET', f'/v2/get-call/{record.call_id}')
             except RetellError:
                 # One bad call shouldn't end the run; tomorrow's audit tries again.
                 logger.warning('retell: could not fetch call %s', record.call_id)
                 continue
-            record.duration_ms = call.get('duration_ms')
+            record.duration_ms = _duration_ms(call)
             record.retell_cost_cents = _cost_cents(call)
-            record.save(update_fields=['duration_ms', 'retell_cost_cents'])
+            record.call_status = call.get('call_status') or ''
+            record.ended_at = _timestamp(call.get('end_timestamp')) or record.ended_at
+            record.billing_status, record.unbillable_reason = billing_state(
+                record.duration_ms, record.started_at, record.call_status
+            )
+            record.save(
+                update_fields=[
+                    'duration_ms',
+                    'retell_cost_cents',
+                    'call_status',
+                    'ended_at',
+                    'billing_status',
+                    'unbillable_reason',
+                ]
+            )
             filled += 1
         return filled
 
@@ -173,17 +188,39 @@ class RetellReconciliationService:
 
 
 def _call_fields(call: dict) -> dict:
+    duration_ms = _duration_ms(call)
+    started_at = _timestamp(call.get('start_timestamp'))
+    call_status = call.get('call_status') or ''
+    billing_status, reason = billing_state(duration_ms, started_at, call_status)
     return {
         'agent_id': call.get('agent_id') or '',
         'from_number': call.get('from_number') or '',
         'to_number': call.get('to_number') or '',
         'direction': call.get('direction') or '',
-        'started_at': _timestamp(call.get('start_timestamp')),
+        'started_at': started_at,
         'ended_at': _timestamp(call.get('end_timestamp')),
-        'duration_ms': call.get('duration_ms'),
+        'duration_ms': duration_ms,
         'retell_cost_cents': _cost_cents(call),
-        'call_status': call.get('call_status') or '',
+        'call_status': call_status,
+        'billing_status': billing_status,
+        'unbillable_reason': reason,
     }
+
+
+def _duration_ms(call: dict) -> int | None:
+    """How long the call lasted, in milliseconds. The one field billing can't do without.
+
+    Retell reports `duration_ms`, but a duration given in seconds is taken too, so a call is never
+    left unbillable over the unit it arrived in.
+    """
+    milliseconds = call.get('duration_ms')
+    if milliseconds is not None:
+        return round(milliseconds)
+
+    seconds = call.get('duration_seconds')
+    if seconds is None:
+        seconds = (call.get('call_cost') or {}).get('total_duration_seconds')
+    return None if seconds is None else round(seconds * 1000)
 
 
 def _cost_cents(call: dict) -> int | None:

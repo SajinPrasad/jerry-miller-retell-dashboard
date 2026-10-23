@@ -4,7 +4,13 @@ from decimal import Decimal
 import pytest
 from django.test import override_settings
 
-from apps.rebilling.models import ClientMapping, RetellCall, UnassignedCall
+from apps.rebilling.models import (
+    BILLABLE,
+    UNBILLABLE,
+    ClientMapping,
+    RetellCall,
+    UnassignedCall,
+)
 from apps.rebilling.services import store_call
 
 pytestmark = pytest.mark.django_db
@@ -152,7 +158,40 @@ def test_call_without_an_id_is_ignored():
     assert not UnassignedCall.objects.exists()
 
 
-def test_missing_duration_and_cost_are_stored_as_null():
+def test_a_complete_call_is_billable_with_no_reason():
+    make_client()
+
+    store_call(call_payload())
+
+    call = RetellCall.objects.get()
+    assert call.billing_status == BILLABLE
+    assert call.unbillable_reason == ''
+
+
+def test_a_duration_in_seconds_is_stored_as_milliseconds():
+    make_client()
+
+    payload = call_payload()
+    del payload['duration_ms']  # leaves call_cost.total_duration_seconds = 15.8
+    store_call(payload)
+
+    call = RetellCall.objects.get()
+    assert call.duration_ms == 15_800
+    assert call.billing_status == BILLABLE
+
+
+def test_a_top_level_seconds_duration_is_stored_as_milliseconds():
+    make_client()
+
+    payload = call_payload(duration_seconds=12)
+    del payload['duration_ms']
+    del payload['call_cost']
+    store_call(payload)
+
+    assert RetellCall.objects.get().duration_ms == 12_000
+
+
+def test_a_call_without_a_duration_is_kept_but_unbillable():
     make_client()
 
     payload = call_payload()
@@ -164,6 +203,46 @@ def test_missing_duration_and_cost_are_stored_as_null():
     assert call.duration_ms is None
     assert call.retell_cost_cents is None
     assert call.billable_minutes == Decimal(0)
+    assert call.billing_status == UNBILLABLE
+    assert call.unbillable_reason == 'Retell has not reported a duration for this call.'
+
+
+def test_a_call_that_has_not_ended_is_unbillable():
+    make_client()
+
+    store_call(call_payload(call_status='ongoing'))
+
+    call = RetellCall.objects.get()
+    assert call.billing_status == UNBILLABLE
+    assert call.unbillable_reason == 'Call status is ongoing, not ended.'
+
+
+def test_a_call_with_no_status_at_all_is_unbillable():
+    make_client()
+
+    store_call(call_payload(call_status=None))
+
+    assert RetellCall.objects.get().unbillable_reason == 'Call status is missing, not ended.'
+
+
+def test_a_call_without_a_start_time_is_unbillable():
+    make_client()
+
+    payload = call_payload()
+    del payload['start_timestamp']
+    store_call(payload)
+
+    call = RetellCall.objects.get()
+    assert call.billing_status == UNBILLABLE
+    assert 'start time' in call.unbillable_reason
+
+
+def test_an_unassigned_call_is_marked_the_same_way():
+    store_call(call_payload(call_status='error'))
+
+    unassigned = UnassignedCall.objects.get()
+    assert unassigned.billing_status == UNBILLABLE
+    assert unassigned.unbillable_reason == 'Call status is error, not ended.'
 
 
 def test_billable_minutes_per_second():
