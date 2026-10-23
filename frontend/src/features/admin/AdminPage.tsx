@@ -6,140 +6,163 @@ import type { ClientDetail as Detail, ClientsResponse, SsoSession } from '../../
 import './admin.css'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
-import { DEMO_CLIENTS, DEMO_DETAILS, DEMO_SESSION } from './demoData'
-import { formatMonth } from './format'
+import { DEMO_SESSION, demoClients, demoDetail } from './demoData'
+import { currentMonth, formatMonth } from './format'
+import MonthPicker from './MonthPicker'
 import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
 
-type Status = 'loading' | 'ready' | 'blocked' | 'error'
+/** How the page got (or failed to get) its GoHighLevel session. Resolved once, on mount. */
+type Session =
+  | { kind: 'loading' }
+  | { kind: 'live'; session: SsoSession }
+  | { kind: 'preview' }
+  | { kind: 'blocked' }
+  | { kind: 'error' }
 
 export default function AdminPage() {
-  const [status, setStatus] = useState<Status>('loading')
-  const [session, setSession] = useState<SsoSession | null>(null)
+  const [session, setSession] = useState<Session>({ kind: 'loading' })
+  const [month, setMonth] = useState(currentMonth())
   const [clients, setClients] = useState<ClientsResponse | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
   const [detail, setDetail] = useState<Detail | null>(null)
-  // True when GoHighLevel never answered, so the page is showing bundled sample data. The
-  // preview never calls the admin API, so it cannot surface a real client's figures.
-  const [preview, setPreview] = useState(false)
+  const [failed, setFailed] = useState(false)
 
+  const preview = session.kind === 'preview'
+
+  // 1. Resolve the session once. The period filter must not re-run the handshake.
   useEffect(() => {
     let cancelled = false
 
-    async function load() {
+    async function resolve() {
       const blob = await requestSessionBlob()
 
+      // Opened straight in a browser, with no GoHighLevel to ask. Show the sample preview
+      // rather than a dead end, clearly marked as such.
       if (!blob) {
-        // Opened straight in a browser, with no GoHighLevel to ask. Show the sample preview
-        // rather than a dead end, clearly marked as such.
-        if (cancelled) return
-        setPreview(true)
-        setSession(DEMO_SESSION)
-        setClients(DEMO_CLIENTS)
-        setStatus('ready')
+        if (!cancelled) setSession({ kind: 'preview' })
         return
       }
 
       try {
-        const openedSession = await openSession(blob)
-        const list = await getClients()
+        const opened = await openSession(blob)
         if (cancelled) return
-        setSession(openedSession)
-        setClients(list)
+        setSession({ kind: 'live', session: opened })
         // Inside a sub-account there is one client and no list to choose from.
-        setSelected(openedSession.active_location)
-        setStatus('ready')
+        setSelected(opened.active_location)
       } catch (err) {
         if (cancelled) return
         // A session that GHL gave us but the backend refused is a real misconfiguration —
         // the wrong Shared Secret, or another agency. Say so instead of quietly showing
         // samples, which would hide the problem.
-        setStatus(err instanceof ApiError && (err.status === 401 || err.status === 403)
-          ? 'blocked'
-          : 'error')
+        const refused = err instanceof ApiError && (err.status === 401 || err.status === 403)
+        setSession({ kind: refused ? 'blocked' : 'error' })
       }
     }
 
-    void load()
+    void resolve()
     return () => {
       cancelled = true
     }
   }, [])
 
+  // 2. The clients list, for whichever period is selected. The preview's list is derived
+  //    below instead, since it is a pure function of the month.
   useEffect(() => {
-    // The preview's detail is derived below, so there is nothing to fetch.
-    if (!selected || preview) return
+    if (session.kind !== 'live') return
+
     let cancelled = false
-    getClientDetail(selected)
+    getClients(month)
       .then((loaded) => {
-        if (!cancelled) setDetail(loaded)
+        if (cancelled) return
+        setClients(loaded)
+        // Cleared here rather than before the request, so a retry that works drops the banner
+        // without a render that briefly claims everything is fine.
+        setFailed(false)
       })
       .catch(() => {
-        if (!cancelled) setStatus('error')
+        if (!cancelled) setFailed(true)
       })
     return () => {
       cancelled = true
     }
-  }, [selected, preview])
+  }, [session, month])
 
-  // Derived rather than cleared in an effect, so a half-loaded switch never shows the client
-  // we just navigated away from under the name of the one we are opening.
-  let openDetail: Detail | null = null
-  if (selected) {
-    openDetail = preview
-      ? (DEMO_DETAILS[selected] ?? null)
-      : detail?.location_id === selected
-        ? detail
-        : null
-  }
+  // 3. The open client's detail, for the same period.
+  useEffect(() => {
+    if (!selected || session.kind === 'preview' || session.kind !== 'live') return
 
-  if (status === 'loading') {
+    let cancelled = false
+    getClientDetail(selected, month)
+      .then((loaded) => {
+        if (!cancelled) setDetail(loaded)
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [selected, month, session])
+
+  if (session.kind === 'loading') {
     return (
-      <main className="admin">
-        <Header />
+      <Shell>
         <section className="card">
           <h2>Clients</h2>
           <ClientsTableSkeleton />
         </section>
-      </main>
+      </Shell>
     )
   }
 
-  if (status === 'blocked') {
+  if (session.kind === 'blocked') {
     return (
-      <main className="admin">
-        <Header />
+      <Shell>
         <div className="banner error" role="alert">
           GoHighLevel sent a session this server could not accept. Check that the app&apos;s Shared
           Secret matches <code>GHL_APP_SSO_KEY</code>, and that the agency installed here is the
           one you are signed in to.
         </div>
-      </main>
+      </Shell>
     )
   }
 
-  if (status === 'error' || !clients) {
+  if (session.kind === 'error' || failed) {
     return (
-      <main className="admin">
-        <Header />
+      <Shell month={month}>
         <div className="banner error" role="alert">
           Could not load billing data. Refresh to try again.
         </div>
-      </main>
+      </Shell>
     )
   }
 
-  const isSubAccount = clients.scope === 'location'
+  // Showing the period that was asked for, not one still in flight: the month has to match, so
+  // last month's figures never sit under this month's heading.
+  const shown = preview ? demoClients(month) : clients?.month === month ? clients : null
+  const openDetail = resolveDetail()
+  const isSubAccount = shown?.scope === 'location'
+
+  function resolveDetail(): Detail | null {
+    if (!selected) return null
+    if (preview) return demoDetail(selected, month)
+    return detail?.location_id === selected && detail?.month === month ? detail : null
+  }
 
   return (
-    <main className="admin">
-      <Header month={clients.month} userName={session?.user_name}>
-        {!isSubAccount && selected && (
+    <Shell
+      month={month}
+      onMonthChange={setMonth}
+      busy={!shown}
+      userName={session.kind === 'live' ? session.session.user_name : DEMO_SESSION.user_name}
+      action={
+        !isSubAccount && selected ? (
           <button type="button" className="button ghost" onClick={() => setSelected(null)}>
             ← All clients
           </button>
-        )}
-      </Header>
-
+        ) : null
+      }
+    >
       {preview && (
         <div className="banner warn" role="status">
           <strong>Standalone preview.</strong> These are sample figures, not live billing data.
@@ -157,34 +180,50 @@ export default function AdminPage() {
         <section className="card">
           <h2>Clients</h2>
           <p className="muted small">
-            Usage this month per client. Amounts are estimates at each client&apos;s current rate.
+            Usage in {formatMonth(month)} per client. Amounts are estimates at each client&apos;s
+            current rate.
           </p>
-          <ClientsTable clients={clients.clients} onSelect={setSelected} />
+          {shown ? (
+            <ClientsTable clients={shown.clients} onSelect={setSelected} />
+          ) : (
+            <ClientsTableSkeleton />
+          )}
         </section>
       )}
-    </main>
+    </Shell>
   )
 }
 
-function Header({
+function Shell({
   month,
+  onMonthChange,
+  busy,
   userName,
+  action,
   children,
 }: {
   month?: string
+  onMonthChange?: (month: string) => void
+  busy?: boolean
   userName?: string
-  children?: React.ReactNode
+  action?: React.ReactNode
+  children: React.ReactNode
 }) {
   return (
-    <header className="admin-header">
-      <div>
-        <h1>Voice billing</h1>
-        <p className="muted">
-          {month ? formatMonth(month) : 'Loading…'}
-          {userName && <> · {userName}</>}
-        </p>
-      </div>
+    <main className="admin">
+      <header className="admin-header">
+        <div>
+          <h1>Voice billing</h1>
+          <p className="muted">{userName ?? 'Loading…'}</p>
+        </div>
+        <div className="admin-controls">
+          {month && onMonthChange && (
+            <MonthPicker month={month} onChange={onMonthChange} busy={busy} />
+          )}
+          {action}
+        </div>
+      </header>
       {children}
-    </header>
+    </main>
   )
 }

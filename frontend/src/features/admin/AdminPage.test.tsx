@@ -1,10 +1,13 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientDetail, ClientSummary, ClientsResponse, SsoSession } from '../../types/admin'
 import AdminPage from './AdminPage'
+import { currentMonth, shiftMonth } from './format'
 
 const BLOB = 'U2FsdGVkX1-pretend-session'
+const THIS_MONTH = currentMonth()
+const LAST_MONTH = shiftMonth(THIS_MONTH, -1)
 
 const agencySession: SsoSession = {
   user_name: 'Jerry Miller',
@@ -23,7 +26,7 @@ const mapped: ClientSummary = {
   active: true,
   billing_mode: 'auto_charge',
   twilio_connected: true,
-  rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: '2026-03-01' },
+  rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   usage: {
     ai_minutes: '200.00',
     ai_cost_cents: 1800,
@@ -32,7 +35,7 @@ const mapped: ClientSummary = {
     has_twilio_usage: true,
     estimated_bill_cents: 5500,
     unbillable_calls: 0,
-    twilio_as_of: '2026-03-31T03:30:00Z',
+    twilio_as_of: `${THIS_MONTH}-20T03:30:00Z`,
     twilio_stale: false,
   },
 }
@@ -48,14 +51,8 @@ const unmapped: ClientSummary = {
   usage: null,
 }
 
-const clientsResponse: ClientsResponse = {
-  scope: 'agency',
-  month: '2026-03',
-  clients: [mapped, unmapped],
-}
-
 const detail: ClientDetail = {
-  month: '2026-03',
+  month: THIS_MONTH,
   location_id: 'loc1',
   client_name: 'Cool Breeze HVAC',
   active: true,
@@ -63,8 +60,8 @@ const detail: ClientDetail = {
   retell_agent_ids: ['agent_1'],
   phone_numbers: ['+15551234567'],
   twilio_subaccount_sid: 'ACchild',
-  rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: '2026-03-01' },
-  rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: '2026-03-01' }],
+  rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
+  rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
   usage: mapped.usage!,
   twilio_days: [],
   recent_calls: [],
@@ -95,27 +92,48 @@ function parentIgnores() {
   framedBy(() => {})
 }
 
-function mockApi(overrides: Record<string, unknown> = {}) {
-  const routes: Record<string, unknown> = {
-    '/api/ghl/sso/session/': agencySession,
-    '/api/rebilling/admin/clients/': clientsResponse,
-    '/api/rebilling/admin/clients/loc1/': detail,
-    ...overrides,
-  }
+/**
+ * The admin API, echoing back the month it was asked for — which is what the real endpoints do,
+ * and what the page relies on to tell this period's figures from one still in flight.
+ *
+ * `perMonth` overrides the client returned for a given month.
+ */
+function mockApi(options: { session?: SsoSession; perMonth?: Record<string, ClientSummary> } = {}) {
+  const { session = agencySession, perMonth = {} } = options
+
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
-    // Longest first, so '/clients/loc1/' wins over the '/clients/' prefix.
-    const match = Object.keys(routes)
-      .sort((a, b) => b.length - a.length)
-      .find((route) => url.startsWith(route))
-    if (!match) return Promise.resolve(new Response('', { status: 404 }))
-    return Promise.resolve(
-      new Response(JSON.stringify(routes[match]), {
-        status: 200,
-        headers: { 'Content-Type': 'application/json' },
-      }),
-    )
+    const month = new URL(url, 'http://test').searchParams.get('month') ?? THIS_MONTH
+
+    const json = (body: unknown) =>
+      Promise.resolve(
+        new Response(JSON.stringify(body), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      )
+
+    if (url.startsWith('/api/ghl/sso/session/')) return json(session)
+
+    if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
+      return json({ ...detail, month, usage: (perMonth[month] ?? mapped).usage })
+    }
+
+    if (url.startsWith('/api/rebilling/admin/clients/')) {
+      const body: ClientsResponse = {
+        scope: session.scope,
+        month,
+        clients: session.scope === 'location' ? [mapped] : [perMonth[month] ?? mapped, unmapped],
+      }
+      return json(body)
+    }
+
+    return Promise.resolve(new Response('', { status: 404 }))
   })
+}
+
+function monthSelect() {
+  return screen.getByLabelText('Billing month') as HTMLSelectElement
 }
 
 describe('AdminPage', () => {
@@ -139,8 +157,6 @@ describe('AdminPage', () => {
     render(<AdminPage />)
 
     expect(await screen.findByText('Cool Breeze HVAC')).toBeInTheDocument()
-    // The month and the viewer share one line, so match on the line.
-    expect(screen.getByText(/March 2026/)).toBeInTheDocument()
     expect(screen.getByText(/Jerry Miller/)).toBeInTheDocument()
   })
 
@@ -198,10 +214,7 @@ describe('AdminPage', () => {
 
   it('opens straight into the one client when GHL says this is a sub-account', async () => {
     parentAnswers()
-    mockApi({
-      '/api/ghl/sso/session/': { ...agencySession, active_location: 'loc1', scope: 'location' },
-      '/api/rebilling/admin/clients/': { ...clientsResponse, scope: 'location', clients: [mapped] },
-    })
+    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
 
     render(<AdminPage />)
 
@@ -209,6 +222,128 @@ describe('AdminPage', () => {
     // No way back to a list that this session is not allowed to see.
     expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
   })
+
+  it('shows a skeleton while the clients are loading', async () => {
+    parentAnswers()
+    mockApi()
+
+    render(<AdminPage />)
+
+    expect(screen.getByLabelText('Loading clients')).toBeInTheDocument()
+    await screen.findByText('Cool Breeze HVAC')
+    expect(screen.queryByLabelText('Loading clients')).not.toBeInTheDocument()
+  })
+
+  // --- the period filter ---------------------------------------------------------------
+
+  it('defaults the period to the current billing month', async () => {
+    parentAnswers()
+    const fetchMock = mockApi()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    expect(monthSelect().value).toBe(THIS_MONTH)
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).startsWith(`/api/rebilling/admin/clients/?month=${THIS_MONTH}`),
+      ),
+    ).toBe(true)
+  })
+
+  it('refetches the clients for the period that was chosen', async () => {
+    parentAnswers()
+    const quietMonth: ClientSummary = {
+      ...mapped,
+      usage: { ...mapped.usage!, ai_minutes: '12.00', estimated_bill_cents: 300 },
+    }
+    const fetchMock = mockApi({ perMonth: { [LAST_MONTH]: quietMonth } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('200.00')
+
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    expect(await screen.findByText('12.00')).toBeInTheDocument()
+    expect(screen.getByText('$3.00')).toBeInTheDocument()
+    expect(screen.queryByText('200.00')).not.toBeInTheDocument()
+    expect(
+      fetchMock.mock.calls.some(([url]) =>
+        String(url).startsWith(`/api/rebilling/admin/clients/?month=${LAST_MONTH}`),
+      ),
+    ).toBe(true)
+  })
+
+  it('steps a month at a time with the arrows', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    await user.click(screen.getByLabelText('Previous month'))
+    await waitFor(() => expect(monthSelect().value).toBe(LAST_MONTH))
+
+    await user.click(screen.getByLabelText('Next month'))
+    await waitFor(() => expect(monthSelect().value).toBe(THIS_MONTH))
+  })
+
+  it('will not step past the current month, because nothing is billed in the future', async () => {
+    parentAnswers()
+    mockApi()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    expect(screen.getByLabelText('Next month')).toBeDisabled()
+  })
+
+  it('refetches the open client when the period changes', async () => {
+    parentAnswers()
+    const quietMonth: ClientSummary = {
+      ...mapped,
+      usage: { ...mapped.usage!, ai_minutes: '7.00' },
+    }
+    const fetchMock = mockApi({ perMonth: { [LAST_MONTH]: quietMonth } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+    await screen.findByText('Mapping')
+
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some(([url]) =>
+          String(url).startsWith(`/api/rebilling/admin/clients/loc1/?month=${LAST_MONTH}`),
+        ),
+      ).toBe(true),
+    )
+    const label = await screen.findByText('AI minutes')
+    expect(within(label.closest('.tile') as HTMLElement).getByText('7.00')).toBeInTheDocument()
+  })
+
+  it('never shows one period under another period heading', async () => {
+    parentAnswers()
+    const fetchMock = mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('200.00')
+
+    // The request for last month never resolves, so the page must keep waiting rather than
+    // leave this month's numbers on screen under the new label.
+    fetchMock.mockImplementation(() => new Promise(() => {}))
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    expect(await screen.findByLabelText('Loading clients')).toBeInTheDocument()
+    expect(screen.queryByText('200.00')).not.toBeInTheDocument()
+  })
+
+  // --- standalone preview --------------------------------------------------------------
 
   it('falls back to a marked sample preview when there is no GoHighLevel to ask', async () => {
     // Framed, but nothing answers: the handshake times out and the preview takes over.
@@ -244,9 +379,25 @@ describe('AdminPage', () => {
 
     expect(await screen.findByText('Mapping')).toBeInTheDocument()
     expect(screen.getByText('agent_polar_peak')).toBeInTheDocument()
-    // The mid-month rate change is in the sample, so the rate history has something to show.
     expect(screen.getByText('Rates')).toBeInTheDocument()
   })
+
+  it('filters the preview by period too, without calling the API', async () => {
+    const fetchMock = mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    expect(await screen.findByText('198.40')).toBeInTheDocument()
+
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    await waitFor(() => expect(monthSelect().value).toBe(LAST_MONTH))
+    // Different period, different figures — and still nothing fetched.
+    expect(screen.queryByText('198.40')).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  // --- failures ------------------------------------------------------------------------
 
   it('says so when GoHighLevel sends a session the backend refuses', async () => {
     parentAnswers()
@@ -254,27 +405,25 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
 
-    expect(
-      await screen.findByText('could not accept', { exact: false }),
-    ).toBeInTheDocument()
+    expect(await screen.findByText('could not accept', { exact: false })).toBeInTheDocument()
     // A refused session is a misconfiguration, not a reason to show samples.
     expect(screen.queryByText('Standalone preview.', { exact: false })).not.toBeInTheDocument()
   })
 
-  it('shows a skeleton while the clients are loading', async () => {
-    parentAnswers()
-    mockApi()
-
-    render(<AdminPage />)
-
-    expect(screen.getByLabelText('Loading clients')).toBeInTheDocument()
-    await screen.findByText('Cool Breeze HVAC')
-    expect(screen.queryByLabelText('Loading clients')).not.toBeInTheDocument()
-  })
-
   it('reports a failed load rather than rendering an empty page', async () => {
     parentAnswers()
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 500 }))
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.startsWith('/api/ghl/sso/session/')) {
+        return Promise.resolve(
+          new Response(JSON.stringify(agencySession), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+      }
+      return Promise.resolve(new Response('', { status: 500 }))
+    })
 
     render(<AdminPage />)
 

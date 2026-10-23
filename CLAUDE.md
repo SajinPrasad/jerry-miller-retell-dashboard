@@ -71,6 +71,12 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
 - **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
   (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
   Loading states are skeletons shaped like the content (`Skeleton.tsx`), not text.
+- **Period filter** (`MonthPicker.tsx`): arrows to step a month, a list to jump, bounded at the
+  current month (nothing is billed in the future) and at the oldest listed month (so the select
+  can never hold a value that is not one of its options). It drives both the list and the open
+  client's detail, including its daily Twilio rows and recent calls, through the endpoints'
+  `?month=`. The page only renders figures whose `month` matches the one selected, so a slow
+  response never leaves one period's numbers under another period's heading.
 - **Standalone preview (temporary).** Opened outside GHL - directly on an IP, before the domain
   and Custom Page exist - the page does not dead-end. It renders **bundled sample data**
   (`demoData.ts`) behind an amber "Standalone preview" banner, and **never calls the admin API**,

@@ -345,3 +345,70 @@
 .admin .banner strong {
   font-weight: 600;
 }
+
+/* --- period filter --- */
+
+.admin .admin-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.admin .month-picker {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--card);
+}
+
+.admin .month-picker .step {
+  border: 0;
+  background: none;
+  padding: 0 0.6rem;
+  font: inherit;
+  font-size: 1.1rem;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.admin .month-picker .step:hover:not(:disabled) {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.admin .month-picker .step:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.admin .month-select {
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: var(--card);
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  min-width: 11rem;
+}
+
+.admin .month-select:disabled {
+  color: var(--muted);
+  cursor: progress;
+}
+
+.admin .month-picker:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.admin .month-select:focus-visible,
+.admin .month-picker .step:focus-visible {
+  outline: 0;
+}

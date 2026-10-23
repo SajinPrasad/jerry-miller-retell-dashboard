@@ -20,7 +20,7 @@ export default function ClientsTable({ clients, onSelect }: Props) {
           <th className="num">AI minutes</th>
           <th className="num">Call minutes</th>
           <th className="num">Rates</th>
-          <th className="num">Est. this month</th>
+          <th className="num">Estimated</th>
           <th className="num">Cost</th>
           <th className="num">Margin</th>
         </tr>

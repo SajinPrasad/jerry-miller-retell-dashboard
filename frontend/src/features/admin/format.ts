@@ -54,3 +54,32 @@ export function marginCents(
 ): number | null {
   return estimated === null ? null : estimated - aiCost - callCost
 }
+
+
+/**
+ * The current billing month, in UTC.
+ *
+ * UTC because that is what the backend defaults to (`TIME_ZONE` is UTC and Twilio's days are
+ * GMT), so the picker and the server agree about which month "this month" is even when the
+ * viewer's local date has already rolled over.
+ */
+export function currentMonth(): string {
+  const now = new Date()
+  return asMonth(now.getUTCFullYear(), now.getUTCMonth() + 1)
+}
+
+/** `month` moved by `delta` months, e.g. shiftMonth('2026-01', -1) -> '2025-12'. */
+export function shiftMonth(month: string, delta: number): string {
+  const [year, number] = month.split('-').map(Number)
+  const moved = new Date(Date.UTC(year, number - 1 + delta, 1))
+  return asMonth(moved.getUTCFullYear(), moved.getUTCMonth() + 1)
+}
+
+/** The selectable billing months, newest first. Never the future: nothing is billed there. */
+export function recentMonths(count = 12, from: string = currentMonth()): string[] {
+  return Array.from({ length: count }, (_, index) => shiftMonth(from, -index))
+}
+
+function asMonth(year: number, number: number): string {
+  return `${year}-${String(number).padStart(2, '0')}`
+}
