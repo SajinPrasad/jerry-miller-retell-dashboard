@@ -1,5 +1,15 @@
 import { getSessionBlob } from '../lib/ghlSession'
 
+export class ApiError extends Error {
+  readonly status: number
+
+  constructor(status: number, path: string) {
+    super(`API ${status}: ${path}`)
+    this.name = 'ApiError'
+    this.status = status
+  }
+}
+
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const session = getSessionBlob()
   const res = await fetch(`/api${path}`, {
@@ -12,6 +22,8 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
       ...init?.headers,
     },
   })
-  if (!res.ok) throw new Error(`API ${res.status}: ${path}`)
+  // The status matters to the caller: a 401 means the session was refused, which is a different
+  // thing from the request failing.
+  if (!res.ok) throw new ApiError(res.status, path)
   return res.json() as Promise<T>
 }

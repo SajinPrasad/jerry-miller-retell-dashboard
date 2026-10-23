@@ -70,6 +70,16 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   reads in `services.py` grow into Phase 3.
 - **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
   (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
+  Loading states are skeletons shaped like the content (`Skeleton.tsx`), not text.
+- **Standalone preview (temporary).** Opened outside GHL - directly on an IP, before the domain
+  and Custom Page exist - the page does not dead-end. It renders **bundled sample data**
+  (`demoData.ts`) behind an amber "Standalone preview" banner, and **never calls the admin API**,
+  so previewing cannot expose a real client's rates or call history. A real GHL session always
+  takes precedence; `window.parent === window` is what distinguishes "not framed" from "framed
+  but unanswered". A session GHL *did* send that the backend refuses (401/403) still shows an
+  error, because that is a misconfiguration and samples would hide it. **The backend was not
+  weakened: it still requires a valid session for every admin request.** Delete `demoData.ts`
+  and the preview branch in `AdminPage` once the page is reached through GHL for good.
 - **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
   seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The

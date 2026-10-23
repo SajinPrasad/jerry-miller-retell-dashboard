@@ -264,3 +264,84 @@
     margin-bottom: 0.5rem;
   }
 }
+
+/* --- loading skeletons --- */
+
+.admin .sk {
+  display: block;
+  height: 0.85rem;
+  margin: 0.25rem 0;
+  border-radius: 6px;
+  /* Green-tinted base with a brighter green sweep, so the wait reads as the same product as
+     the loaded page rather than as generic grey boxes. The band is wide and the track only
+     twice the width, so the highlight is visible on short bars too. */
+  background: linear-gradient(90deg, #eef5f1 0%, #cbebd9 50%, #eef5f1 100%);
+  background-size: 200% 100%;
+  animation: sk-shimmer 1.4s ease-in-out infinite;
+}
+
+.admin .num > .sk {
+  margin-left: auto;
+}
+
+.admin .sk-pill {
+  display: inline-block;
+  width: 64px;
+  height: 1.1rem;
+  border-radius: 999px;
+  margin-right: 0.35rem;
+}
+
+.admin .sk-gap {
+  height: 0.4rem;
+}
+
+.admin .sk-row {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  padding: 0.55rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin .sk-row:last-child {
+  border-bottom: 0;
+}
+
+.admin .sk-table tbody td {
+  vertical-align: middle;
+}
+
+/* Hold the name column open; otherwise the table collapses it around the placeholder bars. */
+.admin .sk-table td:first-child,
+.admin .sk-table th:first-child {
+  min-width: 190px;
+}
+
+@keyframes sk-shimmer {
+  0% {
+    background-position: 100% 50%;
+  }
+
+  100% {
+    background-position: 0 50%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin .sk {
+    animation: none;
+  }
+}
+
+/* --- standalone preview notice --- */
+
+.admin .banner.warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+.admin .banner strong {
+  font-weight: 600;
+}

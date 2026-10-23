@@ -70,14 +70,29 @@ const detail: ClientDetail = {
   recent_calls: [],
 }
 
-/** Answer the page's handshake the way the GHL parent frame would. */
+/**
+ * Stand in for the GHL parent frame.
+ *
+ * `window.parent` has to differ from `window`, because that is how the page tells "framed by
+ * GoHighLevel" from "opened directly in a browser" — in jsdom they are the same object.
+ */
+function framedBy(postMessage: (message: unknown) => void) {
+  vi.spyOn(window, 'parent', 'get').mockReturnValue({ postMessage } as unknown as Window)
+}
+
+/** A parent that answers the handshake, the way GoHighLevel does. */
 function parentAnswers(payload: unknown = BLOB) {
-  vi.spyOn(window.parent, 'postMessage').mockImplementation((message: unknown) => {
+  framedBy((message) => {
     if ((message as { message?: string })?.message !== 'REQUEST_USER_DATA') return
     window.dispatchEvent(
       new MessageEvent('message', { data: { message: 'REQUEST_USER_DATA_RESPONSE', payload } }),
     )
   })
+}
+
+/** A parent that is there but never replies. */
+function parentIgnores() {
+  framedBy(() => {})
 }
 
 function mockApi(overrides: Record<string, unknown> = {}) {
@@ -195,17 +210,66 @@ describe('AdminPage', () => {
     expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
   })
 
-  it('explains itself when it is not running inside GoHighLevel', async () => {
-    // No parent listener, so the handshake goes unanswered and the timeout fires.
-    vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {})
-    mockApi()
+  it('falls back to a marked sample preview when there is no GoHighLevel to ask', async () => {
+    // Framed, but nothing answers: the handshake times out and the preview takes over.
+    parentIgnores()
+    const fetchMock = mockApi()
 
     render(<AdminPage />)
     await vi.advanceTimersByTimeAsync(10_000)
 
+    expect(await screen.findByText('Standalone preview.', { exact: false })).toBeInTheDocument()
+    expect(screen.getByText('Cool Breeze HVAC')).toBeInTheDocument()
+    // The preview must never reach the authenticated API.
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('previews immediately when the page is not framed at all', async () => {
+    // window.parent === window when opened directly in a browser, so there is nothing to wait
+    // for and no timeout to sit through.
+    const fetchMock = mockApi()
+
+    render(<AdminPage />)
+
+    expect(await screen.findByText('Standalone preview.', { exact: false })).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('can open a client in the preview', async () => {
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+
+    expect(await screen.findByText('Mapping')).toBeInTheDocument()
+    expect(screen.getByText('agent_polar_peak')).toBeInTheDocument()
+    // The mid-month rate change is in the sample, so the rate history has something to show.
+    expect(screen.getByText('Rates')).toBeInTheDocument()
+  })
+
+  it('says so when GoHighLevel sends a session the backend refuses', async () => {
+    parentAnswers()
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('', { status: 401 }))
+
+    render(<AdminPage />)
+
     expect(
-      await screen.findByText('Open this page from inside GoHighLevel.', { exact: false }),
+      await screen.findByText('could not accept', { exact: false }),
     ).toBeInTheDocument()
+    // A refused session is a misconfiguration, not a reason to show samples.
+    expect(screen.queryByText('Standalone preview.', { exact: false })).not.toBeInTheDocument()
+  })
+
+  it('shows a skeleton while the clients are loading', async () => {
+    parentAnswers()
+    mockApi()
+
+    render(<AdminPage />)
+
+    expect(screen.getByLabelText('Loading clients')).toBeInTheDocument()
+    await screen.findByText('Cool Breeze HVAC')
+    expect(screen.queryByLabelText('Loading clients')).not.toBeInTheDocument()
   })
 
   it('reports a failed load rather than rendering an empty page', async () => {
