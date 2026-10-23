@@ -39,8 +39,41 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **Model** `GHLOAuthToken` (`apps/ghl/models.py`), fixed fields: `company_id`, `location_id` (blank on the agency row), `name`, `is_agency`, `is_active`, `access_token`, `refresh_token` (agency row only), `expires_at`. Tokens are Fernet-encrypted (`FIELD_ENCRYPTION_KEY`).
 - **Service** `GHLOAuthService` (`apps/ghl/services.py`): `install_url`, `exchange_code`, `get_agency`, `get_agency_token` (refreshes within 5 min of expiry; refresh tokens are single-use, so it locks the row), `get_location_token(location_id)` (re-mints from the agency token when expiring), `sync_locations` (`GET /oauth/installed-locations`, then `POST /oauth/locationToken` per new or expired sub-account; deactivates sub-accounts no longer listed).
 - **Endpoints:** `GET /api/ghl/onboarding/` (install link, agency, sub-accounts; no tokens), `POST /api/ghl/onboarding/sync/`, `GET /api/oauth/callback/`.
-- **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts.
+- **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts. The Custom Page needs the **Shared Secret** (`GHL_APP_SSO_KEY`); SSO is not an OAuth scope, so `GHL_SCOPES` is unchanged.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
+
+## Agency admin page (GHL Custom Page, read-only, built)
+
+The embedded admin interface Jerry opens from GHL's left nav: onboarded clients, their rates and
+their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and is not built.
+
+- **How GHL identifies the viewer.** The page runs in a GHL iframe, posts
+  `{message: 'REQUEST_USER_DATA'}` to `window.parent`, and gets `REQUEST_USER_DATA_RESPONSE` with
+  an encrypted blob in `payload`. `apps/ghl/sso.py` opens it: OpenSSL-compatible AES-256-CBC
+  (`Salted__` + 8-byte salt, key/IV from EVP_BytesToKey with MD5) using `GHL_APP_SSO_KEY`, the
+  app's **Shared Secret** (Advanced Settings > Auth). No new dependency - `cryptography` and
+  `hashlib` already ship. Tests pin the derivation against real `openssl enc` vectors.
+- **Scope comes from `activeLocation`, never `type`.** GHL reports `type: "agency"` even inside a
+  sub-account, so reading `type` would show one client every other client's numbers. There is no
+  `locationId` field.
+- **The blob is the credential.** It is sent on every admin request in `X-GHL-Session` and opened
+  per request - no cookie (the iframe is cross-site), no JWT, no session store. The session's
+  `companyId` must match the stored agency row, which is a real agency check the install path
+  cannot make. 401 unreadable, 403 wrong agency.
+- **Endpoints:** `POST /api/ghl/sso/session/` (who is viewing), `GET /api/rebilling/admin/clients/`
+  and `GET /api/rebilling/admin/clients/<location_id>/`, both taking `?month=YYYY-MM` (default:
+  this month). The list is every **sub-account from Task 1** left-joined to `ClientMapping`, so an
+  onboarded-but-unmapped client shows as `mapped: false` with null usage - "nobody set this up" must
+  not read as "used nothing".
+- **Money shown is an estimate**, `minutes x the current rate`, labelled as such in the UI. Phase 3
+  applies the rate in effect on each call's day and owns `Bill`/`BillLine`. Don't let the admin
+  reads in `services.py` grow into Phase 3.
+- **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
+  (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
+- **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
+  seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
+  `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
+  backend verifies a dev blob exactly like a real one - there is no server-side bypass.
 
 ## Voice rebilling (Task 4, Phases 1, 2 and 2b built)
 
@@ -71,6 +104,7 @@ backend/                Django 5.2 + DRF
   requirements/         *.in (edit) -> *.txt (pip-compile output, committed)
 frontend/               React + TypeScript (Vite); src/{api,components,features,hooks,lib,types}
                         features/onboarding = GHL connect page (route /onboarding)
+                        features/admin      = GHL Custom Page (route /admin)
 local_folder/           Untracked local files (gitignored); PDFs in pdfs/, Task 4 plan in plan.md
 ```
 

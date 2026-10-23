@@ -10,24 +10,30 @@ Docs: https://docs.retellai.com/features/webhook-overview
       https://www.twilio.com/docs/usage/api/usage-record
 """
 
+import calendar
 import logging
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
 
 import httpx
 from django.conf import settings
-from django.db.models import Q
+from django.db.models import Max, Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.ghl.models import GHLOAuthToken
+
 from .exceptions import RetellError, TwilioError
 from .models import (
+    BILLABLE,
     CALLS,
     UNBILLABLE,
     ClientMapping,
+    RateHistory,
     RetellCall,
     TwilioUsageDay,
     UnassignedCall,
+    billable_minutes,
     billing_state,
 )
 
@@ -416,3 +422,241 @@ def _as_of(value: str | None) -> datetime | None:
         logger.warning('twilio: could not read as_of %r', value)
         return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
+
+
+# --------------------------------------------------------------------------------------------
+# Reads for the embedded admin page.
+#
+# Everything below is read-only and derived from what the two ingest paths already stored. It
+# deliberately stops short of Phase 3: the money it reports is an estimate at the client's
+# current rate, not a bill. Phase 3 applies the rate in effect on each call's day and each
+# usage date, and owns `Bill`/`BillLine`. Keep that line where it is.
+# --------------------------------------------------------------------------------------------
+
+# How many of a client's most recent calls the detail view shows.
+RECENT_CALL_LIMIT = 50
+# How stale Twilio's own freshness stamp can get before the page flags it. The pull runs daily,
+# so two days means at least one run did nothing.
+TWILIO_STALE_AFTER_DAYS = 2
+
+
+def month_window(month: str | None) -> tuple[date, date]:
+    """First and last day of a billing month. `month` is 'YYYY-MM'; absent means this month.
+
+    Raises `ValueError` on anything else, so a mistyped month is a 400 rather than silently
+    becoming a different month's numbers.
+    """
+    if not month:
+        today = timezone.now().date()
+        year, number = today.year, today.month
+    else:
+        try:
+            year, number = (int(part) for part in month.split('-', 1))
+        except ValueError as exc:
+            raise ValueError('month must look like YYYY-MM.') from exc
+        if not 1 <= number <= 12 or not 2000 <= year <= 2100:
+            raise ValueError('month must look like YYYY-MM.')
+    return date(year, number, 1), date(year, number, calendar.monthrange(year, number)[1])
+
+
+def client_rows(start: date, end: date, location_id: str | None = None) -> list[dict]:
+    """Every onboarded sub-account, with its mapping, rates and usage for the window.
+
+    Sub-accounts come from Task 1's sync, so a client who has been onboarded but never mapped
+    still appears - with `mapped: False`. That is the whole point of the column: it separates
+    "nobody has set this client up" from "this client used nothing".
+    """
+    mappings = {m.location_id: m for m in ClientMapping.objects.all()}
+    locations = GHLOAuthToken.objects.filter(is_agency=False).order_by('name')
+
+    rows = []
+    seen = set()
+    for location in locations:
+        if location_id and location.location_id != location_id:
+            continue
+        seen.add(location.location_id)
+        rows.append(
+            _client_row(
+                location.location_id,
+                location.name,
+                mappings.get(location.location_id),
+                start,
+                end,
+            )
+        )
+
+    # A mapping whose sub-account the sync has not seen still bills, so it must still be visible.
+    for mapped_location, mapping in mappings.items():
+        if mapped_location in seen or (location_id and mapped_location != location_id):
+            continue
+        rows.append(_client_row(mapped_location, '', mapping, start, end))
+
+    rows.sort(key=lambda row: (row['client_name'] or '').lower())
+    return rows
+
+
+def _client_row(
+    location_id: str, ghl_name: str, mapping: ClientMapping | None, start: date, end: date
+) -> dict:
+    if mapping is None:
+        # No usage object rather than a zero one: an unmapped client cannot have usage, and
+        # "0.00 minutes" would read as a client who made no calls.
+        return {
+            'location_id': location_id,
+            'client_name': ghl_name,
+            'mapped': False,
+            'active': None,
+            'billing_mode': None,
+            'twilio_connected': False,
+            'rates': None,
+            'usage': None,
+        }
+    return {
+        'location_id': location_id,
+        'client_name': mapping.client_name or ghl_name,
+        'mapped': True,
+        'active': mapping.active,
+        'billing_mode': mapping.billing_mode,
+        'twilio_connected': bool(mapping.twilio_subaccount_sid),
+        'rates': _rate_row(current_rate(mapping, end)),
+        'usage': usage_summary(mapping, start, end),
+    }
+
+
+def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
+    """One client: how they are mapped, what they are charged, and what they used."""
+    return {
+        'location_id': mapping.location_id,
+        'client_name': mapping.client_name,
+        'active': mapping.active,
+        'billing_mode': mapping.billing_mode,
+        'retell_agent_ids': mapping.retell_agent_ids or [],
+        'phone_numbers': mapping.phone_numbers or [],
+        'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
+        'rates': _rate_row(current_rate(mapping, end)),
+        'rate_history': [_rate_row(rate) for rate in mapping.rates.all()],
+        'usage': usage_summary(mapping, start, end),
+        'twilio_days': [
+            {
+                'usage_date': day.usage_date.isoformat(),
+                'category': day.category,
+                'call_count': day.call_count,
+                'usage_minutes': _minutes_str(day.usage_minutes),
+                'twilio_price_cents': day.twilio_price_cents,
+                'as_of': day.as_of.isoformat() if day.as_of else None,
+            }
+            for day in TwilioUsageDay.objects.filter(
+                client=mapping, usage_date__gte=start, usage_date__lte=end
+            )
+        ],
+        'recent_calls': [
+            {
+                'call_id': call.call_id,
+                'agent_id': call.agent_id,
+                'from_number': call.from_number,
+                'to_number': call.to_number,
+                'direction': call.direction,
+                'started_at': call.started_at.isoformat() if call.started_at else None,
+                'duration_ms': call.duration_ms,
+                'billable_minutes': _minutes_str(call.billable_minutes),
+                'retell_cost_cents': call.retell_cost_cents,
+                'call_status': call.call_status,
+                'billing_status': call.billing_status,
+                'unbillable_reason': call.unbillable_reason,
+            }
+            for call in _calls_in_window(mapping, start, end)[:RECENT_CALL_LIMIT]
+        ],
+    }
+
+
+def usage_summary(mapping: ClientMapping, start: date, end: date) -> dict:
+    """What one client used in the window, per source, with Jerry's cost against it."""
+    billable = _calls_in_window(mapping, start, end).filter(billing_status=BILLABLE)
+    # Rounding is per call, so the minutes are summed in Python rather than by the database.
+    ai_minutes = sum(
+        (billable_minutes(ms) for ms in billable.values_list('duration_ms', flat=True)),
+        Decimal(0),
+    )
+    ai_cost_cents = billable.aggregate(total=Sum('retell_cost_cents'))['total'] or 0
+    unbillable_calls = (
+        _calls_in_window(mapping, start, end).filter(billing_status=UNBILLABLE).count()
+    )
+
+    days = TwilioUsageDay.objects.filter(client=mapping, usage_date__gte=start, usage_date__lte=end)
+    twilio = days.aggregate(
+        minutes=Sum('usage_minutes'), cents=Sum('twilio_price_cents'), as_of=Max('as_of')
+    )
+    # Twilio has already rounded each call into these minutes. Never round them again.
+    call_minutes = twilio['minutes'] or Decimal(0)
+
+    rate = current_rate(mapping, end)
+    estimated = None
+    if rate is not None:
+        estimated = int(
+            (
+                ai_minutes * rate.voice_rate_cents + call_minutes * rate.call_rate_cents
+            ).to_integral_value(rounding=ROUND_HALF_UP)
+        )
+
+    return {
+        'ai_minutes': _minutes_str(ai_minutes),
+        'ai_cost_cents': ai_cost_cents,
+        'call_minutes': _minutes_str(call_minutes),
+        'call_cost_cents': twilio['cents'] or 0,
+        'has_twilio_usage': days.exists(),
+        # An estimate at the current rate, not a bill: see the note at the top of this section.
+        'estimated_bill_cents': estimated,
+        'unbillable_calls': unbillable_calls,
+        'twilio_as_of': twilio['as_of'].isoformat() if twilio['as_of'] else None,
+        'twilio_stale': _is_stale(twilio['as_of']),
+    }
+
+
+def current_rate(mapping: ClientMapping, end: date) -> RateHistory | None:
+    """The rate in effect on the window's last day, or today if the window has not ended.
+
+    `RateHistory` is ordered newest first, so the first row starting on or before that day is
+    the one in effect. No row at all means no rate has been set for this client yet.
+    """
+    as_of = min(end, timezone.now().date())
+    return mapping.rates.filter(start_date__lte=as_of).first()
+
+
+def _minutes_str(minutes: Decimal) -> str:
+    """Minutes as a fixed two-decimal string, which is what the page renders.
+
+    Two places because that is `TwilioUsageDay.usage_minutes`' own precision, and because a
+    database `Sum` drops trailing zeros, so without this one client reads `10.5` and the next
+    `100.00`. This is display only: the estimate above is worked out from the full value, and
+    Phase 3 bills from the stored rows, not from this string.
+    """
+    return str(minutes.quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+
+
+def _rate_row(rate: RateHistory | None) -> dict | None:
+    if rate is None:
+        return None
+    return {
+        'voice_rate_cents': rate.voice_rate_cents,
+        'call_rate_cents': rate.call_rate_cents,
+        'start_date': rate.start_date.isoformat(),
+    }
+
+
+def _calls_in_window(mapping: ClientMapping, start: date, end: date):
+    return RetellCall.objects.filter(
+        client=mapping,
+        started_at__gte=datetime.combine(start, time.min, tzinfo=UTC),
+        started_at__lt=datetime.combine(end + timedelta(days=1), time.min, tzinfo=UTC),
+    )
+
+
+def _is_stale(as_of: datetime | None) -> bool:
+    """Whether Twilio's freshness stamp has fallen behind the daily pull.
+
+    No stamp at all is not stale: it means no Twilio usage was read, which the page shows as a
+    dash rather than as a warning.
+    """
+    if as_of is None:
+        return False
+    return as_of < timezone.now() - timedelta(days=TWILIO_STALE_AFTER_DAYS)

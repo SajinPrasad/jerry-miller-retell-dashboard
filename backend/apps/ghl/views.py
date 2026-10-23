@@ -7,6 +7,7 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import sso
 from .exceptions import GHLError, GHLNotConnectedError
 from .models import GHLOAuthToken
 from .serializers import GHLOAuthTokenSerializer
@@ -67,3 +68,28 @@ class OAuthCallbackView(APIView):
             logger.exception('ghl: install failed')
             return _redirect_to_onboarding(error='install_failed')
         return _redirect_to_onboarding(status='connected')
+
+
+class SSOSessionView(APIView):
+    """POST /api/ghl/sso/session/: open the session blob the embedded admin page got from GHL.
+
+    The page calls this once on load so it knows who is viewing and which view to render. The
+    blob itself is the authentication, so nothing else guards this.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        context = sso.context_from_blob(request.data.get('key') or '')
+        return Response(
+            {
+                'user_name': context.user_name,
+                'email': context.email,
+                'role': context.role,
+                'is_agency_owner': context.is_agency_owner,
+                'company_id': context.company_id,
+                'active_location': context.active_location or None,
+                'scope': context.scope,
+            }
+        )

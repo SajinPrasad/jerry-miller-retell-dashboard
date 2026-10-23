@@ -1,0 +1,266 @@
+.admin {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2rem 16px 4rem;
+}
+
+.admin-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.admin h1 {
+  margin: 0 0 0.25rem;
+  font-size: 1.5rem;
+  letter-spacing: -0.01em;
+}
+
+.admin h2 {
+  margin: 0 0 0.75rem;
+  font-size: 1.05rem;
+}
+
+.admin p {
+  margin: 0 0 0.5rem;
+}
+
+.admin .muted {
+  color: var(--muted);
+}
+
+.admin .small {
+  font-size: 0.85rem;
+}
+
+.admin .strong {
+  font-weight: 600;
+}
+
+.admin .card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 1.25rem;
+  margin-top: 1.25rem;
+  box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
+}
+
+.admin .banner {
+  padding: 0.75rem 1rem;
+  border-radius: 10px;
+  margin-top: 1rem;
+  border: 1px solid;
+}
+
+.admin .banner.error {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+  color: var(--err-text);
+}
+
+/* --- pills --- */
+
+.admin .pill {
+  display: inline-block;
+  padding: 0.1rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #f9fafb;
+  color: var(--muted);
+  font-size: 0.78rem;
+  white-space: nowrap;
+  margin-right: 0.35rem;
+}
+
+.admin .pill.ok {
+  background: var(--ok-bg);
+  border-color: var(--ok-border);
+  color: var(--ok-text);
+}
+
+.admin .pill.warn {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn-text);
+}
+
+/* --- buttons --- */
+
+.admin .button {
+  display: inline-block;
+  padding: 0.5rem 1rem;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.admin .button:hover {
+  background: var(--accent-strong);
+}
+
+.admin .button.ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.admin .button.ghost:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent-strong);
+}
+
+.admin .link {
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--accent-strong);
+  cursor: pointer;
+  text-align: left;
+}
+
+.admin .link:hover {
+  text-decoration: underline;
+}
+
+/* --- tables --- */
+
+.admin table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.admin th,
+.admin td {
+  text-align: left;
+  padding: 0.6rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.admin th {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom-width: 2px;
+}
+
+.admin td.num,
+.admin th.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin tbody tr.clickable:hover {
+  background: var(--accent-soft);
+}
+
+.admin .clients .name {
+  display: block;
+  font-weight: 600;
+}
+
+/* The location id always sits on its own line under the name, whatever the name's length. */
+.admin .clients td:first-child code {
+  display: block;
+  width: fit-content;
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  color: var(--muted);
+}
+
+/* Keep "$0.25 AI" and "$0.05 call" each on one line instead of breaking mid-value. */
+.admin td.rates {
+  white-space: nowrap;
+}
+
+.admin code {
+  font-size: 0.82em;
+  background: #f9fafb;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 0.05rem 0.3rem;
+  margin-right: 0.3rem;
+}
+
+/* --- summary tiles --- */
+
+.admin .tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 1rem 0 0.75rem;
+}
+
+.admin .tile {
+  flex: 1 1 140px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem 0.9rem;
+  background: #fff;
+}
+
+.admin .tile.accent {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.admin .tile-label {
+  display: block;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.admin .tile-value {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 1.25rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.admin .tile.accent .tile-value {
+  color: var(--accent-strong);
+}
+
+/* --- definition lists --- */
+
+.admin .facts {
+  display: grid;
+  grid-template-columns: minmax(140px, max-content) 1fr;
+  gap: 0.5rem 1rem;
+  margin: 0;
+}
+
+.admin .facts dt {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.admin .facts dd {
+  margin: 0;
+}
+
+@media (max-width: 640px) {
+  .admin .facts {
+    grid-template-columns: 1fr;
+    gap: 0.15rem;
+  }
+
+  .admin .facts dd {
+    margin-bottom: 0.5rem;
+  }
+}

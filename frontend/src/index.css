@@ -1,34 +1,31 @@
 :root {
-  --text: #1f2430;
-  --muted: #646b7b;
-  --bg: #f6f7f9;
+  --text: #111827;
+  --muted: #6b7280;
+  --bg: #fff;
   --card: #fff;
-  --border: #dfe2e8;
-  --accent: #2563eb;
-  --accent-text: #fff;
-  --ok-bg: #e7f6ec;
-  --ok-border: #2e9e4f;
-  --err-bg: #fdecec;
-  --err-border: #d64545;
+  --border: #e5e7eb;
 
-  color-scheme: light dark;
+  /* Green is the product accent: buttons, highlights and healthy status pills. */
+  --accent: #16a34a;
+  --accent-strong: #15803d;
+  --accent-soft: #f0fdf4;
+  --accent-text: #fff;
+
+  --ok-bg: #f0fdf4;
+  --ok-border: #16a34a;
+  --ok-text: #166534;
+  --warn-bg: #fffbeb;
+  --warn-border: #d97706;
+  --warn-text: #92400e;
+  --err-bg: #fef2f2;
+  --err-border: #dc2626;
+  --err-text: #991b1b;
+
+  /* The page is embedded in GoHighLevel's own light UI, so it stays light. */
+  color-scheme: light;
   font: 16px/1.5 system-ui, 'Segoe UI', Roboto, sans-serif;
   color: var(--text);
   background: var(--bg);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --text: #e8eaf0;
-    --muted: #9aa1b2;
-    --bg: #12141a;
-    --card: #1b1e27;
-    --border: #2d3240;
-    --accent: #5b8cff;
-    --accent-text: #0b1020;
-    --ok-bg: #12301d;
-    --err-bg: #381616;
-  }
 }
 
 * {

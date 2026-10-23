@@ -119,6 +119,10 @@ GHL_SCOPES = env(
         ]
     ),
 )
+# The app's Shared Secret (Advanced Settings > Auth). It decrypts the session blob the
+# embedded admin Custom Page receives from GHL. Server-side only, never sent to the browser.
+GHL_APP_SSO_KEY = env('GHL_APP_SSO_KEY', default='')
+
 # Fernet key that encrypts OAuth tokens at rest (see .env.example to generate one).
 FIELD_ENCRYPTION_KEY = env('FIELD_ENCRYPTION_KEY', default='')
 
