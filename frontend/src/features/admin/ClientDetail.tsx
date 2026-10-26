@@ -1,12 +1,14 @@
 import { useState } from 'react'
-import type { ClientDetail as Detail } from '../../types/admin'
+import type { ClientDetail as Detail, RecentCall } from '../../types/admin'
 import {
   DASH,
   centsFromInput,
   centsToInput,
   formatCents,
   formatDate,
+  formatDateTime,
   formatMinutes,
+  formatPhone,
   formatRate,
   marginCents,
 } from './format'
@@ -195,40 +197,76 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
       <section className="card">
         <h2>Recent AI calls</h2>
         {detail.recent_calls.length > 0 ? (
-          <table className="calls-table">
-            <thead>
-              <tr>
-                <th>Started</th>
-                <th>Direction</th>
-                <th className="num">Minutes</th>
-                <th className="num">Billing</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.recent_calls.map((call) => (
-                <tr key={call.call_id}>
-                  <td>{formatDate(call.started_at)}</td>
-                  <td className="direction">{call.direction || DASH}</td>
-                  <td className="num">{formatMinutes(call.billable_minutes)}</td>
-                  <td className="num">
-                    {call.billing_status === 'billable' ? (
-                      <span className="pill ok">Billable</span>
-                    ) : (
-                      <span className="pill warn" title={call.unbillable_reason}>
-                        {call.unbillable_reason || 'Unbillable'}
-                      </span>
-                    )}
-                  </td>
+          <>
+            <p className="muted small">
+              Times are UTC, the same day the call is billed under. Cost is what Retell charges for
+              the call.
+            </p>
+            <table className="calls-table">
+              <thead>
+                <tr>
+                  <th>Date &amp; time</th>
+                  <th>Phone number</th>
+                  <th>Direction</th>
+                  <th className="num">Duration</th>
+                  <th className="num">Cost</th>
+                  <th className="num">Status</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {detail.recent_calls.map((call) => (
+                  <tr key={call.call_id}>
+                    <td>{formatDateTime(call.started_at)}</td>
+                    <td>{formatPhone(customerNumber(call))}</td>
+                    <td className="direction">{call.direction || DASH}</td>
+                    <td className="num">{formatMinutes(durationMinutes(call))}</td>
+                    <td className="num muted">{formatCents(call.retell_cost_cents)}</td>
+                    <td className="num">
+                      {call.billing_status === 'billable' ? (
+                        <span className="pill ok">Billable</span>
+                      ) : (
+                        <span className="pill warn" title={call.unbillable_reason}>
+                          {unbillableLabel(call)}
+                        </span>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         ) : (
           <p className="muted">No AI calls recorded this month.</p>
         )}
       </section>
     </>
   )
+}
+
+/**
+ * The other end of the call: the person, not the client's own line. Which field that is depends
+ * on the direction, the same way the webhook decides which number to match a client on.
+ */
+function customerNumber(call: RecentCall): string {
+  return call.direction === 'outbound' ? call.to_number : call.from_number
+}
+
+/** How long the call ran. Null when Retell has not reported a duration — which is also why it
+ * would be unbillable, so the row reads as a dash rather than as a call of no length. */
+function durationMinutes(call: RecentCall): string | null {
+  return call.duration_ms === null ? null : (call.duration_ms / 60_000).toFixed(2)
+}
+
+/**
+ * Why a call cannot be billed, short enough for a pill. The backend's full sentence stays on
+ * hover; this follows the same order it decides in, so the two never disagree.
+ */
+function unbillableLabel(call: RecentCall): string {
+  if (call.call_status && call.call_status !== 'ended') {
+    return call.call_status.replace(/_/g, ' ').replace(/^./, (first) => first.toUpperCase())
+  }
+  if (call.duration_ms === null) return 'No duration'
+  return 'No start time'
 }
 
 /**

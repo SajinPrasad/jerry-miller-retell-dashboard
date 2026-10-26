@@ -247,10 +247,10 @@ function recentCalls(spec: Spec, month: string): RecentCall[] {
   const unbillable: RecentCall[] = Array.from({ length: spec.unbillable }, (_, index) => ({
     call_id: `demo_${spec.location_id}_${month}_bad_${index}`,
     agent_id: spec.agents[0],
-    from_number: '+15550000009',
+    from_number: caller(index + 40),
     to_number: spec.numbers[0],
     direction: 'inbound',
-    started_at: `${month}-${pad(index + 3)}T11:00:00Z`,
+    started_at: `${month}-${pad(index + 3)}T${pad(8 + index * 3)}:${pad((index * 23) % 60)}:00Z`,
     duration_ms: null,
     billable_minutes: '0.00',
     retell_cost_cents: null,
@@ -267,10 +267,12 @@ function recentCalls(spec: Spec, month: string): RecentCall[] {
     return {
       call_id: `demo_${spec.location_id}_${month}_${index}`,
       agent_id: spec.agents[0],
-      from_number: index % 2 ? '+15550000001' : spec.numbers[0],
-      to_number: index % 2 ? spec.numbers[0] : '+15550000001',
+      // The client's own line is one end; a different caller is the other, so the preview's
+      // phone column reads like a real one instead of the same number every row.
+      from_number: index % 2 ? caller(index) : spec.numbers[0],
+      to_number: index % 2 ? spec.numbers[0] : caller(index),
       direction: index % 2 ? 'inbound' : 'outbound',
-      started_at: `${month}-${pad(index + 2)}T14:${pad(index * 7)}:00Z`,
+      started_at: `${month}-${pad(index + 2)}T${pad(9 + (index % 9))}:${pad((index * 17) % 60)}:00Z`,
       duration_ms: durationMs,
       billable_minutes: (durationMs / 60_000).toFixed(2),
       retell_cost_cents: Math.max(Math.round((durationMs / 60_000) * 7), 1),
@@ -287,6 +289,11 @@ function shiftBack(month: string): string {
   const [year, number] = month.split('-').map(Number)
   const moved = new Date(Date.UTC(year, number - 7, 1))
   return `${moved.getUTCFullYear()}-${pad(moved.getUTCMonth() + 1)}`
+}
+
+/** A different member of the public each row, in a range reserved for fiction. */
+function caller(index: number): string {
+  return `+1213555${String(1000 + ((index * 137) % 9000))}`
 }
 
 function pad(value: number): string {

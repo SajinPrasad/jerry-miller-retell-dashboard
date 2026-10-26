@@ -3,11 +3,13 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ClientDetail, ClientSummary, ClientsResponse, SsoSession } from '../../types/admin'
 import AdminPage from './AdminPage'
-import { currentMonth, shiftMonth } from './format'
+import { currentMonth, formatMonth, shiftMonth } from './format'
 
 const BLOB = 'U2FsdGVkX1-pretend-session'
 const THIS_MONTH = currentMonth()
 const LAST_MONTH = shiftMonth(THIS_MONTH, -1)
+/** "Oct", for whichever month the tests are running in. */
+const MONTH_ABBREVIATION = formatMonth(THIS_MONTH).slice(0, 3)
 
 const agencySession: SsoSession = {
   user_name: 'Jerry Miller',
@@ -66,7 +68,36 @@ const detail: ClientDetail = {
   rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
   usage: mapped.usage!,
   twilio_days: [],
-  recent_calls: [],
+  recent_calls: [
+    {
+      call_id: 'call_ok',
+      agent_id: 'agent_1',
+      from_number: '+12135557788',
+      to_number: '+15551234567',
+      direction: 'inbound',
+      started_at: `${THIS_MONTH}-03T14:45:00Z`,
+      duration_ms: 222_000,
+      billable_minutes: '3.70',
+      retell_cost_cents: 26,
+      call_status: 'ended',
+      billing_status: 'billable',
+      unbillable_reason: '',
+    },
+    {
+      call_id: 'call_dropped',
+      agent_id: 'agent_1',
+      from_number: '+12135550022',
+      to_number: '+15551234567',
+      direction: 'inbound',
+      started_at: `${THIS_MONTH}-04T09:05:00Z`,
+      duration_ms: null,
+      billable_minutes: '0.00',
+      retell_cost_cents: null,
+      call_status: 'not_connected',
+      billing_status: 'unbillable',
+      unbillable_reason: 'Call status is not_connected, not ended.',
+    },
+  ],
 }
 
 /**
@@ -140,7 +171,9 @@ function monthSelect() {
 
 /** The tile with this label, which is where the detail page's headline figures live. */
 function tile(label: string) {
-  return within(screen.getByText(label).closest('.tile') as HTMLElement)
+  // By the label element, since a column header can carry the same word.
+  const heading = screen.getByText(label, { selector: '.tile-label' })
+  return within(heading.closest('.tile') as HTMLElement)
 }
 
 /** Open a client from the list and wait for its page. */
@@ -283,6 +316,41 @@ describe('AdminPage', () => {
     expect(tile('Cost').getByText('$22.20')).toBeInTheDocument()
     // $55.00 billed, less $18.00 to Retell and $4.20 to Twilio.
     expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
+  })
+
+  it('shows a call the way a person would read it, not the way Retell stores it', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const row = within(screen.getByText(`${MONTH_ABBREVIATION} 3, 2:45 PM`).closest('tr')!)
+    // The customer's number on an inbound call is the one that rang in.
+    expect(row.getByText('(213) 555-7788')).toBeInTheDocument()
+    expect(row.getByText('inbound')).toBeInTheDocument()
+    expect(row.getByText('3.70')).toBeInTheDocument()
+    expect(row.getByText('$0.26')).toBeInTheDocument()
+    expect(row.getByText('Billable')).toBeInTheDocument()
+    // Nothing on this table is for a machine to read.
+    expect(screen.queryByText('call_ok')).not.toBeInTheDocument()
+    expect(screen.queryByText('agent_1', { selector: 'td' })).not.toBeInTheDocument()
+  })
+
+  it('names in a few words why a call could not be billed', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const pill = screen.getByText('Not connected')
+    expect(pill).toHaveAttribute('title', 'Call status is not_connected, not ended.')
+    // A call Retell never timed has no duration or cost to show, and zero would claim it did.
+    const row = within(pill.closest('tr')!)
+    expect(row.getAllByText('—')).toHaveLength(2)
   })
 
   it('opens straight into the one client when GHL says this is a sub-account', async () => {

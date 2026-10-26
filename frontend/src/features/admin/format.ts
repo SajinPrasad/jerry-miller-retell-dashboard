@@ -23,24 +23,52 @@ export function formatDate(iso: string | null | undefined): string {
   return iso ? iso.slice(0, 10) : DASH
 }
 
+const MONTH_NAMES = [
+  'January',
+  'February',
+  'March',
+  'April',
+  'May',
+  'June',
+  'July',
+  'August',
+  'September',
+  'October',
+  'November',
+  'December',
+]
+
 /** "2026-03" -> "March 2026". */
 export function formatMonth(month: string): string {
   const [year, number] = month.split('-')
-  const names = [
-    'January',
-    'February',
-    'March',
-    'April',
-    'May',
-    'June',
-    'July',
-    'August',
-    'September',
-    'October',
-    'November',
-    'December',
-  ]
-  return `${names[Number(number) - 1] ?? month} ${year}`
+  return `${MONTH_NAMES[Number(number) - 1] ?? month} ${year}`
+}
+
+/**
+ * An ISO timestamp as a time someone can read: "2026-10-03T14:45:00Z" -> "Oct 3, 2:45 PM".
+ *
+ * Read off the string rather than through `Date`, so the time shown is the UTC one the call was
+ * recorded at. The billing window, the Twilio days and the period filter are all UTC; a call
+ * re-stamped into the viewer's timezone could sit under a date in a different month from the
+ * one it is billed in. The year is left off: the period filter already says which it is.
+ */
+export function formatDateTime(iso: string | null | undefined): string {
+  const parts = iso ? /^\d{4}-(\d{2})-(\d{2})T(\d{2}):(\d{2})/.exec(iso) : null
+  if (!parts) return DASH
+
+  const [, month, day, hour, minute] = parts
+  const hours = Number(hour)
+  const clock = hours % 12 === 0 ? 12 : hours % 12
+  return `${MONTH_NAMES[Number(month) - 1]?.slice(0, 3)} ${Number(day)}, ${clock}:${minute} ${
+    hours < 12 ? 'AM' : 'PM'
+  }`
+}
+
+/** A dialled number as it is written: "+12137771234" -> "(213) 777-1234". Anything else as-is. */
+export function formatPhone(number: string | null | undefined): string {
+  if (!number) return DASH
+  const parts = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(number)
+  return parts ? `(${parts[1]}) ${parts[2]}-${parts[3]}` : number
 }
 
 /** Cents as the plain decimal a money field holds, e.g. 25 -> "0.25". */

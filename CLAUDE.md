@@ -82,6 +82,12 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   list request behind it, through the endpoints' `?month=`. The page only renders figures whose
   `month` matches the one selected, so a slow response never leaves one period's numbers under
   another period's heading.
+- **The call list is written for a reader, not a debugger**: date and time, the customer's number
+  (the `from`/`to` that is not the client's own line, chosen by direction), direction, duration,
+  what Retell charged, and a status pill - `Billable`, or a few words like `Not connected`, with
+  the backend's full sentence on hover. `call_id` and `agent_id` are not shown. Times are the
+  stored UTC ones, read off the ISO string rather than through `Date`, because the billing window
+  and the Twilio days are UTC too and a re-stamped call could appear under a day in another month.
 - **What-if rates** (`ClientDetail.tsx`): the client's rates are editable on the page, in React
   state alone - nothing is sent, nothing is saved, and `ClientDetail` is remounted per client and
   per period so a typed rate cannot follow the viewer into another one. While the rates are the
