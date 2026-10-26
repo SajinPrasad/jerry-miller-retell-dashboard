@@ -280,7 +280,7 @@ describe('AdminPage', () => {
     expect(tile('AI minutes').getByText('200.00')).toBeInTheDocument()
     expect(tile('Call minutes').getByText('100.00')).toBeInTheDocument()
     expect(tile('Estimated').getByText('$55.00')).toBeInTheDocument()
-    expect(tile('Cost to Jerry').getByText('$22.20')).toBeInTheDocument()
+    expect(tile('Cost').getByText('$22.20')).toBeInTheDocument()
     // $55.00 billed, less $18.00 to Retell and $4.20 to Twilio.
     expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
   })

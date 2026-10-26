@@ -56,7 +56,7 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
             }
           />
           <Tile label="Estimated" value={formatCents(estimated)} accent />
-          <Tile label="Cost to Jerry" value={formatCents(cost)} />
+          <Tile label="Cost" value={formatCents(cost)} />
           <Tile
             label="Margin"
             value={formatCents(marginCents(estimated, usage.ai_cost_cents, usage.call_cost_cents))}
