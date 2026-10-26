@@ -25,6 +25,7 @@ const mapped: ClientSummary = {
   mapped: true,
   active: true,
   billing_mode: 'auto_charge',
+  retell_connected: true,
   twilio_connected: true,
   rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   usage: {
@@ -46,6 +47,7 @@ const unmapped: ClientSummary = {
   mapped: false,
   active: null,
   billing_mode: null,
+  retell_connected: false,
   twilio_connected: false,
   rates: null,
   usage: null,
@@ -136,6 +138,17 @@ function monthSelect() {
   return screen.getByLabelText('Billing month') as HTMLSelectElement
 }
 
+/** The tile with this label, which is where the detail page's headline figures live. */
+function tile(label: string) {
+  return within(screen.getByText(label).closest('.tile') as HTMLElement)
+}
+
+/** Open a client from the list and wait for its page. */
+async function openClient(user: ReturnType<typeof userEvent.setup>, name = 'Cool Breeze HVAC') {
+  await user.click(await screen.findByRole('button', { name }))
+  await screen.findByText('Mapping')
+}
+
 describe('AdminPage', () => {
   beforeEach(() => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
@@ -174,17 +187,50 @@ describe('AdminPage', () => {
     expect(headers['X-GHL-Session']).toBe(BLOB)
   })
 
-  it('shows money and minutes for a mapped client', async () => {
+  // --- the list: who is onboarded, and nothing else ------------------------------------
+
+  it('lists who is onboarded and their status, and no figures', async () => {
     parentAnswers()
     mockApi()
 
     render(<AdminPage />)
     await screen.findByText('Cool Breeze HVAC')
 
-    expect(screen.getByText('200.00')).toBeInTheDocument()
-    expect(screen.getByText('$55.00')).toBeInTheDocument()
-    // Margin: $55.00 billed less $18.00 Retell and $4.20 Twilio.
-    expect(screen.getByText('$32.80')).toBeInTheDocument()
+    expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
+      'Client',
+      'Status',
+    ])
+    // The money and the minutes belong to the client's own page.
+    expect(screen.queryByText('200.00')).not.toBeInTheDocument()
+    expect(screen.queryByText('$55.00')).not.toBeInTheDocument()
+    // No location id under the name: it is a code, not a business.
+    expect(screen.queryByText('loc1')).not.toBeInTheDocument()
+    // The period is chosen on the client's page, not here.
+    expect(screen.queryByLabelText('Billing month')).not.toBeInTheDocument()
+  })
+
+  it('says what a client is mapped to on hover rather than in its own pill', async () => {
+    parentAnswers()
+    mockApi({
+      perMonth: { [THIS_MONTH]: { ...mapped, twilio_connected: false } },
+    })
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    expect(screen.getByText('Mapped')).toHaveAttribute('title', 'Retell AI mapped only')
+    expect(screen.queryByText('Twilio')).not.toBeInTheDocument()
+  })
+
+  it('keeps the unbillable warning in the list', async () => {
+    parentAnswers()
+    mockApi({
+      perMonth: { [THIS_MONTH]: { ...mapped, usage: { ...mapped.usage!, unbillable_calls: 1 } } },
+    })
+
+    render(<AdminPage />)
+
+    expect(await screen.findByText('1 unbillable')).toBeInTheDocument()
   })
 
   it('shows an unmapped client as not set up rather than as zero usage', async () => {
@@ -194,33 +240,8 @@ describe('AdminPage', () => {
     render(<AdminPage />)
     await screen.findByText('Polar Peak Heating')
 
-    expect(screen.getByText('Not mapped')).toBeInTheDocument()
-    expect(screen.getByText('Not set up for billing yet')).toBeInTheDocument()
+    expect(screen.getByText('Not mapped')).toHaveAttribute('title', 'Not set up for billing yet')
     expect(screen.queryByText('0.00')).not.toBeInTheDocument()
-  })
-
-  it('opens a client when its name is clicked', async () => {
-    parentAnswers()
-    mockApi()
-    const user = userEvent.setup()
-
-    render(<AdminPage />)
-    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
-
-    expect(await screen.findByText('Mapping')).toBeInTheDocument()
-    expect(screen.getByText('agent_1')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '← All clients' })).toBeInTheDocument()
-  })
-
-  it('opens straight into the one client when GHL says this is a sub-account', async () => {
-    parentAnswers()
-    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
-
-    render(<AdminPage />)
-
-    expect(await screen.findByText('Mapping')).toBeInTheDocument()
-    // No way back to a list that this session is not allowed to see.
-    expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
   })
 
   it('shows a skeleton while the clients are loading', async () => {
@@ -234,70 +255,65 @@ describe('AdminPage', () => {
     expect(screen.queryByLabelText('Loading clients')).not.toBeInTheDocument()
   })
 
-  // --- the period filter ---------------------------------------------------------------
+  // --- the client's own page ------------------------------------------------------------
+
+  it('opens a client when its name is clicked', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(screen.getByText('agent_1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '← All clients' })).toBeInTheDocument()
+  })
+
+  it('shows the money and the minutes on the client page', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('AI minutes').getByText('200.00')).toBeInTheDocument()
+    expect(tile('Call minutes').getByText('100.00')).toBeInTheDocument()
+    expect(tile('Estimated').getByText('$55.00')).toBeInTheDocument()
+    expect(tile('Cost to Jerry').getByText('$22.20')).toBeInTheDocument()
+    // $55.00 billed, less $18.00 to Retell and $4.20 to Twilio.
+    expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
+  })
+
+  it('opens straight into the one client when GHL says this is a sub-account', async () => {
+    parentAnswers()
+    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+
+    render(<AdminPage />)
+
+    expect(await screen.findByText('Mapping')).toBeInTheDocument()
+    // No way back to a list that this session is not allowed to see.
+    expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
+    // The period filter is still there, because this client's own figures still need one.
+    expect(monthSelect()).toBeInTheDocument()
+  })
+
+  // --- the period filter, on the client's page -------------------------------------------
 
   it('defaults the period to the current billing month', async () => {
     parentAnswers()
     const fetchMock = mockApi()
+    const user = userEvent.setup()
 
     render(<AdminPage />)
-    await screen.findByText('Cool Breeze HVAC')
+    await openClient(user)
 
     expect(monthSelect().value).toBe(THIS_MONTH)
     expect(
       fetchMock.mock.calls.some(([url]) =>
-        String(url).startsWith(`/api/rebilling/admin/clients/?month=${THIS_MONTH}`),
+        String(url).startsWith(`/api/rebilling/admin/clients/loc1/?month=${THIS_MONTH}`),
       ),
     ).toBe(true)
-  })
-
-  it('refetches the clients for the period that was chosen', async () => {
-    parentAnswers()
-    const quietMonth: ClientSummary = {
-      ...mapped,
-      usage: { ...mapped.usage!, ai_minutes: '12.00', estimated_bill_cents: 300 },
-    }
-    const fetchMock = mockApi({ perMonth: { [LAST_MONTH]: quietMonth } })
-    const user = userEvent.setup()
-
-    render(<AdminPage />)
-    await screen.findByText('200.00')
-
-    await user.selectOptions(monthSelect(), LAST_MONTH)
-
-    expect(await screen.findByText('12.00')).toBeInTheDocument()
-    expect(screen.getByText('$3.00')).toBeInTheDocument()
-    expect(screen.queryByText('200.00')).not.toBeInTheDocument()
-    expect(
-      fetchMock.mock.calls.some(([url]) =>
-        String(url).startsWith(`/api/rebilling/admin/clients/?month=${LAST_MONTH}`),
-      ),
-    ).toBe(true)
-  })
-
-  it('steps a month at a time with the arrows', async () => {
-    parentAnswers()
-    mockApi()
-    const user = userEvent.setup()
-
-    render(<AdminPage />)
-    await screen.findByText('Cool Breeze HVAC')
-
-    await user.click(screen.getByLabelText('Previous month'))
-    await waitFor(() => expect(monthSelect().value).toBe(LAST_MONTH))
-
-    await user.click(screen.getByLabelText('Next month'))
-    await waitFor(() => expect(monthSelect().value).toBe(THIS_MONTH))
-  })
-
-  it('will not step past the current month, because nothing is billed in the future', async () => {
-    parentAnswers()
-    mockApi()
-
-    render(<AdminPage />)
-    await screen.findByText('Cool Breeze HVAC')
-
-    expect(screen.getByLabelText('Next month')).toBeDisabled()
   })
 
   it('refetches the open client when the period changes', async () => {
@@ -310,8 +326,7 @@ describe('AdminPage', () => {
     const user = userEvent.setup()
 
     render(<AdminPage />)
-    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
-    await screen.findByText('Mapping')
+    await openClient(user)
 
     await user.selectOptions(monthSelect(), LAST_MONTH)
 
@@ -322,8 +337,34 @@ describe('AdminPage', () => {
         ),
       ).toBe(true),
     )
-    const label = await screen.findByText('AI minutes')
-    expect(within(label.closest('.tile') as HTMLElement).getByText('7.00')).toBeInTheDocument()
+    await waitFor(() => expect(tile('AI minutes').getByText('7.00')).toBeInTheDocument())
+  })
+
+  it('steps a month at a time with the arrows', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    await user.click(screen.getByLabelText('Previous month'))
+    await waitFor(() => expect(monthSelect().value).toBe(LAST_MONTH))
+
+    await waitFor(() => expect(screen.getByLabelText('Next month')).toBeEnabled())
+    await user.click(screen.getByLabelText('Next month'))
+    await waitFor(() => expect(monthSelect().value).toBe(THIS_MONTH))
+  })
+
+  it('will not step past the current month, because nothing is billed in the future', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(screen.getByLabelText('Next month')).toBeDisabled()
   })
 
   it('never shows one period under another period heading', async () => {
@@ -332,15 +373,75 @@ describe('AdminPage', () => {
     const user = userEvent.setup()
 
     render(<AdminPage />)
-    await screen.findByText('200.00')
+    await openClient(user)
+    expect(tile('AI minutes').getByText('200.00')).toBeInTheDocument()
 
     // The request for last month never resolves, so the page must keep waiting rather than
     // leave this month's numbers on screen under the new label.
     fetchMock.mockImplementation(() => new Promise(() => {}))
     await user.selectOptions(monthSelect(), LAST_MONTH)
 
-    expect(await screen.findByLabelText('Loading clients')).toBeInTheDocument()
+    expect(await screen.findByLabelText('Loading client')).toBeInTheDocument()
     expect(screen.queryByText('200.00')).not.toBeInTheDocument()
+  })
+
+  // --- trying a different rate ------------------------------------------------------------
+
+  it('re-estimates the bill and the margin as a rate is typed', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.50')
+
+    // 200 AI minutes at 50c, plus 100 call minutes at 5c.
+    await waitFor(() => expect(tile('Estimated').getByText('$105.00')).toBeInTheDocument())
+    expect(tile('Margin').getByText('$82.80')).toBeInTheDocument()
+    expect(screen.getByText(/not saved/)).toBeInTheDocument()
+  })
+
+  it('puts the client back on its own rate', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const callRate = screen.getByLabelText('Call minute rate')
+    await user.clear(callRate)
+    await user.type(callRate, '0.20')
+    await waitFor(() => expect(tile('Estimated').getByText('$70.00')).toBeInTheDocument())
+
+    await user.click(screen.getByRole('button', { name: 'Reset' }))
+
+    expect(tile('Estimated').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByLabelText('Call minute rate')).toHaveValue('0.05')
+  })
+
+  it('starts a new period from the rate the client is actually on', async () => {
+    parentAnswers()
+    mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.90')
+    await waitFor(() => expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.90'))
+
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    // A what-if rate is for the period it was typed in. Carrying it over would quietly
+    // misprice the next one.
+    await waitFor(() => expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.25'))
   })
 
   // --- standalone preview --------------------------------------------------------------
@@ -375,9 +476,8 @@ describe('AdminPage', () => {
     const user = userEvent.setup()
 
     render(<AdminPage />)
-    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+    await openClient(user, 'Polar Peak Heating & Air')
 
-    expect(await screen.findByText('Mapping')).toBeInTheDocument()
     expect(screen.getByText('agent_polar_peak')).toBeInTheDocument()
     expect(screen.getByText('Rates')).toBeInTheDocument()
   })
@@ -387,7 +487,8 @@ describe('AdminPage', () => {
     const user = userEvent.setup()
 
     render(<AdminPage />)
-    expect(await screen.findByText('198.40')).toBeInTheDocument()
+    await openClient(user)
+    expect(tile('AI minutes').getByText('198.40')).toBeInTheDocument()
 
     await user.selectOptions(monthSelect(), LAST_MONTH)
 

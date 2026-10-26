@@ -1,11 +1,15 @@
 import type { ClientSummary } from '../../types/admin'
-import { DASH, formatCents, formatMinutes, formatRate, marginCents } from './format'
+import { DASH } from './format'
 
 interface Props {
   clients: ClientSummary[]
   onSelect: (locationId: string) => void
 }
 
+/**
+ * Who is onboarded, and whether they are set up for billing. Nothing more: the figures live in
+ * the client's own page, where there is room to show how they were arrived at.
+ */
 export default function ClientsTable({ clients, onSelect }: Props) {
   if (clients.length === 0) {
     return <p className="muted">No client sub-accounts yet. Connect GoHighLevel and sync them.</p>
@@ -17,12 +21,6 @@ export default function ClientsTable({ clients, onSelect }: Props) {
         <tr>
           <th>Client</th>
           <th>Status</th>
-          <th className="num">AI minutes</th>
-          <th className="num">Call minutes</th>
-          <th className="num">Rates</th>
-          <th className="num">Estimated</th>
-          <th className="num">Cost</th>
-          <th className="num">Margin</th>
         </tr>
       </thead>
       <tbody>
@@ -35,28 +33,26 @@ export default function ClientsTable({ clients, onSelect }: Props) {
 }
 
 function ClientRow({ client, onSelect }: { client: ClientSummary; onSelect: Props['onSelect'] }) {
-  const { usage, rates } = client
+  const { usage } = client
 
-  // An unmapped client has no usage to show. Dashes, never zeros: "0.00 minutes" would read as
-  // a client who made no calls, when the truth is that nobody has set them up.
   if (!client.mapped || !usage) {
     return (
       <tr>
         <td>
           <span className="name">{client.client_name || DASH}</span>
-          <code className="muted">{client.location_id}</code>
         </td>
         <td>
-          <span className="pill">Not mapped</span>
-        </td>
-        <td className="num muted" colSpan={6}>
-          Not set up for billing yet
+          <span className="pill" title="Not set up for billing yet">
+            Not mapped
+          </span>
         </td>
       </tr>
     )
   }
 
-  const cost = usage.ai_cost_cents + usage.call_cost_cents
+  // One pill, with what it is mapped to on hover. The difference between Retell and Twilio
+  // matters when something is missing, not on every row.
+  const detail = mappingDetail(client)
 
   return (
     <tr className="clickable" onClick={() => onSelect(client.location_id)}>
@@ -64,18 +60,15 @@ function ClientRow({ client, onSelect }: { client: ClientSummary; onSelect: Prop
         <button type="button" className="link" onClick={() => onSelect(client.location_id)}>
           {client.client_name}
         </button>
-        <code className="muted">{client.location_id}</code>
       </td>
       <td>
         {client.active ? (
-          <span className="pill ok">Mapped</span>
+          <span className="pill ok" title={detail}>
+            Mapped
+          </span>
         ) : (
-          <span className="pill">Paused</span>
-        )}
-        {client.twilio_connected && <span className="pill">Twilio</span>}
-        {usage.twilio_stale && (
-          <span className="pill warn" title="Twilio usage has not refreshed recently">
-            Stale
+          <span className="pill" title={detail}>
+            Paused
           </span>
         )}
         {usage.unbillable_calls > 0 && (
@@ -84,31 +77,14 @@ function ClientRow({ client, onSelect }: { client: ClientSummary; onSelect: Prop
           </span>
         )}
       </td>
-      <td className="num">{formatMinutes(usage.ai_minutes)}</td>
-      {/* A client with no Twilio subaccount reads as exactly that, not as zero usage. */}
-      <td className="num">
-        {client.twilio_connected || usage.has_twilio_usage ? (
-          formatMinutes(usage.call_minutes)
-        ) : (
-          <span className="muted">{DASH}</span>
-        )}
-      </td>
-      <td className="num small rates">
-        {rates ? (
-          <>
-            {formatRate(rates.voice_rate_cents)} AI
-            <br />
-            {formatRate(rates.call_rate_cents)} call
-          </>
-        ) : (
-          <span className="muted">No rate set</span>
-        )}
-      </td>
-      <td className="num strong">{formatCents(usage.estimated_bill_cents)}</td>
-      <td className="num muted">{formatCents(cost)}</td>
-      <td className="num">
-        {formatCents(marginCents(usage.estimated_bill_cents, usage.ai_cost_cents, usage.call_cost_cents))}
-      </td>
     </tr>
   )
+}
+
+/** What the pill means for this client, for its tooltip. */
+function mappingDetail(client: ClientSummary): string {
+  if (client.retell_connected && client.twilio_connected) return 'Retell AI & Twilio mapped'
+  if (client.retell_connected) return 'Retell AI mapped only'
+  if (client.twilio_connected) return 'Twilio mapped only'
+  return 'No Retell agents or Twilio subaccount mapped'
 }

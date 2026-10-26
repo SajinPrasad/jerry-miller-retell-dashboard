@@ -91,6 +91,9 @@
 
 .admin .button {
   display: inline-block;
+  /* The onboarding page's own unscoped `.button` adds a top margin. Here it would push the
+     back button off the line it shares with the period filter. */
+  margin: 0;
   padding: 0.5rem 1rem;
   border: 1px solid transparent;
   border-radius: 8px;
@@ -143,9 +146,71 @@
 .admin th,
 .admin td {
   text-align: left;
-  padding: 0.6rem 0.5rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  vertical-align: middle;
+}
+
+/* Proportional widths for client detail tables */
+
+.admin .calls-table th:nth-child(1),
+.admin .calls-table td:nth-child(1) {
+  width: 32%;
+}
+
+.admin .calls-table th:nth-child(2),
+.admin .calls-table td:nth-child(2) {
+  width: 26%;
+  text-transform: capitalize;
+}
+
+.admin .calls-table th:nth-child(3),
+.admin .calls-table td:nth-child(3) {
+  width: 22%;
+}
+
+.admin .calls-table th:nth-child(4),
+.admin .calls-table td:nth-child(4) {
+  width: 20%;
+}
+
+.admin td.num .pill {
+  margin-right: 0;
+}
+
+.admin .twilio-table th:nth-child(1),
+.admin .twilio-table td:nth-child(1) {
+  width: 38%;
+}
+
+.admin .twilio-table th:nth-child(2),
+.admin .twilio-table td:nth-child(2) {
+  width: 20%;
+}
+
+.admin .twilio-table th:nth-child(3),
+.admin .twilio-table td:nth-child(3) {
+  width: 22%;
+}
+
+.admin .twilio-table th:nth-child(4),
+.admin .twilio-table td:nth-child(4) {
+  width: 20%;
+}
+
+.admin .rate-history-table th:nth-child(1),
+.admin .rate-history-table td:nth-child(1) {
+  width: 50%;
+}
+
+.admin .rate-history-table th:nth-child(2),
+.admin .rate-history-table td:nth-child(2) {
+  width: 25%;
+}
+
+.admin .rate-history-table th:nth-child(3),
+.admin .rate-history-table td:nth-child(3) {
+  width: 25%;
 }
 
 .admin th {
@@ -169,20 +234,6 @@
 .admin .clients .name {
   display: block;
   font-weight: 600;
-}
-
-/* The location id always sits on its own line under the name, whatever the name's length. */
-.admin .clients td:first-child code {
-  display: block;
-  width: fit-content;
-  margin-top: 0.2rem;
-  font-size: 0.75rem;
-  color: var(--muted);
-}
-
-/* Keep "$0.25 AI" and "$0.05 call" each on one line instead of breaking mid-value. */
-.admin td.rates {
-  white-space: nowrap;
 }
 
 .admin code {
@@ -346,14 +397,24 @@
   font-weight: 600;
 }
 
-/* --- period filter --- */
+/* --- the open client's toolbar: back on the left, period on the right --- */
 
-.admin .admin-controls {
+.admin .detail-bar {
   display: flex;
   align-items: center;
-  gap: 0.6rem;
+  justify-content: flex-end;
+  gap: 0.75rem;
   flex-wrap: wrap;
+  margin-top: 1.25rem;
 }
+
+/* Pushes the picker to the right edge, and keeps it there in a sub-account, where there is no
+   back button to sit opposite. */
+.admin .detail-bar .button.ghost {
+  margin-right: auto;
+}
+
+/* --- period filter --- */
 
 .admin .month-picker {
   display: inline-flex;
@@ -411,4 +472,51 @@
 .admin .month-select:focus-visible,
 .admin .month-picker .step:focus-visible {
   outline: 0;
+}
+
+/* --- what-if rates --- */
+
+.admin .rate-editor {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-bottom: 0.6rem;
+}
+
+.admin .rate-field {
+  display: block;
+}
+
+.admin .rate-field .money {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.admin .rate-field input {
+  width: 4.5rem;
+  border: 0;
+  padding: 0;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--text);
+  text-align: right;
+}
+
+.admin .rate-field input:focus-visible {
+  outline: 0;
+}
+
+.admin .rate-field .money:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
 }

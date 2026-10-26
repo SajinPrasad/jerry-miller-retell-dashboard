@@ -1,6 +1,9 @@
+import { useState } from 'react'
 import type { ClientDetail as Detail } from '../../types/admin'
 import {
   DASH,
+  centsFromInput,
+  centsToInput,
   formatCents,
   formatDate,
   formatMinutes,
@@ -10,7 +13,28 @@ import {
 
 export default function ClientDetail({ detail }: { detail: Detail }) {
   const { usage, rates } = detail
+  const storedVoice = rates?.voice_rate_cents ?? 0
+  const storedCall = rates?.call_rate_cents ?? 0
+
+  // What-if rates, held here and nowhere else: nothing is saved, and the next client or period
+  // starts from the stored rates again (the page remounts this on either change).
+  const [voiceInput, setVoiceInput] = useState(centsToInput(storedVoice))
+  const [callInput, setCallInput] = useState(centsToInput(storedCall))
+  const voiceRate = centsFromInput(voiceInput)
+  const callRate = centsFromInput(callInput)
+  const adjusted = voiceRate !== storedVoice || callRate !== storedCall
+
   const cost = usage.ai_cost_cents + usage.call_cost_cents
+  // Until a rate is changed, the server's own figure stands. Recomputing it from minutes that
+  // were rounded for display would let the headline drift a cent from what the backend says.
+  const estimated = adjusted
+    ? Math.round(Number(usage.ai_minutes) * voiceRate + Number(usage.call_minutes) * callRate)
+    : usage.estimated_bill_cents
+
+  function reset() {
+    setVoiceInput(centsToInput(storedVoice))
+    setCallInput(centsToInput(storedCall))
+  }
 
   return (
     <>
@@ -31,19 +55,78 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
                 : DASH
             }
           />
-          <Tile label="Estimated" value={formatCents(usage.estimated_bill_cents)} accent />
+          <Tile label="Estimated" value={formatCents(estimated)} accent />
           <Tile label="Cost to Jerry" value={formatCents(cost)} />
           <Tile
             label="Margin"
-            value={formatCents(
-              marginCents(usage.estimated_bill_cents, usage.ai_cost_cents, usage.call_cost_cents),
-            )}
+            value={formatCents(marginCents(estimated, usage.ai_cost_cents, usage.call_cost_cents))}
           />
         </div>
         <p className="muted small">
-          Estimated at the rate in effect now. The billing run applies the rate in effect on each
-          call&apos;s own day.
+          {adjusted ? (
+            <>
+              At the adjusted rates below, which are not saved. The billing run applies the rate in
+              effect on each call&apos;s own day.
+            </>
+          ) : (
+            <>
+              Estimated at the rate in effect now. The billing run applies the rate in effect on
+              each call&apos;s own day.
+            </>
+          )}
         </p>
+      </section>
+
+      <section className="card">
+        <h2>Rates</h2>
+        <div className="rate-editor">
+          <RateField
+            label="AI minute"
+            value={voiceInput}
+            onChange={setVoiceInput}
+            describedBy="rate-note"
+          />
+          <RateField
+            label="Call minute"
+            value={callInput}
+            onChange={setCallInput}
+            describedBy="rate-note"
+          />
+          {adjusted && (
+            <button type="button" className="button ghost" onClick={reset}>
+              Reset
+            </button>
+          )}
+        </div>
+        <p className="muted small" id="rate-note">
+          {rates ? (
+            <>In effect since {formatDate(rates.start_date)}. </>
+          ) : (
+            <>No rate has been set for this client yet. </>
+          )}
+          Changing a rate here only re-estimates this page; nothing is saved.
+        </p>
+
+        {detail.rate_history.length > 1 && (
+          <table className="rate-history-table">
+            <thead>
+              <tr>
+                <th>From</th>
+                <th className="num">AI minute</th>
+                <th className="num">Call minute</th>
+              </tr>
+            </thead>
+            <tbody>
+              {detail.rate_history.map((rate) => (
+                <tr key={rate.start_date}>
+                  <td>{formatDate(rate.start_date)}</td>
+                  <td className="num">{formatRate(rate.voice_rate_cents)}</td>
+                  <td className="num">{formatRate(rate.call_rate_cents)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
 
       <section className="card">
@@ -78,39 +161,6 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
         </dl>
       </section>
 
-      <section className="card">
-        <h2>Rates</h2>
-        {rates ? (
-          <p>
-            <strong>{formatRate(rates.voice_rate_cents)}</strong> per AI minute,{' '}
-            <strong>{formatRate(rates.call_rate_cents)}</strong> per call minute, since{' '}
-            {formatDate(rates.start_date)}.
-          </p>
-        ) : (
-          <p className="muted">No rate has been set for this client yet.</p>
-        )}
-        {detail.rate_history.length > 1 && (
-          <table>
-            <thead>
-              <tr>
-                <th>From</th>
-                <th className="num">AI minute</th>
-                <th className="num">Call minute</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.rate_history.map((rate) => (
-                <tr key={rate.start_date}>
-                  <td>{formatDate(rate.start_date)}</td>
-                  <td className="num">{formatRate(rate.voice_rate_cents)}</td>
-                  <td className="num">{formatRate(rate.call_rate_cents)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
       {detail.twilio_days.length > 0 && (
         <section className="card">
           <h2>Twilio calls by day</h2>
@@ -119,7 +169,7 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
             {usage.twilio_as_of && <> Current through {formatDate(usage.twilio_as_of)}.</>}
             {usage.twilio_stale && <span className="pill warn">Stale</span>}
           </p>
-          <table>
+          <table className="twilio-table">
             <thead>
               <tr>
                 <th>Day</th>
@@ -145,22 +195,22 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
       <section className="card">
         <h2>Recent AI calls</h2>
         {detail.recent_calls.length > 0 ? (
-          <table>
+          <table className="calls-table">
             <thead>
               <tr>
                 <th>Started</th>
                 <th>Direction</th>
                 <th className="num">Minutes</th>
-                <th>Billing</th>
+                <th className="num">Billing</th>
               </tr>
             </thead>
             <tbody>
               {detail.recent_calls.map((call) => (
                 <tr key={call.call_id}>
                   <td>{formatDate(call.started_at)}</td>
-                  <td>{call.direction || DASH}</td>
+                  <td className="direction">{call.direction || DASH}</td>
                   <td className="num">{formatMinutes(call.billable_minutes)}</td>
-                  <td>
+                  <td className="num">
                     {call.billing_status === 'billable' ? (
                       <span className="pill ok">Billable</span>
                     ) : (
@@ -178,6 +228,39 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
         )}
       </section>
     </>
+  )
+}
+
+/**
+ * A per-minute rate, in dollars. Text rather than a number field: a money amount is typed, not
+ * stepped, and a half-typed "0." must survive long enough to finish.
+ */
+function RateField({
+  label,
+  value,
+  onChange,
+  describedBy,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  describedBy: string
+}) {
+  return (
+    <label className="rate-field">
+      <span className="tile-label">{label}</span>
+      <span className="money">
+        <span aria-hidden="true">$</span>
+        <input
+          type="text"
+          inputMode="decimal"
+          value={value}
+          aria-label={`${label} rate`}
+          aria-describedby={describedBy}
+          onChange={(event) => onChange(event.target.value)}
+        />
+      </span>
+    </label>
   )
 }
 

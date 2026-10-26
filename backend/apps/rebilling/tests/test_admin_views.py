@@ -103,6 +103,7 @@ def test_lists_a_mapped_client_with_rates_and_usage(client):
     row = get_clients(client).json()['clients'][0]
 
     assert row['mapped'] is True
+    assert row['retell_connected'] is True
     assert row['twilio_connected'] is False
     assert row['rates'] == {
         'voice_rate_cents': 25,
@@ -124,6 +125,7 @@ def test_an_onboarded_but_unmapped_client_is_listed_as_unmapped(client):
 
     assert row['client_name'] == 'Polar Peak Heating'
     assert row['mapped'] is False
+    assert row['retell_connected'] is False
     assert row['usage'] is None
     assert row['rates'] is None
 

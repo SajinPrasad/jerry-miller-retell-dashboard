@@ -507,6 +507,7 @@ def _client_row(
             'mapped': False,
             'active': None,
             'billing_mode': None,
+            'retell_connected': False,
             'twilio_connected': False,
             'rates': None,
             'usage': None,
@@ -517,6 +518,9 @@ def _client_row(
         'mapped': True,
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
+        # Retell matches a call by agent id first, then by phone number, so either one mapped
+        # means Retell calls can reach this client.
+        'retell_connected': bool(mapping.retell_agent_ids or mapping.phone_numbers),
         'twilio_connected': bool(mapping.twilio_subaccount_sid),
         'rates': _rate_row(current_rate(mapping, end)),
         'usage': usage_summary(mapping, start, end),

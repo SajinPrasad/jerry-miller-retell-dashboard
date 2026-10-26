@@ -34,6 +34,8 @@ export interface ClientSummary {
   mapped: boolean
   active: boolean | null
   billing_mode: string | null
+  /** Retell agents or phone numbers are mapped, so Retell calls can reach this client. */
+  retell_connected: boolean
   twilio_connected: boolean
   rates: Rates | null
   usage: UsageSummary | null

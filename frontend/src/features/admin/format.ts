@@ -43,6 +43,17 @@ export function formatMonth(month: string): string {
   return `${names[Number(number) - 1] ?? month} ${year}`
 }
 
+/** Cents as the plain decimal a money field holds, e.g. 25 -> "0.25". */
+export function centsToInput(cents: number): string {
+  return (cents / 100).toFixed(2)
+}
+
+/** What a money field holds, as whole cents. Anything unreadable, or negative, counts as zero. */
+export function centsFromInput(value: string): number {
+  const amount = Number.parseFloat(value)
+  return Number.isFinite(amount) && amount > 0 ? Math.round(amount * 100) : 0
+}
+
 /**
  * What Jerry keeps: the estimate minus what Retell and Twilio charge him. Null when there is
  * no rate, because the estimate it comes from is null too.

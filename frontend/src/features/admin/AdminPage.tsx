@@ -7,7 +7,7 @@ import './admin.css'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
 import { DEMO_SESSION, demoClients, demoDetail } from './demoData'
-import { currentMonth, formatMonth } from './format'
+import { currentMonth } from './format'
 import MonthPicker from './MonthPicker'
 import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
 
@@ -65,8 +65,8 @@ export default function AdminPage() {
     }
   }, [])
 
-  // 2. The clients list, for whichever period is selected. The preview's list is derived
-  //    below instead, since it is a pure function of the month.
+  // 2. The clients list. It carries the period too — its unbillable count is for a month — so
+  //    it follows whichever period the open client is being read in.
   useEffect(() => {
     if (session.kind !== 'live') return
 
@@ -87,7 +87,7 @@ export default function AdminPage() {
     }
   }, [session, month])
 
-  // 3. The open client's detail, for the same period.
+  // 3. The open client's detail, for the period chosen on its own page.
   useEffect(() => {
     if (!selected || session.kind === 'preview' || session.kind !== 'live') return
 
@@ -129,7 +129,7 @@ export default function AdminPage() {
 
   if (session.kind === 'error' || failed) {
     return (
-      <Shell month={month}>
+      <Shell>
         <div className="banner error" role="alert">
           Could not load billing data. Refresh to try again.
         </div>
@@ -150,19 +150,7 @@ export default function AdminPage() {
   }
 
   return (
-    <Shell
-      month={month}
-      onMonthChange={setMonth}
-      busy={!shown}
-      userName={session.kind === 'live' ? session.session.user_name : DEMO_SESSION.user_name}
-      action={
-        !isSubAccount && selected ? (
-          <button type="button" className="button ghost" onClick={() => setSelected(null)}>
-            ← All clients
-          </button>
-        ) : null
-      }
-    >
+    <Shell userName={session.kind === 'live' ? session.session.user_name : DEMO_SESSION.user_name}>
       {preview && (
         <div className="banner warn" role="status">
           <strong>Standalone preview.</strong> These are sample figures, not live billing data.
@@ -171,17 +159,31 @@ export default function AdminPage() {
       )}
 
       {selected ? (
-        openDetail ? (
-          <ClientDetail detail={openDetail} />
-        ) : (
-          <ClientDetailSkeleton />
-        )
+        <>
+          {/* The period belongs to the client being read, so the picker lives here, on the
+              same line as the way back. */}
+          <div className="detail-bar">
+            {!isSubAccount && (
+              <button type="button" className="button ghost" onClick={() => setSelected(null)}>
+                ← All clients
+              </button>
+            )}
+            <MonthPicker month={month} onChange={setMonth} busy={!openDetail} />
+          </div>
+          {openDetail ? (
+            // Remounted per client and per period, so the what-if rates on it start from the
+            // rates that client is actually on.
+            <ClientDetail key={`${selected}:${month}`} detail={openDetail} />
+          ) : (
+            <ClientDetailSkeleton />
+          )}
+        </>
       ) : (
         <section className="card">
           <h2>Clients</h2>
           <p className="muted small">
-            Usage in {formatMonth(month)} per client. Amounts are estimates at each client&apos;s
-            current rate.
+            Every sub-account onboarded in GoHighLevel. Open one for its minutes, rates and bill
+            estimate.
           </p>
           {shown ? (
             <ClientsTable clients={shown.clients} onSelect={setSelected} />
@@ -194,33 +196,13 @@ export default function AdminPage() {
   )
 }
 
-function Shell({
-  month,
-  onMonthChange,
-  busy,
-  userName,
-  action,
-  children,
-}: {
-  month?: string
-  onMonthChange?: (month: string) => void
-  busy?: boolean
-  userName?: string
-  action?: React.ReactNode
-  children: React.ReactNode
-}) {
+function Shell({ userName, children }: { userName?: string; children: React.ReactNode }) {
   return (
     <main className="admin">
       <header className="admin-header">
         <div>
           <h1>Voice billing</h1>
           <p className="muted">{userName ?? 'Loading…'}</p>
-        </div>
-        <div className="admin-controls">
-          {month && onMonthChange && (
-            <MonthPicker month={month} onChange={onMonthChange} busy={busy} />
-          )}
-          {action}
         </div>
       </header>
       {children}

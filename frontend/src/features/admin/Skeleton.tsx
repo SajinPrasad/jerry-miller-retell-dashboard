@@ -17,44 +17,18 @@ export function ClientsTableSkeleton({ rows = 4 }: { rows?: number }) {
           <tr>
             <th>Client</th>
             <th>Status</th>
-            <th className="num">AI minutes</th>
-            <th className="num">Call minutes</th>
-            <th className="num">Rates</th>
-            <th className="num">Estimated</th>
-            <th className="num">Cost</th>
-            <th className="num">Margin</th>
           </tr>
         </thead>
         <tbody>
           {Array.from({ length: rows }, (_, index) => (
             <tr key={index}>
               <td>
-                {/* Fixed widths: a percentage would resolve against a column the table has
-                    auto-sized to the width of these very bars. */}
+                {/* Fixed width: a percentage would resolve against a column the table has
+                    auto-sized to the width of this very bar. */}
                 <Bar w="170px" />
-                <Bar w="104px" h="0.65rem" />
               </td>
               <td>
                 <span className="sk sk-pill" />
-                <span className="sk sk-pill" />
-              </td>
-              <td className="num">
-                <Bar w="54px" />
-              </td>
-              <td className="num">
-                <Bar w="54px" />
-              </td>
-              <td className="num">
-                <Bar w="60px" />
-              </td>
-              <td className="num">
-                <Bar w="64px" />
-              </td>
-              <td className="num">
-                <Bar w="52px" />
-              </td>
-              <td className="num">
-                <Bar w="56px" />
               </td>
             </tr>
           ))}

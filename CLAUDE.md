@@ -64,19 +64,30 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   and `GET /api/rebilling/admin/clients/<location_id>/`, both taking `?month=YYYY-MM` (default:
   this month). The list is every **sub-account from Task 1** left-joined to `ClientMapping`, so an
   onboarded-but-unmapped client shows as `mapped: false` with null usage - "nobody set this up" must
-  not read as "used nothing".
+  not read as "used nothing". Each row also carries `retell_connected` / `twilio_connected`, which
+  is what the list's single status pill says on hover.
+- **Two pages, two jobs.** The list answers "who is onboarded, and is anyone billing them": client
+  name and status, nothing else. Every figure - minutes, rates, estimate, cost, margin - and the
+  period filter live on the client's own page, where there is room to show how they were reached.
 - **Money shown is an estimate**, `minutes x the current rate`, labelled as such in the UI. Phase 3
   applies the rate in effect on each call's day and owns `Bill`/`BillLine`. Don't let the admin
   reads in `services.py` grow into Phase 3.
 - **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
   (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
   Loading states are skeletons shaped like the content (`Skeleton.tsx`), not text.
-- **Period filter** (`MonthPicker.tsx`): arrows to step a month, a list to jump, bounded at the
-  current month (nothing is billed in the future) and at the oldest listed month (so the select
-  can never hold a value that is not one of its options). It drives both the list and the open
-  client's detail, including its daily Twilio rows and recent calls, through the endpoints'
-  `?month=`. The page only renders figures whose `month` matches the one selected, so a slow
-  response never leaves one period's numbers under another period's heading.
+- **Period filter** (`MonthPicker.tsx`): on the client's page, opposite the "All clients" back
+  button. Arrows to step a month, a list to jump, bounded at the current month (nothing is billed
+  in the future) and at the oldest listed month (so the select can never hold a value that is not
+  one of its options). It drives the detail - usage, daily Twilio rows, recent calls - and the
+  list request behind it, through the endpoints' `?month=`. The page only renders figures whose
+  `month` matches the one selected, so a slow response never leaves one period's numbers under
+  another period's heading.
+- **What-if rates** (`ClientDetail.tsx`): the client's rates are editable on the page, in React
+  state alone - nothing is sent, nothing is saved, and `ClientDetail` is remounted per client and
+  per period so a typed rate cannot follow the viewer into another one. While the rates are the
+  stored ones the server's own `estimated_bill_cents` is shown; only once a rate differs is the
+  estimate recomputed in the browser, so the headline figure cannot drift a cent from the backend
+  on its own. Writing a rate back is still Phase 4's editing UI, and is not built.
 - **Standalone preview (temporary).** Opened outside GHL - directly on an IP, before the domain
   and Custom Page exist - the page does not dead-end. It renders **bundled sample data**
   (`demoData.ts`) behind an amber "Standalone preview" banner, and **never calls the admin API**,

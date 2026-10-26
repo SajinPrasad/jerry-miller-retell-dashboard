@@ -116,6 +116,7 @@ const UNMAPPED: ClientSummary = {
   mapped: false,
   active: null,
   billing_mode: null,
+  retell_connected: false,
   twilio_connected: false,
   rates: null,
   usage: null,
@@ -165,6 +166,7 @@ function summary(spec: Spec, month: string): ClientSummary {
     mapped: true,
     active: true,
     billing_mode: 'auto_charge',
+    retell_connected: spec.agents.length > 0,
     twilio_connected: Boolean(spec.twilio_sid),
     rates: { ...rate(spec), start_date: `${month}-01` },
     usage: usageFor(spec, month),
@@ -203,7 +205,9 @@ function usageFor(spec: Spec, month: string): UsageSummary {
 /**
  * A stable multiplier per client per month, so stepping through periods shows different but
  * repeatable figures. The current month is left at 1 so the preview's headline numbers are
- * the same every time someone opens it.
+ * the same every time someone opens it. A finished month is always above 1 — partly because a
+ * month that has run its course really is busier than one halfway through, and partly so no
+ * other period can land on exactly the figures shown for this one.
  */
 function scale(locationId: string, month: string): number {
   if (month === currentMonth()) return 1
@@ -212,7 +216,7 @@ function scale(locationId: string, month: string): number {
   for (const character of `${locationId}:${month}`) {
     hash = (hash * 31 + character.charCodeAt(0)) % 100_000
   }
-  return 0.55 + (hash % 80) / 100
+  return 1.05 + (hash % 40) / 100
 }
 
 function twilioDayCount(spec: Spec, month: string): number {
