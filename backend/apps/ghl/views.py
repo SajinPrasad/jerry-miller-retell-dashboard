@@ -63,10 +63,15 @@ class OAuthCallbackView(APIView):
         service = GHLOAuthService()
         try:
             agency = service.exchange_code(code)
-            service.sync_locations(agency)
         except GHLError:
             logger.exception('ghl: install failed')
             return _redirect_to_onboarding(error='install_failed')
+
+        try:
+            service.sync_locations(agency)
+        except GHLError:
+            logger.exception('ghl: initial location sync failed')
+
         return _redirect_to_onboarding(status='connected')
 
 

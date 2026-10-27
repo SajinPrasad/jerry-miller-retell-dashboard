@@ -168,7 +168,11 @@ class GHLOAuthService:
             if page_token:
                 params['pageToken'] = page_token
             body = self._request(
-                'GET', '/oauth/installed-locations', token=agency_token, params=params
+                'GET',
+                '/oauth/installed-locations',
+                token=agency_token,
+                params=params,
+                version='v3',
             )
             for item in body.get('items', []):
                 locations[item['_id']] = item.get('name', '')
@@ -177,8 +181,10 @@ class GHLOAuthService:
             if not (pagination.get('hasNextPage') and page_token):
                 return locations
 
-    def _request(self, method: str, path: str, token: str | None = None, **kwargs) -> dict:
-        headers = {'Accept': 'application/json', 'Version': settings.GHL_API_VERSION}
+    def _request(
+        self, method: str, path: str, token: str | None = None, version: str | None = None, **kwargs
+    ) -> dict:
+        headers = {'Accept': 'application/json', 'Version': version or settings.GHL_API_VERSION}
         if token:
             headers['Authorization'] = f'Bearer {token}'
         try:

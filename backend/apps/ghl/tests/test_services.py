@@ -181,6 +181,7 @@ def test_sync_creates_location_rows_with_tokens(service):
 
     params = installed.calls.last.request.url.params
     assert params['companyId'] == 'comp1' and params['appId'] == 'app123'
+    assert installed.calls.last.request.headers['Version'] == 'v3'
     assert minted.calls.last.request.headers['Authorization'] == 'Bearer agency-access'
     loc1 = GHLOAuthToken.objects.get(location_id='loc1')
     assert not loc1.is_agency and loc1.is_active

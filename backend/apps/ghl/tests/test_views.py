@@ -62,6 +62,17 @@ def test_callback_without_code(api):
 
 
 @respx.mock
+def test_callback_connects_even_when_the_initial_sync_fails(api):
+    respx.post(f'{BASE}/oauth/token').mock(return_value=httpx.Response(200, json=token_response()))
+    respx.get(f'{BASE}/oauth/installed-locations').mock(return_value=httpx.Response(500))
+
+    response = api.get('/api/oauth/callback/', {'code': 'abc'})
+
+    assert response['Location'] == 'http://frontend.test/onboarding?status=connected'
+    assert GHLOAuthToken.objects.get(is_agency=True).company_id == 'comp1'
+
+
+@respx.mock
 def test_callback_failure(api):
     respx.post(f'{BASE}/oauth/token').mock(
         return_value=httpx.Response(200, json=token_response(userType='Location'))
