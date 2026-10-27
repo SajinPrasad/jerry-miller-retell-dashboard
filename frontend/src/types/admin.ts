@@ -75,6 +75,7 @@ export interface ClientDetail {
   month: string
   location_id: string
   client_name: string
+  mapped: true
   active: boolean
   billing_mode: string
   retell_agent_ids: string[]
@@ -86,3 +87,16 @@ export interface ClientDetail {
   twilio_days: TwilioDay[]
   recent_calls: RecentCall[]
 }
+
+/**
+ * A sub-account's own page, opened before an agency admin has mapped it. There is no usage or
+ * rates to show yet - just enough to say so.
+ */
+export interface UnmappedClientDetail {
+  month: string
+  location_id: string
+  client_name: string
+  mapped: false
+}
+
+export type ClientDetailResult = ClientDetail | UnmappedClientDetail

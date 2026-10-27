@@ -532,6 +532,7 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
     return {
         'location_id': mapping.location_id,
         'client_name': mapping.client_name,
+        'mapped': True,
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
         'retell_agent_ids': mapping.retell_agent_ids or [],

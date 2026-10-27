@@ -141,6 +141,7 @@ export function demoDetail(locationId: string, month: string): ClientDetail | nu
     month,
     location_id: spec.location_id,
     client_name: spec.client_name,
+    mapped: true,
     active: true,
     billing_mode: 'auto_charge',
     retell_agent_ids: spec.agents,

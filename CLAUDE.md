@@ -55,7 +55,11 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   `hashlib` already ship. Tests pin the derivation against real `openssl enc` vectors.
 - **Scope comes from `activeLocation`, never `type`.** GHL reports `type: "agency"` even inside a
   sub-account, so reading `type` would show one client every other client's numbers. There is no
-  `locationId` field.
+  `locationId` field. `activeLocation` can also hold the agency's **own** location id (it is a
+  real `GHLOAuthToken` row, `AGENCY_LOCATION_ID`) rather than being empty - `SSOContext.scope`
+  checks against `AGENCY_LOCATION_ID`, not against "is it set at all", so the agency account
+  always gets agency scope and the all-clients view, whether or not that location has its own
+  mapping.
 - **The blob is the credential.** It is sent on every admin request in `X-GHL-Session` and opened
   per request - no cookie (the iframe is cross-site), no JWT, no session store. The session's
   `companyId` must match the stored agency row, which is a real agency check the install path
@@ -69,6 +73,14 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
 - **Two pages, two jobs.** The list answers "who is onboarded, and is anyone billing them": client
   name and status, nothing else. Every figure - minutes, rates, estimate, cost, margin - and the
   period filter live on the client's own page, where there is room to show how they were reached.
+- **An unmapped sub-account opening its own page gets a friendly state, not a 404.** The detail
+  endpoint 404s only for an *agency* session reading a client the list already marked unmapped
+  (there is genuinely nothing to show yet, and the status is in the list). For a *location*
+  session - the client opening its own page - the same unmapped case is a normal 200:
+  `{month, location_id, client_name, mapped: false}`, no usage or rates fields at all. The
+  frontend (`ClientBrowser.tsx`) renders that as a plain "not set up yet" card instead of an
+  error banner. `ClientDetail`'s full response carries `mapped: true` so the two shapes are a
+  discriminated union (`ClientDetailResult` in `types/admin.ts`) rather than guessed apart.
 - **Money shown is an estimate**, `minutes x the current rate`, labelled as such in the UI. Phase 3
   applies the rate in effect on each call's day and owns `Bill`/`BillLine`. Don't let the admin
   reads in `services.py` grow into Phase 3.
@@ -94,15 +106,17 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   stored ones the server's own `estimated_bill_cents` is shown; only once a rate differs is the
   estimate recomputed in the browser, so the headline figure cannot drift a cent from the backend
   on its own. Writing a rate back is still Phase 4's editing UI, and is not built.
-- **Standalone preview (temporary).** Opened outside GHL - directly on an IP, before the domain
-  and Custom Page exist - the page does not dead-end. It renders **bundled sample data**
-  (`demoData.ts`) behind an amber "Standalone preview" banner, and **never calls the admin API**,
-  so previewing cannot expose a real client's rates or call history. A real GHL session always
-  takes precedence; `window.parent === window` is what distinguishes "not framed" from "framed
-  but unanswered". A session GHL *did* send that the backend refuses (401/403) still shows an
-  error, because that is a misconfiguration and samples would hide it. **The backend was not
-  weakened: it still requires a valid session for every admin request.** Delete `demoData.ts`
-  and the preview branch in `AdminPage` once the page is reached through GHL for good.
+- **The standalone preview is its own route, `/admin/preview`, separate from the live `/admin`.**
+  `AdminPreviewPage.tsx` renders **bundled sample data** (`demoData.ts`) behind an amber
+  "Standalone preview" banner and **never calls the admin API or attempts the GHL handshake at
+  all** - it cannot expose a real client's rates or call history, and it cannot be reached by
+  accident while testing live inside GoHighLevel. `/admin` itself (`AdminPage.tsx`) is always
+  live: if there is no GHL parent to ask, or it never answers, the page shows a short message
+  linking to `/admin/preview` instead of silently rendering demo data. A session GHL *did* send
+  that the backend refuses (401/403) still shows an error there, because that is a
+  misconfiguration, not an unframed page. Both pages share their list/detail rendering through
+  `ClientBrowser.tsx`, so they stay visually identical. **The backend was not weakened: it still
+  requires a valid session for every admin request.**
 - **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
   seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The

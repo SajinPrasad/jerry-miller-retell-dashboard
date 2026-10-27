@@ -9,6 +9,7 @@ from rest_framework.views import APIView
 from retell.lib import verify
 
 from apps.ghl import sso
+from apps.ghl.models import GHLOAuthToken
 
 from .models import ClientMapping
 from .services import client_detail, client_rows, month_window, store_call
@@ -64,11 +65,15 @@ class AdminClientsView(APIView):
         except ValueError as exc:
             raise ValidationError({'month': str(exc)}) from exc
 
+        # Only a sub-account session is narrowed to one client. An agency session widens to
+        # every client regardless of what `activeLocation` happens to hold - GHL can report the
+        # agency's own location there too.
+        location_id = context.active_location if context.scope == sso.LOCATION else None
         return Response(
             {
                 'scope': context.scope,
                 'month': start.strftime('%Y-%m'),
-                'clients': client_rows(start, end, location_id=context.active_location or None),
+                'clients': client_rows(start, end, location_id=location_id),
             }
         )
 
@@ -93,6 +98,20 @@ class AdminClientDetailView(APIView):
 
         mapping = ClientMapping.objects.filter(location_id=location_id).first()
         if mapping is None:
+            if context.scope == sso.LOCATION:
+                # The client's own page, opened before an agency admin has set it up. A 404 here
+                # would read as broken; this reads as "not yet", which is what it is.
+                location = GHLOAuthToken.objects.filter(
+                    is_agency=False, location_id=location_id
+                ).first()
+                return Response(
+                    {
+                        'month': start.strftime('%Y-%m'),
+                        'location_id': location_id,
+                        'client_name': location.name if location else '',
+                        'mapped': False,
+                    }
+                )
             raise NotFound('This client has not been mapped for billing yet.')
 
         return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})

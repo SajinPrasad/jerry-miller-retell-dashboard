@@ -9,7 +9,7 @@ from django.urls import reverse
 from django.utils import timezone
 
 from apps.ghl.models import GHLOAuthToken
-from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency
+from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency, seal
 from apps.rebilling.models import (
     BILLABLE,
     UNBILLABLE,
@@ -282,6 +282,20 @@ def test_a_sub_account_session_cannot_read_another_client(client):
     assert get_detail(client, 'loc-other', blob=VECTOR_LOCATION).status_code == 403
 
 
+def test_agency_viewer_sees_every_client_even_when_active_location_is_the_agencys_own(client):
+    """GHL can report the agency's own id as `activeLocation`. That must not narrow the list to
+    one location - it must still mean every client, the same as no activeLocation at all."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_location('loc2', 'Someone Else')
+    blob = seal({'companyId': 'comp_demo', 'activeLocation': 'agency-loc'})
+
+    body = get_clients(client, blob=blob).json()
+
+    assert body['scope'] == 'agency'
+    assert {row['location_id'] for row in body['clients']} == {'loc1', 'loc2'}
+
+
 # --- the detail view --------------------------------------------------------------------
 
 
@@ -296,6 +310,7 @@ def test_detail_returns_the_mapping_rates_and_usage(client):
 
     body = get_detail(client, 'loc1').json()
 
+    assert body['mapped'] is True
     assert body['retell_agent_ids'] == ['agent1']
     assert body['twilio_subaccount_sid'] == 'ACchild'
     assert body['rates']['voice_rate_cents'] == 30
@@ -323,10 +338,30 @@ def test_detail_shows_why_a_call_cannot_be_billed(client):
 
 
 def test_detail_404s_for_a_client_that_was_never_mapped(client):
+    """An agency admin reading a client the list already marks unmapped. There is nothing to read
+    yet, and the list is where that status is shown - this stays a 404."""
     make_agency()
     make_location('loc-new', 'Polar Peak Heating')
 
     assert get_detail(client, 'loc-new').status_code == 404
+
+
+def test_a_sub_account_with_no_mapping_gets_a_friendly_state_not_a_404(client):
+    """The client's own page, opened before an agency admin has set it up. A 404 would look
+    broken; this is a normal, expected state and must read as one."""
+    make_agency()
+    make_location('loc-new', 'Polar Peak Heating')
+    blob = seal({'companyId': 'comp_demo', 'activeLocation': 'loc-new'})
+
+    response = get_detail(client, 'loc-new', blob=blob)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        'month': MONTH,
+        'location_id': 'loc-new',
+        'client_name': 'Polar Peak Heating',
+        'mapped': False,
+    }
 
 
 def test_the_rate_in_effect_is_the_one_for_the_month_being_viewed(client):

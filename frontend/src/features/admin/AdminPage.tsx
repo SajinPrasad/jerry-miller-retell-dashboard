@@ -2,32 +2,32 @@ import { useEffect, useState } from 'react'
 import { getClientDetail, getClients, openSession } from '../../api/admin'
 import { ApiError } from '../../api/client'
 import { requestSessionBlob } from '../../lib/ghlSession'
-import type { ClientDetail as Detail, ClientsResponse, SsoSession } from '../../types/admin'
+import type { ClientDetailResult, ClientsResponse, SsoSession } from '../../types/admin'
 import './admin.css'
-import ClientDetail from './ClientDetail'
-import ClientsTable from './ClientsTable'
-import { DEMO_SESSION, demoClients, demoDetail } from './demoData'
+import ClientBrowser, { Shell } from './ClientBrowser'
 import { currentMonth } from './format'
-import MonthPicker from './MonthPicker'
-import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
+import { ClientsTableSkeleton } from './Skeleton'
 
 /** How the page got (or failed to get) its GoHighLevel session. Resolved once, on mount. */
 type Session =
   | { kind: 'loading' }
   | { kind: 'live'; session: SsoSession }
-  | { kind: 'preview' }
+  | { kind: 'unframed' }
   | { kind: 'blocked' }
   | { kind: 'error' }
 
+/**
+ * The live admin page: the GHL Custom Page's `/admin` route. Always real data from the real
+ * backend - the sample walkthrough lives on its own route, `/admin/preview`, and is never reached
+ * from here.
+ */
 export default function AdminPage() {
   const [session, setSession] = useState<Session>({ kind: 'loading' })
   const [month, setMonth] = useState(currentMonth())
   const [clients, setClients] = useState<ClientsResponse | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [detail, setDetail] = useState<Detail | null>(null)
+  const [detail, setDetail] = useState<ClientDetailResult | null>(null)
   const [failed, setFailed] = useState(false)
-
-  const preview = session.kind === 'preview'
 
   // 1. Resolve the session once. The period filter must not re-run the handshake.
   useEffect(() => {
@@ -36,10 +36,10 @@ export default function AdminPage() {
     async function resolve() {
       const blob = await requestSessionBlob()
 
-      // Opened straight in a browser, with no GoHighLevel to ask. Show the sample preview
-      // rather than a dead end, clearly marked as such.
+      // Opened straight in a browser, with no GoHighLevel to ask, or framed by something that
+      // never answered. There is no live data to show - see the sample at /admin/preview instead.
       if (!blob) {
-        if (!cancelled) setSession({ kind: 'preview' })
+        if (!cancelled) setSession({ kind: 'unframed' })
         return
       }
 
@@ -87,9 +87,11 @@ export default function AdminPage() {
     }
   }, [session, month])
 
-  // 3. The open client's detail, for the period chosen on its own page.
+  // 3. The open client's detail, for the period chosen on its own page. An unmapped sub-account
+  //    is a normal 200 (see ClientBrowser's UnmappedNotice), not a failure - only a real error
+  //    lands in `failed`.
   useEffect(() => {
-    if (!selected || session.kind === 'preview' || session.kind !== 'live') return
+    if (!selected || session.kind !== 'live') return
 
     let cancelled = false
     getClientDetail(selected, month)
@@ -111,6 +113,17 @@ export default function AdminPage() {
           <h2>Clients</h2>
           <ClientsTableSkeleton />
         </section>
+      </Shell>
+    )
+  }
+
+  if (session.kind === 'unframed') {
+    return (
+      <Shell>
+        <div className="banner warn" role="status">
+          Open this page from inside GoHighLevel to see live billing data.{' '}
+          <a href="/admin/preview">See a sample with demo data</a>.
+        </div>
       </Shell>
     )
   }
@@ -139,73 +152,21 @@ export default function AdminPage() {
 
   // Showing the period that was asked for, not one still in flight: the month has to match, so
   // last month's figures never sit under this month's heading.
-  const shown = preview ? demoClients(month) : clients?.month === month ? clients : null
-  const openDetail = resolveDetail()
-  const isSubAccount = shown?.scope === 'location'
-
-  function resolveDetail(): Detail | null {
-    if (!selected) return null
-    if (preview) return demoDetail(selected, month)
-    return detail?.location_id === selected && detail?.month === month ? detail : null
-  }
+  const shown = clients?.month === month ? clients : null
+  const openDetail =
+    selected && detail?.location_id === selected && detail?.month === month ? detail : null
 
   return (
-    <Shell userName={session.kind === 'live' ? session.session.user_name : DEMO_SESSION.user_name}>
-      {preview && (
-        <div className="banner warn" role="status">
-          <strong>Standalone preview.</strong> These are sample figures, not live billing data.
-          Open this page from inside GoHighLevel to see real clients.
-        </div>
-      )}
-
-      {selected ? (
-        <>
-          {/* The period belongs to the client being read, so the picker lives here, on the
-              same line as the way back. */}
-          <div className="detail-bar">
-            {!isSubAccount && (
-              <button type="button" className="button ghost" onClick={() => setSelected(null)}>
-                ← All clients
-              </button>
-            )}
-            <MonthPicker month={month} onChange={setMonth} busy={!openDetail} />
-          </div>
-          {openDetail ? (
-            // Remounted per client and per period, so the what-if rates on it start from the
-            // rates that client is actually on.
-            <ClientDetail key={`${selected}:${month}`} detail={openDetail} />
-          ) : (
-            <ClientDetailSkeleton />
-          )}
-        </>
-      ) : (
-        <section className="card">
-          <h2>Clients</h2>
-          <p className="muted small">
-            Every sub-account onboarded in GoHighLevel. Open one for its minutes, rates and bill
-            estimate.
-          </p>
-          {shown ? (
-            <ClientsTable clients={shown.clients} onSelect={setSelected} />
-          ) : (
-            <ClientsTableSkeleton />
-          )}
-        </section>
-      )}
+    <Shell userName={session.session.user_name}>
+      <ClientBrowser
+        month={month}
+        onMonthChange={setMonth}
+        selected={selected}
+        onSelect={setSelected}
+        onBack={() => setSelected(null)}
+        shown={shown}
+        openDetail={openDetail}
+      />
     </Shell>
-  )
-}
-
-function Shell({ userName, children }: { userName?: string; children: React.ReactNode }) {
-  return (
-    <main className="admin">
-      <header className="admin-header">
-        <div>
-          <h1>Voice billing</h1>
-          <p className="muted">{userName ?? 'Loading…'}</p>
-        </div>
-      </header>
-      {children}
-    </main>
   )
 }

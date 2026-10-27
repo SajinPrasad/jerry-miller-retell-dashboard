@@ -89,7 +89,9 @@ class SSOSessionView(APIView):
                 'role': context.role,
                 'is_agency_owner': context.is_agency_owner,
                 'company_id': context.company_id,
-                'active_location': context.active_location or None,
+                'active_location': (
+                    context.active_location if context.scope == sso.LOCATION else None
+                ),
                 'scope': context.scope,
             }
         )

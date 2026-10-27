@@ -83,7 +83,10 @@ class SSOContext:
         GHL's documented location-context example still reports `type: "agency"`, and reading
         it would show one client every other client's numbers.
         """
-        return LOCATION if self.active_location else AGENCY
+        agency_loc = getattr(settings, 'AGENCY_LOCATION_ID', '')
+        if self.active_location and self.active_location != agency_loc:
+            return LOCATION
+        return AGENCY
 
 
 def context_from_request(request) -> SSOContext:

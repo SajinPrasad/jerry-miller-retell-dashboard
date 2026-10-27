@@ -95,6 +95,18 @@ def test_location_scope_comes_from_active_location_not_type():
     assert context.scope == sso.LOCATION
 
 
+def test_agency_scope_when_active_location_is_the_agencys_own_location():
+    """GHL can report the agency's own id as `activeLocation`; that must still be agency scope,
+    not a sub-account - and regardless of whether the agency's own location has a mapping."""
+    make_agency()
+
+    context = sso.context_from_blob(
+        seal({'companyId': 'comp_demo', 'activeLocation': 'agency-loc'})
+    )
+
+    assert context.scope == sso.AGENCY
+
+
 def test_reads_unknown_fields_without_complaining():
     make_agency()
 
@@ -191,6 +203,19 @@ def test_session_endpoint_reports_the_active_location(client):
 
     assert response.json()['scope'] == 'location'
     assert response.json()['active_location'] == 'loc-cool-breeze'
+
+
+def test_session_endpoint_reports_agency_scope_for_the_agencys_own_location(client):
+    make_agency()
+
+    response = client.post(
+        reverse('ghl:sso-session'),
+        data={'key': seal({'companyId': 'comp_demo', 'activeLocation': 'agency-loc'})},
+        content_type='application/json',
+    )
+
+    assert response.json()['scope'] == 'agency'
+    assert response.json()['active_location'] is None
 
 
 def test_session_endpoint_401s_without_a_usable_blob(client):

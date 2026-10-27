@@ -59,6 +59,7 @@ const detail: ClientDetail = {
   month: THIS_MONTH,
   location_id: 'loc1',
   client_name: 'Cool Breeze HVAC',
+  mapped: true,
   active: true,
   billing_mode: 'auto_charge',
   retell_agent_ids: ['agent_1'],
@@ -512,58 +513,76 @@ describe('AdminPage', () => {
     await waitFor(() => expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.25'))
   })
 
-  // --- standalone preview --------------------------------------------------------------
+  // --- no GoHighLevel to ask -------------------------------------------------------------
 
-  it('falls back to a marked sample preview when there is no GoHighLevel to ask', async () => {
-    // Framed, but nothing answers: the handshake times out and the preview takes over.
+  it('points to the sample preview instead of showing demo data when there is nothing to ask', async () => {
+    // Framed, but nothing answers: the handshake times out with no live session to fall back on.
     parentIgnores()
     const fetchMock = mockApi()
 
     render(<AdminPage />)
     await vi.advanceTimersByTimeAsync(10_000)
 
-    expect(await screen.findByText('Standalone preview.', { exact: false })).toBeInTheDocument()
-    expect(screen.getByText('Cool Breeze HVAC')).toBeInTheDocument()
-    // The preview must never reach the authenticated API.
+    const link = await screen.findByRole('link', { name: /See a sample with demo data/ })
+    expect(link).toHaveAttribute('href', '/admin/preview')
+    // This route never shows sample data itself, and never calls the authenticated API either.
+    expect(screen.queryByText('Cool Breeze HVAC')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('previews immediately when the page is not framed at all', async () => {
+  it('shows the same message immediately when the page is not framed at all', async () => {
     // window.parent === window when opened directly in a browser, so there is nothing to wait
     // for and no timeout to sit through.
     const fetchMock = mockApi()
 
     render(<AdminPage />)
 
-    expect(await screen.findByText('Standalone preview.', { exact: false })).toBeInTheDocument()
+    expect(
+      await screen.findByText('Open this page from inside GoHighLevel', { exact: false }),
+    ).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('can open a client in the preview', async () => {
-    mockApi()
-    const user = userEvent.setup()
+  // --- an unmapped sub-account's own page -------------------------------------------------
+
+  it('shows a friendly notice instead of a 404 for an unmapped sub-account', async () => {
+    parentAnswers()
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      const json = (body: unknown) =>
+        Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+
+      if (url.startsWith('/api/ghl/sso/session/')) {
+        return json({ ...agencySession, active_location: 'loc-new', scope: 'location' })
+      }
+      if (url.startsWith('/api/rebilling/admin/clients/loc-new/')) {
+        return json({
+          month: THIS_MONTH,
+          location_id: 'loc-new',
+          client_name: 'Polar Peak Heating',
+          mapped: false,
+        })
+      }
+      if (url.startsWith('/api/rebilling/admin/clients/')) {
+        return json({ scope: 'location', month: THIS_MONTH, clients: [] })
+      }
+      return Promise.resolve(new Response('', { status: 404 }))
+    })
 
     render(<AdminPage />)
-    await openClient(user, 'Polar Peak Heating & Air')
 
-    expect(screen.getByText('agent_polar_peak')).toBeInTheDocument()
-    expect(screen.getByText('Rates')).toBeInTheDocument()
-  })
-
-  it('filters the preview by period too, without calling the API', async () => {
-    const fetchMock = mockApi()
-    const user = userEvent.setup()
-
-    render(<AdminPage />)
-    await openClient(user)
-    expect(tile('AI minutes').getByText('198.40')).toBeInTheDocument()
-
-    await user.selectOptions(monthSelect(), LAST_MONTH)
-
-    await waitFor(() => expect(monthSelect().value).toBe(LAST_MONTH))
-    // Different period, different figures — and still nothing fetched.
-    expect(screen.queryByText('198.40')).not.toBeInTheDocument()
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(
+      await screen.findByText("Voice billing isn't set up for this client yet."),
+    ).toBeInTheDocument()
+    expect(screen.getByText('Polar Peak Heating')).toBeInTheDocument()
+    // Not an error: no failure banner, and still the client's own page, not a list.
+    expect(screen.queryByText('Could not load billing data.', { exact: false })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
   })
 
   // --- failures ------------------------------------------------------------------------
