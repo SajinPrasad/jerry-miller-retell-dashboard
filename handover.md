@@ -39,10 +39,10 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 | # | Task | Due | Status |
 |---|---|---|---|
 | 1 | Marketplace app: GHL OAuth install, agency token, per-sub-account tokens | Oct 23 | **Built** (backend + onboarding page) |
-| 1b | Agency admin page: client list and usage by period | — | **Built** (`/admin` live, `/admin/preview` demo; read-only) |
+| 1b | Agency admin page: client list and usage by period | — | **Built** (`/admin` live, `/admin/preview` demo; read-only for usage, editable for mapping) |
 | 2 | Agency dashboard: MRR, live clients, leads/calls/signed by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (frontend feature folders hold only `.gitkeep`) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2 and 2b built**; Phase 3+ not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b and 3 (calculation) built; Phase 4's mapping edit UI built**; rest of Phase 4 (rate editing, unassigned-call mapping, bills in the UI), Phase 5 and Phase 6 not started |
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -165,12 +165,18 @@ which limits the exposure.
 
 ---
 
-## 5. Agency admin page (Task 4 Phase 3 prerequisite, built)
+## 5. Agency admin page (Task 4 Phase 4, brought forward; partially built)
 
 The embedded admin interface Jerry opens from the GHL left nav: onboarded clients, their rates and
-voice usage by period. Read-only — editing rates/mapping is Phase 4 and is not built.
+voice usage by period. Agency admins can view and edit client mappings (Retell Agent IDs, phone
+numbers, Twilio subaccount SID). Sub-accounts viewing their own page see mapping read-only. This is
+all Phase 4 work (plan.md calls the viewing half "the read-only half of Phase 4, brought forward";
+mapping editing is Phase 4's own write half) — built ahead of Phase 3's calculation engine rather
+than after it, which is why it was previously (incorrectly) referred to as "Phase 3" in this file.
+Editing rates, mapping unassigned calls, and showing real bills are the rest of Phase 4 and are not
+built yet.
 
-**Routes:** `/admin/` is live data (requires GHL SSO); `/admin/preview` is bundled sample data
+**Routes:** `/admin/` is live data (requires GHL SSO, calls the real API); `/admin/preview` is bundled sample data
 (development only, never calls the API). Both share rendering logic through `ClientBrowser.tsx`.
 
 **How GHL identifies the viewer.** The page runs in a GHL iframe, posts
@@ -186,7 +192,7 @@ reading `type` alone would show one client every other client's numbers. The rea
 **Agency scope** sees all clients and their rates/usage; **location scope** sees only that
 sub-account's own page. `activeLocation` is the credential that prevents cross-account viewing.
 
-**Endpoints** (both require valid SSO blob in `X-GHL-Session`):
+**Endpoints** (all require valid SSO blob in `X-GHL-Session`, except the last):
 - `POST /api/ghl/sso/session/` — who is viewing (user name, email, role, scope, active location).
 - `GET /api/rebilling/admin/clients/` — list of all sub-accounts (left-joined to `ClientMapping`),
   with `month=YYYY-MM` filter. An unmapped client shows `mapped: false` (not an error).
@@ -194,8 +200,12 @@ sub-account's own page. `activeLocation` is the credential that prevents cross-a
   Returns `{month, location_id, client_name, mapped: false}` (no usage fields) for an unmapped
   sub-account viewing its own page; agency scope requests for unmapped clients still 404 because
   the list already marked them unmapped and there is nothing to show.
+- `PUT /api/rebilling/admin/clients/<location_id>/mapping/` — agency admins only. Set or edit a
+  client's mapping (Retell agent IDs, phone numbers, Twilio subaccount SID). Persists to the database.
+  Sub-account sessions (location scope) receive 403 Forbidden. Unmapped or onboarded clients
+  receive 404. Returns the updated mapping fields.
 
-**Frontend** (`features/admin/AdminPage.tsx`, `AdminPreviewPage.tsx`, `ClientBrowser.tsx`):
+**Frontend** (`features/admin/AdminPage.tsx`, `AdminPreviewPage.tsx`, `ClientBrowser.tsx`, `MappingEditor.tsx`):
 - Unframed pages (no GHL parent, or the SSO handshake failed) render a message linking to
   `/admin/preview` instead of showing an error.
 - The preview page (`AdminPreviewPage.tsx`) renders bundled sample data (`demoData.ts`) behind an
@@ -203,9 +213,18 @@ sub-account's own page. `activeLocation` is the credential that prevents cross-a
   walkthrough only, not for live testing inside GHL.
 - Both live and preview pages use `ClientBrowser.tsx` for list/detail rendering, so they are
   visually identical.
-- An unmapped sub-account on its own page sees a friendly card explaining setup is in progress.
-- Money shown in the admin is an estimate: `minutes × current rate`, labelled as such. Phase 3
-  owns the real `Bill` and `BillLine` models, which apply per-call/per-day rates.
+- **Mapping editing:** `MappingEditor.tsx` is a reusable component (Retell agent IDs, phone numbers,
+  Twilio subaccount SID) that appears in two places: on a mapped client's detail page (editable for
+  agency admins, read-only `<dl>` for sub-accounts), and on an unmapped client's page as a "Set up
+  for billing" flow (agency admins only). When saved on the live page (`/admin`), it calls
+  `PUT /api/rebilling/admin/clients/<location_id>/mapping/`. In the preview page (`/admin/preview`),
+  it writes to an in-memory `previewMappings` store (`demoData.ts`) with zero network calls.
+- An unmapped sub-account on its own page sees a friendly card explaining setup is in progress
+  (not editable).
+- Money shown in the admin is still an estimate: `minutes × current rate`, labelled as such. Phase
+  3 (built; see §5.8) now produces real `Bill`/`BillLine` rows at the rate in effect on each call's
+  day or each usage date, but this page does not read them yet — switching this page to show real
+  bills instead of the estimate is part of what remains in Phase 4.
 
 **Period filter** (`MonthPicker.tsx`): on the client page, arrows and a dropdown to select a month.
 Bounded at the current month (no future billing) and at the oldest month in the list (so the
@@ -213,7 +232,7 @@ selected value always exists). Drives both the detail request and the rendering 
 
 ---
 
-## 6. Task 4: voice rebilling (Phases 1, 2 and 2b built)
+## 6. Task 4: voice rebilling (Phases 1, 2, 2b and 3 built)
 
 ### 5.1 The business rule
 
@@ -344,20 +363,91 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `TWILIO_REQUEST_TIMEOUT` | 30 | seconds |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker |
 
-### 5.8 Phase status
+### 5.8 Phase 3 — calculation (built)
+
+`calculate_bills(month=None)` (`apps/rebilling/services.py`) and `python manage.py calculate_bills
+[--month YYYY-MM]`. One `Bill` row per active client per `billing_period` (`YYYY-MM`, DB-level
+`unique_together(client, billing_period)` so the same period is never billed twice), with a
+`BillLine` per source that actually has billable usage.
+
+- **AI-minute line:** sums `billable_minutes` over `RetellCall` rows with `billing_status =
+  billable` in the month, each at the `voice_rate_cents` in effect **on that call's day** — a
+  mid-month rate change splits the bill correctly. A call on a day with no `RateHistory` row yet
+  is logged and left out of this bill (not marked billed), rather than failing the whole run.
+- **Call-minute line:** sums `TwilioUsageDay.usage_minutes` in the month, each at the
+  `call_rate_cents` in effect **on that `usage_date`**. Never rounded again — Twilio's minutes
+  arrive pre-rounded.
+- A client with no `twilio_subaccount_sid` simply gets no Twilio line; Retell billing for everyone
+  else is unaffected.
+- All arithmetic in `Decimal`; the final cents total is rounded once with `ROUND_HALF_UP` (the same
+  convention `usage_summary()`'s estimate already uses), never truncated and never float.
+- A client with nothing billable from either source gets no `Bill` row at all — never a zero bill.
+- `RetellCall.bill` / `TwilioUsageDay.bill` are set only on the rows actually included in a bill.
+  Both are `on_delete=SET_NULL`: deleting a `Bill` (e.g. a correction) unlinks those rows but never
+  deletes the underlying call or usage-day records.
+- Rate lookup fetches a client's `RateHistory` once per billing run, not once per call — a month
+  can hold thousands of calls, and the rate changes only a handful of times at most.
+- **Deliberately not automated:** the plan calls for running Twilio's month-close pull
+  (`pull_twilio_usage --start --end`) before calculating, so the bill is built on settled days.
+  `calculate_bills` does not trigger this itself — it stays two separate commands, run in order,
+  rather than coupling the two services.
+- **Deliberately not built here:** no admin/API exposure of bills (Phase 4), no charging (Phase 5).
+
+**Tests** (`apps/rebilling/tests/test_billing.py`, 19 tests): rate-in-effect billing, mid-month
+rate splits, unbillable-call exclusion, Twilio no-double-rounding, single-source clients
+(Retell-only or Twilio-only), zero-usage clients skipped, inactive clients never billed, idempotent
+re-run of an already-billed month, two clients billing independently, the integer-cents invariant,
+`SET_NULL` on bill deletion, and the management command (success output and bad-month rejection).
+
+### 5.9 Phase status
 
 | Phase | What | Status |
 |---|---|---|
 | 1 | Models, client mapping, Retell webhook | Built |
 | 2 | Retell nightly reconciliation (list + backfill) | Built |
 | 2b | Twilio daily usage pull (`calls` only) | Built. Latest commit `ea95a0c` |
-| 3 | Period calculation and bills, both sources, typed bill lines, integer cents | **Not started. Not requested** |
-| 4 | Admin page: rates, mapping, unassigned calls, bills, usage split by source | Not started |
+| 3 | Period calculation and bills, both sources, typed bill lines, integer cents | **Built** (§5.8) |
+| 4 | Admin page: rates, mapping edit UI, unassigned calls, bills, usage split by source | **Mapping edit UI built** (live and preview, admin registration, Django admin for mapping — see below); rate editing, unassigned-call mapping and showing real bills not started |
 | 5 | Charging: GHL invoice schedule with auto-payment, then Stripe, then an invoice-link fallback | Not started |
 | 6 | Alerts (failed pulls, unassigned calls, failed charges, overdue bills), then the Branwynn end-to-end test | Not started |
 
-**Nothing reads `TwilioUsageDay` or `call_rate_cents` yet.** Phase 3 is where that happens, and
-it must use `billing_status = billable` rows only.
+**Backend (Phase 4 mapping UI):** `ClientMappingSerializer` validates Retell agent IDs (non-blank,
+deduplicated), phone numbers (7–15 digits, deduplicated, normalized), and Twilio subaccount SID
+(regex `^AC[0-9a-fA-F]{32}$`, blank allowed). `set_mapping()` service creates or updates a mapping,
+persisting only the fields sent (leaves others untouched). `AdminClientMappingView` enforces agency
+scope (403 for sub-accounts, 404 for unmapped clients). `ClientMapping` is now registered in Django
+admin (`list_display`, `list_filter`, `search_fields`). All 12 new tests pass: valid saves, partial
+updates, field dedupe, validation rejections, auth failures.
+
+**Frontend (Phase 4 mapping UI):** `MappingEditor.tsx` (new) is a unified editor reused across live
+and preview. Props: `locationId`, `clientName`, `initial`, `preview` (boolean), `onSaved` callback.
+Renders labeled inputs for the three mapping fields, with a chip-list UI for agent IDs and phone
+numbers (add on Enter or button click, remove via ×). On save: if `preview=true`, calls
+`savePreviewMapping()` (in-memory, no network); else calls `saveMapping()` (live API). Error handling:
+400 → user-friendly "Check the Twilio subaccount SID and the phone numbers"; else → "Could not save.
+Try again." The component is threaded into `ClientDetail.tsx` (edit or read-only `<dl>` based on
+`canEdit = !isSubAccount`), and into `ClientBrowser.tsx`'s `SetUpMapping` flow for unmapped clients
+(agency admins only). `ClientsTable.tsx` now renders unmapped rows as clickable for agency admins
+(not clickable for sub-accounts). 
+
+**Preview (in-memory mapping):** `previewMappings` module-level `Map<string, MappingFields>` in
+`demoData.ts` holds edits made during a session. `savePreviewMapping()` writes to it;
+`resetPreviewMappings()` clears it (called in test `afterEach` to prevent test bleed). `withPreviewMapping(spec)`
+applies any edit to a demo spec (updates agents, numbers, twilio_sid). `unmappedOrSetUp()` returns
+the static `UNMAPPED` summary or a mapped version if an edit exists. `demoClients()` and `demoDetail()`
+read the store, so the preview UI reflects edits persistently across navigations — no API calls ever.
+
+**Architecture decision (404 avoidance):** The live `AdminPage.tsx` skips fetching detail when the
+clients-list summary already marks a row `mapped: false`, synthesizing the `{month, location_id,
+client_name, mapped: false}` shape directly from the summary. This avoids the backend's 404-for-agency-on-unmapped-detail behavior (a constraint that exists to keep unmapped clients out of the list in agency views, but the list already knows they are unmapped). The frontend fix keeps all existing tests passing and allows an agency admin to open an unmapped client to set it up.
+
+**Test count:** Backend 195 passed (up from 176: +19 Phase 3 calculation tests in `test_billing.py`).
+Frontend 43 passed (unchanged this session — Phase 3 was backend-only; no frontend reads bills yet).
+Linting clean; `makemigrations --check --dry-run` clean.
+
+**`call_rate_cents` and the Twilio usage are now read for billing.** Phase 3's `calculate_bills`
+does this, using `billing_status = billable` rows only. The admin page itself still shows an
+estimate rather than these real bills — see §5, "Money shown in the admin."
 
 ---
 
@@ -378,20 +468,24 @@ These are enforced in code, or are explicit requirements for the next phases.
 6. **Rounding is per source.** `RETELL_ROUNDING` applies to Retell only. Twilio arrives pre-rounded.
 7. **No double-billing.** Bill Twilio `calls` only. Retell lands in the trunking categories.
 8. **Re-pulls are safe.** Twilio uses `update_or_create`. Retell uses first-write-wins on `call_id`.
-9. **Never charge the same period twice** (Phase 3 to 5 requirement: one bill per client per
-   period, and check its status before any retry).
-10. **Save the bill and its lines before charging**, so any number can be explained later.
+9. **Never charge the same period twice.** Enforced at the DB level: `Bill` has
+   `unique_together(client, billing_period)`. Phases 4–5 (charging) still need to check a bill's
+   charge status before any retry.
+10. **Save the bill and its lines before charging**, so any number can be explained later. Phase 3
+    does this; nothing charges yet.
 11. **Rates have history.** A rate change adds a `RateHistory` row, and usage before the change keeps
-    the old rate. Phase 3 must look up each rate by the day of the call or the `usage_date`.
+    the old rate. Phase 3's `calculate_bills` looks up each rate by the day of the call or the
+    `usage_date` (built; see §5.8).
 12. **A failed Twilio pull must not look like zero usage.** The `failed` count and the command's
     non-zero exit exist for this. Phase 6 should alert on it.
 13. **A failed page abandons that client's whole window.** A half-read window would look settled.
 
 ---
 
-## 7. Money model for Phase 3 (planned; read before building)
+## 7. Money model for Phase 3 (built; see §5.8 for the implementation)
 
-- A monthly billing period, kept as a setting.
+- A monthly billing period (`YYYY-MM`), via the existing `month_window()` helper — not a new
+  setting; the existing one already covers this.
 - Per active client, per period:
   - **AI-minute line:** sum the `billable_minutes` of `billable` `RetellCall` rows, multiplied by
     `voice_rate_cents` in effect on each call's day.
@@ -402,7 +496,7 @@ These are enforced in code, or are explicit requirements for the next phases.
 - Clients with nothing to bill are skipped.
 - The bill and its lines are saved before any charge.
 - New models: `Bill` and `BillLine`. `RetellCall` and `TwilioUsageDay` gain a reference to the bill
-  they were billed on.
+  they were billed on, cleared (`SET_NULL`) rather than deleted if the bill itself is ever deleted.
 
 ---
 
@@ -480,8 +574,11 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 - Shared helpers: `apps/rebilling/tests/test_services.py` (`make_client`, `call_payload`) is reused
   by the other rebilling test modules. `test_reconciliation.py` has `recent_call()`, which builds
   timestamps inside the 48-hour window. The fixed-date payload is deliberately **outside** it.
-- Current count: **154 backend tests, all passing**. Tests added for the GHL v3 header fix,
-  decoupled sync failures, and sub-account storage without tokens.
+- Current count: **176 backend tests, all passing** (up from 154: +12 mapping tests in
+  `test_admin_mapping.py`). **43 frontend tests, all passing** (up from 38: +6 mapping tests, 1 old
+  test replaced). Tests added for the GHL v3 header fix, decoupled sync failures, sub-account
+  storage without tokens, live mapping edit/setup flows, preview in-memory editing, and
+  validation error handling.
 
 | File | Covers |
 |---|---|
@@ -491,7 +588,9 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 | `apps/rebilling/tests/test_reconciliation.py` | list and paging, backfill, errors, command |
 | `apps/rebilling/tests/test_tasks.py` | Retell Celery task, beat schedule |
 | `apps/rebilling/tests/test_twilio.py` | Twilio pull, paging, update vs insert, per-client failure, command, Twilio task, schedule |
-| `frontend/src/features/onboarding/OnboardingPage.test.tsx` | onboarding page (not run recently) |
+| `apps/rebilling/tests/test_admin_mapping.py` | client mapping serializer validation, set_mapping service, AdminClientMappingView auth and errors |
+| `frontend/src/features/admin/AdminPage.test.tsx` | SSO handshake, live client list, detail fetch, mapping edit/setup flows, validation |
+| `frontend/src/features/admin/AdminPreviewPage.test.tsx` | demo rendering, period filtering, unmapped client setup, in-memory mapping edits |
 
 ---
 
@@ -594,9 +693,10 @@ These cannot be answered from the docs.
 ## 15. Known gaps and risks
 
 - **Nothing runs in production yet.** A worker and a beat process must be deployed first.
-- **A failed nightly run only logs.** There is no alert until Phase 6. Until then, a silently
+- **A failed nightly run only logs.** There is no alert until Phase 7. Until then, a silently
   failing Retell audit or Twilio pull under-bills with no visible signal.
-- **No Django admin** for the rebilling or GHL models. Mappings are created from the Django shell.
+- **Django admin** now has `ClientMapping` registered, but GHL models have no admin. The GHL tokens
+  and OAuth history cannot be inspected through the admin yet.
 - **The install check is weaker** (see section 4). Any agency that satisfies the "Company" type can
   install. (A marketplace app being private limits the exposure.)
 - **Refresh-token locking assumes one database.** It is fine on a single Postgres. Revisit it
@@ -609,9 +709,9 @@ These cannot be answered from the docs.
   machine**. Commit `6d0b7b1` claims `plan.md` is in it, and it is not.
 - **`apps/dashboards` is empty**, and the `frontend/src/features/*-dashboard` folders hold only
   placeholders.
-- **The admin page is built but not verified in a browser yet.** SSO handshake logic is tested,
-  and all backend endpoints pass their tests, but the React UI rendering and the GHL iframe
-  embedding have not been verified live.
+- **The admin page mapping UI is built and tested**, but not verified in a live GHL iframe yet.
+  SSO handshake, all backend endpoints, and frontend component rendering are tested; GHL iframe
+  embedding and the live mapping save workflow have not been verified inside GHL.
 
 ---
 
@@ -651,7 +751,116 @@ sub-account storage without tokens, and error message propagation.
 
 ---
 
-## 17. Git history
+## 17. Recent session: Client mapping integration (Task 4 Phase 4 mapping UI)
+
+Labelled "Phase 3" at the time this was built; reconciled against plan.md's own numbering in §18 —
+the mapping UI is Phase 4's write half, built ahead of Phase 3's calculation engine.
+
+**Task:** Integrate the manual mapping feature from the `maping` branch into current `main`,
+preserving live/preview route separation.
+
+**Backend changes:**
+- `ClientMappingSerializer` (new): validates Retell agent IDs (non-blank, deduplicated), phone
+  numbers (7–15 digits, deduplicated, normalized), and Twilio subaccount SID (regex match,
+  blank allowed). Replicates serializer validation logic on each save (not relying on model
+  defaults).
+- `set_mapping()` service (new): creates or updates a `ClientMapping`, writing only the fields
+  sent (leaves others untouched on partial updates).
+- `AdminClientMappingView` (new): `PUT /api/rebilling/admin/clients/<location_id>/mapping/`. Agency
+  scope only. Returns the updated mapping or raises 403 (sub-account), 404 (unmapped/unonboarded).
+- `ClientMapping` admin registration: displays `client_name`, `location_id`, `active`, `billing_mode`,
+  `twilio_subaccount_sid`; filters by `active`, `billing_mode`; searches by `client_name`,
+  `location_id`.
+- `test_admin_mapping.py` (new): 12 tests covering valid saves, partial updates, deduplication,
+  validation rejections, auth failures, 404 on unonboarded location.
+
+**Frontend changes:**
+- `MappingEditor.tsx` (new): unified editor component for Retell agents, phone numbers, and Twilio
+  SID. Chip-list UI for list fields. Two modes: live (calls `saveMapping` API) and preview (writes
+  to in-memory store, no network). User-friendly error messages.
+- `ClientDetail.tsx`: conditional mapping editing. `canEdit` prop determines whether to render
+  `MappingEditor` (editable) or read-only `<dl>` (not editable).
+- `ClientBrowser.tsx`: new `SetUpMapping` component for unmapped clients (agency admins only).
+  Calls `onMappingSaved` callback on successful save, triggering a re-fetch of both detail and
+  list (to mark the client as mapped).
+- `ClientsTable.tsx`: unmapped rows clickable for agency admins (non-clickable for sub-accounts).
+- `AdminPage.tsx` (live): added 404-avoidance optimization. Skips detail fetch when clients-list
+  summary already marks the row `mapped: false`, synthesizing the unmapped shape directly from the
+  summary. New `handleMappingSaved()` callback re-fetches both detail and list.
+- `AdminPreviewPage.tsx`: added dummy `bumpPreview` state trigger to force re-renders after in-memory
+  edits. Passed `preview={true}` and `onMappingSaved` to `ClientBrowser`.
+- `demoData.ts`: added module-level `previewMappings` map (`savePreviewMapping`, `resetPreviewMappings`).
+  `withPreviewMapping()` applies edits to demo specs. `unmappedOrSetUp()` returns mapped summary if
+  an edit exists. All functions read the map, so demo edits persist across navigations with zero API
+  calls.
+- `admin.css`: added full "mapping editor" block (`.mapping-editor`, `.mapping-field`, `.chip-list`,
+  `.chip`, `.chip-add`, styling for inputs and buttons).
+- `AdminPage.test.tsx`: 3 new tests (live edit, setup unmapped client, validation error).
+- `AdminPreviewPage.test.tsx`: replaced 1 old test ("unmapped not clickable") with 3 new tests
+  (open unmapped to setup, edit mapping and persist, setup marks client as mapped). Added
+  `afterEach(() => resetPreviewMappings())` to prevent test bleed.
+
+**Documentation:** `CLAUDE.md` updated with five edits: mapping endpoint description, serializer
+validation, `set_mapping()` service, Django admin registration, in-memory preview store, 404-avoidance
+pattern.
+
+**Tests:** 176 backend passing (↑12), 43 frontend passing (↑5 net, including 1 replaced), linting
+clean, `tsc`/`vite build` clean.
+
+**Status:** All acceptance criteria met. Changes staged/unstaged, not committed (per task constraint).
+
+---
+
+## 18. Recent session: voice rebilling Phase 3 (calculation engine)
+
+**Task:** Build Phase 3 of Task 4 — the billing calculation engine — per `plan.md`'s "Phase 3 —
+calculation" section: `Bill`/`BillLine` models and migration, the calculation service and
+management command, adherence to the financial rules, and tests.
+
+**Models** (`apps/rebilling/models.py`, migration `0004`): `Bill` (`client`, `billing_period`
+`YYYY-MM`, `total_cents`; `unique_together(client, billing_period)`), `BillLine` (`bill`,
+`line_type` — `retell`/`twilio`, `quantity_minutes`, `cost_cents`, `bill_cents`). `RetellCall.bill`
+and `TwilioUsageDay.bill` added, both nullable and `on_delete=SET_NULL` — deleting a bill unlinks
+those rows but never deletes the underlying call or usage-day data. No `created_at` or other
+audit field was added to `Bill`; nothing in the plan or the calculation logic needed one.
+
+**Service** (`apps/rebilling/services.py`): `calculate_bills(month=None)` plus
+`_bill_one_client`, `_retell_line`, `_twilio_line`, `_rate_in_effect` — plain functions, matching
+the existing style (`store_call`, `match_client`, `usage_summary`) rather than a new service class.
+Reuses `month_window()` for period parsing (same validation the admin endpoints already use) and
+`_calls_in_window()` for the Retell date-range query, rather than duplicating either. Full details
+and the design reasoning are in §5.8 above.
+
+**Command:** `python manage.py calculate_bills [--month YYYY-MM]`, modelled on the existing
+`pull_twilio_usage`/`reconcile_retell_calls` commands' terse style.
+
+**Tests:** 18 new tests in `test_billing.py`, plus one more (19 total) added when `bill`'s
+`on_delete` was changed to `SET_NULL`, verifying a deleted bill unlinks rather than deletes the
+underlying `RetellCall`/`TwilioUsageDay` rows.
+
+**Bugs caught and fixed before this was reported done:** an early draft called a rate-lookup
+function that didn't exist, duplicated `_calls_in_window()`'s datetime-window logic, truncated
+cents with `int()` instead of the codebase's `ROUND_HALF_UP` convention, and added a `created_at`
+field nobody asked for. All four were caught and fixed in review before the tests were considered
+final, and a `created_at`-less migration was the one actually applied.
+
+**Phase-numbering correction (this session):** `plan.md`'s own phase numbers — Phase 3 is the
+calculation engine, Phase 4 is the admin page (read-only viewing, brought forward, plus the
+write/mapping/rates/bills half) — are authoritative. §5, §5.8/5.9, §6's title, §7's title, and §17
+above previously mislabeled the already-built mapping-edit UI as "Phase 3"; they now say Phase 4,
+and Phase 3 is recorded as built where it actually is.
+
+**Deliberately not built:** the plan also calls for running Twilio's month-close pull before
+calculating, so the bill is built on settled days; `calculate_bills` does not trigger that pull
+itself (see §5.8) — it stays two separate commands run in order. No admin/API exposure of bills
+(Phase 4) and no charging (Phase 5) were built either.
+
+**Status:** Backend 195 tests passing (176 + 19), lint clean, `makemigrations --check` clean,
+`manage.py check` clean. Not committed (no commit was requested).
+
+---
+
+## 19. Git history
 
 | Commit | Message (abridged) |
 |---|---|
@@ -660,17 +869,23 @@ sub-account storage without tokens, and error message propagation.
 | `6d0b7b1` | feat(rebilling): implement Phase 1 models, Retell webhook, and call matching |
 | `44c3d94` | feat(rebilling): implement Phase 2 Retell nightly reconciliation audit |
 | `d9ab56a` | feat(rebilling): add unbillable call tracking and Celery daily audit schedule |
-| `ea95a0c` | Integrated twillio calls with Retell. This is the Phase 2b work |
+| `ea95a0c` | Integrated twilio calls with Retell. This is the Phase 2b work |
+| `1d9d280` | feat: Agency Admin Custom Page with white and green theme and demo seed data |
+| `4012b52` | feat(admin): resolve agency scope, handle unmapped clients gracefully, and separate demo preview |
+| `f0ec6cc` | fix(ghl): use version v3 for installed-locations and decouple initial sync |
+| `cc8e982` | fix(ghl): sync all agency sub-accounts regardless of app install status |
+| `3e383bb` | feat: add refresh clients button and location-created webhook |
+| `4b21240` | feat(rebilling): integrate client mapping editor for live and preview routes |
 
-The working tree has uncommitted changes from the most recent session:
-- GHL API v3 header fix for `/oauth/installed-locations`
-- Decoupled sync failures from install failures
-- Sub-account storage without tokens
-- Frontend admin page (`/admin`, `/admin/preview`), SSO scope resolution, and unmapped states
+The working tree has **uncommitted changes** for **Task 4 Phase 3 calculation engine** (§18):
+- Backend: `models.py` (+Bill, +BillLine, +bill FKs with `SET_NULL` on RetellCall/TwilioUsageDay), `services.py`
+  (+calculate_bills and helpers), `migrations/0004_...py` (new), `management/commands/calculate_bills.py` (new),
+  `tests/test_billing.py` (new, 19 tests)
+- Documentation: `handover.md` (this session's edits)
 
 ---
 
-## 18. Memory and collaboration
+## 20. Memory and collaboration
 
 - Claude's persistent memory for this project is indexed by `MEMORY.md` and currently holds one
   entry: **avoid over-engineering**. Build exactly what is asked, with no speculative extras.
@@ -681,12 +896,15 @@ The working tree has uncommitted changes from the most recent session:
 
 ---
 
-## 19. How to start a new session on this project
+## 21. How to start a new session on this project
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **154 passed**. Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
+   **195 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **43 passed**
+   (frontend). Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
 4. Check `git status` and `git log --oneline | head` before changing anything.
-5. Don't start Phase 3 or Tasks 2 and 3 without an explicit request. Ask first if the request is
-   ambiguous. Never make live API calls.
+5. **Note:** Task 4 Phase 3 (calculation engine, §18) is built. Phase 4's mapping edit UI
+   (§17) is committed (4b21240). The rest of Phase 4 (rate editing, unassigned-call mapping,
+   in the admin page) and Phases 5–6 are not started. Don't start them, or Tasks 2 and 3, without
+   an explicit request. Ask first if the request is ambiguous. Never make live API calls.

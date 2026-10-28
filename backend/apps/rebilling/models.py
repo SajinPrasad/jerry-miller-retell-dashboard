@@ -135,6 +135,11 @@ class RetellCall(models.Model):
     billing_status = models.CharField(max_length=20, choices=BILLING_STATUSES, default=UNBILLABLE)
     # Why it can't be billed, for the admin page. Empty when it can.
     unbillable_reason = models.CharField(max_length=255, blank=True, default='')
+    # The bill this call was billed on, if any. Deleting a bill never deletes the call itself —
+    # only unlinks it.
+    bill = models.ForeignKey(
+        'Bill', on_delete=models.SET_NULL, null=True, blank=True, related_name='retell_calls'
+    )
 
     class Meta:
         db_table = 'rebilling_retell_call'
@@ -200,6 +205,11 @@ class TwilioUsageDay(models.Model):
     twilio_price_cents = models.PositiveIntegerField(default=0)
     # Twilio's own freshness stamp — the moment through which this day's data is current.
     as_of = models.DateTimeField(null=True, blank=True)
+    # The bill this day was billed on, if any. Deleting a bill never deletes the usage day itself —
+    # only unlinks it.
+    bill = models.ForeignKey(
+        'Bill', on_delete=models.SET_NULL, null=True, blank=True, related_name='twilio_lines'
+    )
 
     class Meta:
         db_table = 'rebilling_twilio_usage_day'
@@ -209,3 +219,53 @@ class TwilioUsageDay(models.Model):
 
     def __str__(self):
         return f'TwilioUsageDay({self.client_id}, {self.usage_date}, {self.category})'
+
+
+# Values for `BillLine.line_type`.
+RETELL_LINE = 'retell'
+TWILIO_LINE = 'twilio'
+LINE_TYPES = [(RETELL_LINE, 'Retell AI minutes'), (TWILIO_LINE, 'Twilio call minutes')]
+
+
+class Bill(models.Model):
+    """One bill for one client for one month.
+
+    Covers both Retell AI minutes and Twilio regular call minutes. Lines are added per source
+    only when there is usage of that source, so a client billed for only one source produces one
+    line.
+    """
+
+    client = models.ForeignKey(ClientMapping, on_delete=models.PROTECT, related_name='bills')
+    # The billing period as YYYY-MM.
+    billing_period = models.CharField(max_length=7)
+    # Total amount to bill, in cents. Sum of all lines.
+    total_cents = models.PositiveIntegerField(default=0)
+
+    class Meta:
+        db_table = 'rebilling_bill'
+        ordering = ['-billing_period']
+        # One bill per client per period, never charged twice.
+        unique_together = [('client', 'billing_period')]
+
+    def __str__(self):
+        return f'Bill({self.client_id}, {self.billing_period}, {self.total_cents}¢)'
+
+
+class BillLine(models.Model):
+    """One line item on a bill: either Retell or Twilio."""
+
+    bill = models.ForeignKey(Bill, on_delete=models.CASCADE, related_name='lines')
+    line_type = models.CharField(max_length=20, choices=LINE_TYPES)
+    # Quantity in minutes, for the human to verify.
+    quantity_minutes = models.DecimalField(max_digits=12, decimal_places=2)
+    # Jerry's cost for this line (what the provider charged him), in cents.
+    cost_cents = models.PositiveIntegerField()
+    # What we charge the client, in cents. Calculated from quantity × rate at time of billing.
+    bill_cents = models.PositiveIntegerField()
+
+    class Meta:
+        db_table = 'rebilling_bill_line'
+        ordering = ['line_type']
+
+    def __str__(self):
+        return f'BillLine({self.bill_id}, {self.line_type}, {self.bill_cents}¢)'

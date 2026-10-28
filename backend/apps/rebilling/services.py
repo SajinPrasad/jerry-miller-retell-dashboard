@@ -27,7 +27,11 @@ from .exceptions import RetellError, TwilioError
 from .models import (
     BILLABLE,
     CALLS,
+    RETELL_LINE,
+    TWILIO_LINE,
     UNBILLABLE,
+    Bill,
+    BillLine,
     ClientMapping,
     RateHistory,
     RetellCall,
@@ -689,3 +693,179 @@ def _is_stale(as_of: datetime | None) -> bool:
     if as_of is None:
         return False
     return as_of < timezone.now() - timedelta(days=TWILIO_STALE_AFTER_DAYS)
+
+
+def calculate_bills(month: str | None = None) -> dict:
+    """Calculate and store one bill per active client for one calendar month.
+
+    `month` is 'YYYY-MM'; absent means this month (see `month_window`). One bill per client per
+    period: a client already billed for this period is left untouched, so re-running a month
+    that has already been billed changes nothing. A client with nothing billable from either
+    source in the period gets no bill at all — a zero bill is never created.
+    """
+    start, end = month_window(month)
+    period = f'{start.year:04d}-{start.month:02d}'
+
+    created = 0
+    already_billed = 0
+    total_cents = 0
+
+    for client in ClientMapping.objects.filter(active=True):
+        if Bill.objects.filter(client=client, billing_period=period).exists():
+            already_billed += 1
+            continue
+
+        bill = _bill_one_client(client, period, start, end)
+        if bill is not None:
+            created += 1
+            total_cents += bill.total_cents
+            logger.info('billing: Bill(%s, %s, %d¢)', client.location_id, period, bill.total_cents)
+
+    return {
+        'period': period,
+        'bills_created': created,
+        'already_billed': already_billed,
+        'total_cents': total_cents,
+    }
+
+
+def _bill_one_client(client: ClientMapping, period: str, start: date, end: date) -> Bill | None:
+    """One client's bill for one period, or None if there is nothing billable from either source."""
+    retell = _retell_line(client, start, end)
+    twilio = _twilio_line(client, start, end)
+    if retell is None and twilio is None:
+        return None
+
+    # Saved before any charging happens, so any number on it can be explained later.
+    bill = Bill.objects.create(client=client, billing_period=period, total_cents=0)
+    total_cents = 0
+
+    if retell is not None:
+        BillLine.objects.create(
+            bill=bill,
+            line_type=RETELL_LINE,
+            quantity_minutes=retell['minutes'],
+            cost_cents=retell['cost_cents'],
+            bill_cents=retell['bill_cents'],
+        )
+        RetellCall.objects.filter(pk__in=retell['call_ids']).update(bill=bill)
+        total_cents += retell['bill_cents']
+
+    if twilio is not None:
+        BillLine.objects.create(
+            bill=bill,
+            line_type=TWILIO_LINE,
+            quantity_minutes=twilio['minutes'],
+            cost_cents=twilio['cost_cents'],
+            bill_cents=twilio['bill_cents'],
+        )
+        TwilioUsageDay.objects.filter(pk__in=twilio['day_ids']).update(bill=bill)
+        total_cents += twilio['bill_cents']
+
+    bill.total_cents = total_cents
+    bill.save(update_fields=['total_cents'])
+    return bill
+
+
+def _retell_line(client: ClientMapping, start: date, end: date) -> dict | None:
+    """Sum billable AI minutes in the window, each at the rate in effect on its call's day.
+
+    Returns None if there is no billable call in the window. A call on a day with no rate in
+    effect yet is logged and left out of this bill rather than failing the whole run; it is not
+    marked billed, so it is still available the next time a rate exists and this is re-run for a
+    period that has not already been billed.
+    """
+    calls = list(_calls_in_window(client, start, end).filter(billing_status=BILLABLE))
+    if not calls:
+        return None
+
+    # Fetched once per client, not once per call: a month can hold thousands of calls, and the
+    # rate only changes a handful of times at most.
+    rates = list(client.rates.all())
+
+    minutes = Decimal(0)
+    cost_cents = 0
+    bill_cents = Decimal(0)
+    call_ids = []
+    for call in calls:
+        rate = _rate_in_effect(rates, call.started_at.date())
+        if rate is None:
+            logger.warning(
+                'billing: no rate for %s on %s, call %s left out of this bill',
+                client.location_id,
+                call.started_at.date(),
+                call.call_id,
+            )
+            continue
+        minutes += call.billable_minutes
+        cost_cents += call.retell_cost_cents or 0
+        bill_cents += call.billable_minutes * rate.voice_rate_cents
+        call_ids.append(call.pk)
+
+    if not call_ids:
+        return None
+
+    return {
+        'minutes': minutes,
+        'cost_cents': cost_cents,
+        'bill_cents': int(bill_cents.to_integral_value(rounding=ROUND_HALF_UP)),
+        'call_ids': call_ids,
+    }
+
+
+def _twilio_line(client: ClientMapping, start: date, end: date) -> dict | None:
+    """Sum Twilio call minutes in the window, each at the rate in effect on its usage date.
+
+    Returns None if the client has no Twilio subaccount mapped, or no usage day in the window.
+    Twilio's minutes arrive pre-rounded and are never rounded again here.
+    """
+    if not client.twilio_subaccount_sid:
+        return None
+
+    days = list(
+        TwilioUsageDay.objects.filter(client=client, usage_date__gte=start, usage_date__lte=end)
+    )
+    if not days:
+        return None
+
+    rates = list(client.rates.all())
+
+    minutes = Decimal(0)
+    cost_cents = 0
+    bill_cents = Decimal(0)
+    day_ids = []
+    for day in days:
+        rate = _rate_in_effect(rates, day.usage_date)
+        if rate is None:
+            logger.warning(
+                'billing: no rate for %s on %s, Twilio day left out of this bill',
+                client.location_id,
+                day.usage_date,
+            )
+            continue
+        minutes += day.usage_minutes
+        cost_cents += day.twilio_price_cents
+        bill_cents += day.usage_minutes * rate.call_rate_cents
+        day_ids.append(day.pk)
+
+    if not day_ids:
+        return None
+
+    return {
+        'minutes': minutes,
+        'cost_cents': cost_cents,
+        'bill_cents': int(bill_cents.to_integral_value(rounding=ROUND_HALF_UP)),
+        'day_ids': day_ids,
+    }
+
+
+def _rate_in_effect(rates: list[RateHistory], day: date) -> RateHistory | None:
+    """The rate in effect on `day`, from a client's RateHistory rows (newest start_date first).
+
+    Works against an already-fetched list rather than `current_rate`'s one-row-per-call query,
+    because Phase 3 looks this up once per call or per usage day, not once per client.
+    """
+    for rate in rates:
+        if rate.start_date <= day:
+            return rate
+    return None
