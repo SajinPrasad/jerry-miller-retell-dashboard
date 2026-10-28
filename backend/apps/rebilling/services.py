@@ -425,6 +425,30 @@ def _as_of(value: str | None) -> datetime | None:
 
 
 # --------------------------------------------------------------------------------------------
+# The one write the embedded admin page makes: a client's mapping.
+# --------------------------------------------------------------------------------------------
+
+
+def set_mapping(location_id: str, default_client_name: str, fields: dict) -> ClientMapping:
+    """Create or update a client's mapping from what an agency admin edited.
+
+    `fields` holds only keys that passed `ClientMappingSerializer`: `twilio_subaccount_sid`,
+    `retell_agent_ids`, `phone_numbers`. A key left out is left alone rather than cleared, so
+    editing one field never has to resend the other two. `client_name` is only ever set here on
+    first creation, from the sub-account's own GHL name - renaming a client is not part of this.
+    """
+    mapping, _ = ClientMapping.objects.get_or_create(
+        location_id=location_id, defaults={'client_name': default_client_name}
+    )
+    changed = [field for field in fields if getattr(mapping, field, None) != fields[field]]
+    for field in changed:
+        setattr(mapping, field, fields[field])
+    if changed:
+        mapping.save(update_fields=changed)
+    return mapping
+
+
+# --------------------------------------------------------------------------------------------
 # Reads for the embedded admin page.
 #
 # Everything below is read-only and derived from what the two ingest paths already stored. It

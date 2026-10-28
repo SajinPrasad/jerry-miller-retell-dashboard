@@ -43,11 +43,12 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **New sub-accounts show up two ways:** the agency admin can click "Refresh clients" on `/admin` (`POST /api/rebilling/admin/clients/sync/`, agency scope only), and GHL's own `LocationCreate` webhook calls `POST /api/ghl/webhooks/location-created/` the moment Jerry creates one - available only to agency-level apps, which is what this one is. Both just call `sync_locations` again; neither reads the location fields off the webhook payload directly, so there's one code path for discovering a sub-account, not two. The webhook verifies `X-GHL-Signature` (Ed25519) against `GHL_WEBHOOK_PUBLIC_KEY` - GHL's own public key, published in its docs and the same for every app, not a per-app secret - and always answers 200/401/400 quickly so GHL doesn't retry; a sync failure is logged and left for the next webhook, manual refresh or install callback to catch.
 - **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, the white-label install host (`GHL_INSTALL_URL_BASE`), and the `LocationCreate` webhook itself - register it under the marketplace app's Advanced Settings > Webhooks pointing at `/api/ghl/webhooks/location-created/`, and confirm GHL still signs with `X-GHL-Signature` (the legacy `X-WH-Signature`/RSA header, which this app does not implement, was slated for deprecation).
 
-## Agency admin page (GHL Custom Page, mostly read-only, built)
+## Agency admin page (GHL Custom Page, built)
 
 The embedded admin interface Jerry opens from GHL's left nav: onboarded clients, their rates and
-their voice usage. Read-only aside from the "Refresh clients" sync - editing rates/mapping is the
-rest of Phase 4 and is not built.
+their voice usage. An agency admin can also set up or edit a client's mapping (Retell agents,
+phone numbers, Twilio subaccount) here; a sub-account's own page stays read-only. Editing rates is
+the rest of Phase 4 and is not built.
 
 - **How GHL identifies the viewer.** The page runs in a GHL iframe, posts
   `{message: 'REQUEST_USER_DATA'}` to `window.parent`, and gets `REQUEST_USER_DATA_RESPONSE` with
@@ -77,6 +78,24 @@ rest of Phase 4 and is not built.
   /api/rebilling/admin/clients/sync/`, same `?month=` as the list. Re-runs Task 1's
   `sync_locations` against GHL, then returns the same shape `GET /api/rebilling/admin/clients/`
   does, so `AdminPage.tsx` swaps the table in place - no reload, just the state update.
+- **Mapping is the one thing an agency admin can write.** `PUT
+  /api/rebilling/admin/clients/<location_id>/mapping/` (agency scope only, 403 for a location
+  session even on its own client) takes `twilio_subaccount_sid`, `retell_agent_ids`,
+  `phone_numbers` - never `active`, `billing_mode` or rates, which have their own rules.
+  `ClientMappingSerializer` (`apps/rebilling/serializers.py`) validates a Twilio SID's shape
+  (`AC` + 32 hex) and a phone number's digit count, and de-duplicates both lists; `set_mapping()`
+  (`services.py`) creates the row on first save (`client_name` from Task 1's sync, never
+  user-typed) or updates only the fields sent, leaving the rest alone. `MappingEditor.tsx` is the
+  one editor, reused on an already-mapped client's page (`ClientDetail.tsx`, in place of the
+  read-only `dl`) and on an unmapped one (`ClientBrowser.tsx`'s `SetUpMapping`, in place of the
+  sub-account-facing `UnmappedNotice`) - `canEdit` (`!isSubAccount`) picks which a given viewer
+  gets. `ClientMapping` also has a plain Django admin registration now, as a fallback to the page.
+- **An agency admin opening an unmapped client never calls the 404ing detail endpoint.** Both
+  `AdminPage.tsx` and `AdminPreviewPage.tsx` skip the detail fetch whenever the clients list has
+  already marked the selected row `mapped: false`, and hand `ClientBrowser` a synthesized
+  `{month, location_id, client_name, mapped: false}` instead - the same shape the endpoint itself
+  returns for a sub-account's own unmapped page. That is what lets `SetUpMapping` render
+  immediately instead of racing (and losing to) the 404 described below.
 - **Two pages, two jobs.** The list answers "who is onboarded, and is anyone billing them": client
   name and status, nothing else. Every figure - minutes, rates, estimate, cost, margin - and the
   period filter live on the client's own page, where there is room to show how they were reached.
@@ -123,7 +142,9 @@ rest of Phase 4 and is not built.
   that the backend refuses (401/403) still shows an error there, because that is a
   misconfiguration, not an unframed page. Both pages share their list/detail rendering through
   `ClientBrowser.tsx`, so they stay visually identical. **The backend was not weakened: it still
-  requires a valid session for every admin request.**
+  requires a valid session for every admin request.** A mapping edit in the preview
+  (`MappingEditor`'s `preview` prop) never reaches `saveMapping` - it writes into `demoData.ts`'s
+  own in-memory `previewMappings` map instead, which `resetPreviewMappings()` clears between tests.
 - **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
   seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
@@ -142,7 +163,7 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
 - **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
 - **Twilio pull** `TwilioUsageService.pull(start_date, end_date)`: for each `active` client with a `twilio_subaccount_sid`, `GET /2010-04-01/Accounts/{sid}/Usage/Records/Daily.json` with `Category=calls`, `IncludeSubaccounts=false` (its default is **true**) and `PageSize=1000`, paging on the `next_page_uri` Twilio hands back. Stored with `update_or_create` on `(client, usage_date, category)` because Twilio keeps revising a day after it ends. Defaults to a rolling 3-day window; pass both dates for the month-close run. Only `calls` is billed — it excludes SIP and trunking calls by Twilio's definition, which is where Retell's minutes land. A failed client is logged, counted in `failed` and skipped; the others still land.
 - **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
-- **Not built yet:** no Django admin registration, so mappings are created from the shell; no alerts beyond a log line; no bills. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that.
+- **Not built yet:** no alerts beyond a log line; no bills. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates still come from the shell.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 
 ## Structure

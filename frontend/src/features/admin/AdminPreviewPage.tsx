@@ -15,6 +15,9 @@ import { currentMonth } from './format'
 export default function AdminPreviewPage() {
   const [month, setMonth] = useState(currentMonth())
   const [selected, setSelected] = useState<string | null>(null)
+  // Forces a re-render after a preview mapping edit, which otherwise only changes data held
+  // outside React state (see demoData's `previewMappings`).
+  const [, bumpPreview] = useState(0)
 
   const shown = demoClients(month)
   const openDetail: ClientDetailResult | null = selected ? demoDetail(selected, month) : null
@@ -35,6 +38,8 @@ export default function AdminPreviewPage() {
         onBack={() => setSelected(null)}
         shown={shown}
         openDetail={openDetail}
+        preview
+        onMappingSaved={() => bumpPreview((tick) => tick + 1)}
       />
     </Shell>
   )

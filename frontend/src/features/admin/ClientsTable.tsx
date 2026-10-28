@@ -4,13 +4,17 @@ import { DASH } from './format'
 interface Props {
   clients: ClientSummary[]
   onSelect: (locationId: string) => void
+  /** Agency scope only: lets an unmapped row be opened to set it up. A sub-account never reaches
+   * this table (it is always taken straight to its own page), so this is never false in practice
+   * today - it is threaded through anyway so that stays true by construction, not by accident. */
+  canEdit: boolean
 }
 
 /**
  * Who is onboarded, and whether they are set up for billing. Nothing more: the figures live in
  * the client's own page, where there is room to show how they were arrived at.
  */
-export default function ClientsTable({ clients, onSelect }: Props) {
+export default function ClientsTable({ clients, onSelect, canEdit }: Props) {
   if (clients.length === 0) {
     return <p className="muted">No client sub-accounts yet. Connect GoHighLevel and sync them.</p>
   }
@@ -25,21 +29,47 @@ export default function ClientsTable({ clients, onSelect }: Props) {
       </thead>
       <tbody>
         {clients.map((client) => (
-          <ClientRow key={client.location_id} client={client} onSelect={onSelect} />
+          <ClientRow key={client.location_id} client={client} onSelect={onSelect} canEdit={canEdit} />
         ))}
       </tbody>
     </table>
   )
 }
 
-function ClientRow({ client, onSelect }: { client: ClientSummary; onSelect: Props['onSelect'] }) {
+function ClientRow({
+  client,
+  onSelect,
+  canEdit,
+}: {
+  client: ClientSummary
+  onSelect: Props['onSelect']
+  canEdit: boolean
+}) {
   const { usage } = client
 
   if (!client.mapped || !usage) {
+    if (!canEdit) {
+      return (
+        <tr>
+          <td>
+            <span className="name">{client.client_name || DASH}</span>
+          </td>
+          <td>
+            <span className="pill" title="Not set up for billing yet">
+              Not mapped
+            </span>
+          </td>
+        </tr>
+      )
+    }
+
+    // An agency admin can open this client to set it up, same as any mapped one.
     return (
-      <tr>
+      <tr className="clickable" onClick={() => onSelect(client.location_id)}>
         <td>
-          <span className="name">{client.client_name || DASH}</span>
+          <button type="button" className="link" onClick={() => onSelect(client.location_id)}>
+            {client.client_name || DASH}
+          </button>
         </td>
         <td>
           <span className="pill" title="Not set up for billing yet">

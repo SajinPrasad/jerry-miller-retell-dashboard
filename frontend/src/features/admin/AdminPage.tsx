@@ -90,9 +90,15 @@ export default function AdminPage() {
 
   // 3. The open client's detail, for the period chosen on its own page. An unmapped sub-account
   //    is a normal 200 (see ClientBrowser's UnmappedNotice), not a failure - only a real error
-  //    lands in `failed`.
+  //    lands in `failed`. Skipped for a client the list has already told us is unmapped: the
+  //    detail endpoint 404s for an agency session reading one, and there is nothing to read yet
+  //    anyway - ClientBrowser renders the mapping editor straight from the list's own summary.
   useEffect(() => {
     if (!selected || session.kind !== 'live') return
+    const knownUnmapped =
+      clients?.month === month &&
+      clients.clients.find((row) => row.location_id === selected)?.mapped === false
+    if (knownUnmapped) return
 
     let cancelled = false
     getClientDetail(selected, month)
@@ -105,7 +111,7 @@ export default function AdminPage() {
     return () => {
       cancelled = true
     }
-  }, [selected, month, session])
+  }, [selected, month, session, clients])
 
   // Re-syncs sub-accounts from GoHighLevel, then swaps in the fresh list - no reload needed.
   async function handleSync() {
@@ -119,6 +125,18 @@ export default function AdminPage() {
     } finally {
       setSyncing(false)
     }
+  }
+
+  // A mapping was just saved on the open client's page: re-read it, and the list behind it
+  // (an unmapped row there needs to flip to mapped), rather than guessing the result in place.
+  function handleMappingSaved(): void {
+    if (!selected) return
+    Promise.all([getClientDetail(selected, month), getClients(month)])
+      .then(([loadedDetail, loadedClients]) => {
+        setDetail(loadedDetail)
+        setClients(loadedClients)
+      })
+      .catch(() => setFailed(true))
   }
 
   if (session.kind === 'loading') {
@@ -168,8 +186,14 @@ export default function AdminPage() {
   // Showing the period that was asked for, not one still in flight: the month has to match, so
   // last month's figures never sit under this month's heading.
   const shown = clients?.month === month ? clients : null
-  const openDetail =
-    selected && detail?.location_id === selected && detail?.month === month ? detail : null
+  const selectedSummary = shown?.clients.find((row) => row.location_id === selected) ?? null
+  const openDetail: ClientDetailResult | null = !selected
+    ? null
+    : selectedSummary?.mapped === false
+      ? { month, location_id: selected, client_name: selectedSummary.client_name, mapped: false }
+      : detail?.location_id === selected && detail?.month === month
+        ? detail
+        : null
 
   return (
     <Shell userName={session.session.user_name}>
@@ -183,6 +207,8 @@ export default function AdminPage() {
         openDetail={openDetail}
         onSync={handleSync}
         syncing={syncing}
+        preview={false}
+        onMappingSaved={handleMappingSaved}
       />
     </Shell>
   )

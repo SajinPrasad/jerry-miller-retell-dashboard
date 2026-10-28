@@ -15,9 +15,10 @@
  */
 
 import type {
-  ClientDetail,
+  ClientDetailResult,
   ClientSummary,
   ClientsResponse,
+  MappingFields,
   RecentCall,
   SsoSession,
   TwilioDay,
@@ -122,19 +123,97 @@ const UNMAPPED: ClientSummary = {
   usage: null,
 }
 
+// Edits the preview's MappingEditor has made, held outside React state so every demoData
+// function reads the same in-memory values without a store of its own. Never sent anywhere -
+// the standalone preview never calls the real API.
+const previewMappings = new Map<string, MappingFields>()
+
+export function savePreviewMapping(locationId: string, mapping: MappingFields): void {
+  previewMappings.set(locationId, mapping)
+}
+
+export function resetPreviewMappings(): void {
+  previewMappings.clear()
+}
+
+/** `spec` with any preview edit to its mapping applied. Everything else - rates, call volume -
+ * is untouched: the editor only ever writes the three mapping fields. */
+function withPreviewMapping(spec: Spec): Spec {
+  const edit = previewMappings.get(spec.location_id)
+  if (!edit) return spec
+  return {
+    ...spec,
+    agents: edit.retell_agent_ids,
+    numbers: edit.phone_numbers,
+    twilio_sid: edit.twilio_subaccount_sid,
+  }
+}
+
+const EMPTY_USAGE: UsageSummary = {
+  ai_minutes: '0.00',
+  ai_cost_cents: 0,
+  call_minutes: '0.00',
+  call_cost_cents: 0,
+  has_twilio_usage: false,
+  // No rate has been set for a mapping this new, same as it would be on the real backend.
+  estimated_bill_cents: null,
+  unbillable_calls: 0,
+  twilio_as_of: null,
+  twilio_stale: false,
+}
+
+/** The sample unmapped client, with a preview edit applied once an admin has set it up. */
+function unmappedOrSetUp(): ClientSummary {
+  const edit = previewMappings.get(UNMAPPED.location_id)
+  if (!edit) return UNMAPPED
+  return {
+    ...UNMAPPED,
+    mapped: true,
+    active: true,
+    billing_mode: 'auto_charge',
+    retell_connected: edit.retell_agent_ids.length > 0,
+    twilio_connected: Boolean(edit.twilio_subaccount_sid),
+    rates: null,
+    usage: EMPTY_USAGE,
+  }
+}
+
 export function demoClients(month: string): ClientsResponse {
   return {
     scope: 'agency',
     month,
-    clients: [...SPECS.map((spec) => summary(spec, month)), UNMAPPED].sort((a, b) =>
-      a.client_name.localeCompare(b.client_name),
-    ),
+    clients: [
+      ...SPECS.map((spec) => summary(withPreviewMapping(spec), month)),
+      unmappedOrSetUp(),
+    ].sort((a, b) => a.client_name.localeCompare(b.client_name)),
   }
 }
 
-export function demoDetail(locationId: string, month: string): ClientDetail | null {
-  const spec = SPECS.find((candidate) => candidate.location_id === locationId)
-  if (!spec) return null
+export function demoDetail(locationId: string, month: string): ClientDetailResult | null {
+  if (locationId === UNMAPPED.location_id) {
+    const edit = previewMappings.get(locationId)
+    if (!edit) return { month, location_id: locationId, client_name: UNMAPPED.client_name, mapped: false }
+    return {
+      month,
+      location_id: locationId,
+      client_name: UNMAPPED.client_name,
+      mapped: true,
+      active: true,
+      billing_mode: 'auto_charge',
+      retell_agent_ids: edit.retell_agent_ids,
+      phone_numbers: edit.phone_numbers,
+      twilio_subaccount_sid: edit.twilio_subaccount_sid,
+      rates: null,
+      rate_history: [],
+      usage: EMPTY_USAGE,
+      twilio_days: [],
+      recent_calls: [],
+    }
+  }
+
+  const found = SPECS.find((candidate) => candidate.location_id === locationId)
+  if (!found) return null
+  const spec = withPreviewMapping(found)
 
   const usage = usageFor(spec, month)
   return {

@@ -1,6 +1,7 @@
-import type { ClientDetailResult, ClientsResponse } from '../../types/admin'
+import type { ClientDetailResult, ClientsResponse, MappingResult } from '../../types/admin'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
+import MappingEditor from './MappingEditor'
 import MonthPicker from './MonthPicker'
 import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
 
@@ -37,6 +38,10 @@ interface Props {
   /** Omitted on the standalone preview, which never calls the real API. */
   onSync?: () => void
   syncing?: boolean
+  /** True on the standalone preview, which never calls the real API - a mapping edit there only
+   * updates the bundled sample data. */
+  preview: boolean
+  onMappingSaved: (result: MappingResult) => void
 }
 
 /**
@@ -54,8 +59,12 @@ export default function ClientBrowser({
   openDetail,
   onSync,
   syncing,
+  preview,
+  onMappingSaved,
 }: Props) {
   const isSubAccount = shown?.scope === 'location'
+  // Agency admins set up and edit mapping; a sub-account's own page shows its usage, not settings.
+  const canEdit = !isSubAccount
 
   return (
     <>
@@ -75,11 +84,26 @@ export default function ClientBrowser({
           </div>
           {openDetail ? (
             openDetail.mapped === false ? (
-              <UnmappedNotice clientName={openDetail.client_name} />
+              canEdit ? (
+                <SetUpMapping
+                  locationId={openDetail.location_id}
+                  clientName={openDetail.client_name}
+                  preview={preview}
+                  onSaved={onMappingSaved}
+                />
+              ) : (
+                <UnmappedNotice clientName={openDetail.client_name} />
+              )
             ) : (
               // Remounted per client and per period, so the what-if rates on it start from the
               // rates that client is actually on.
-              <ClientDetail key={`${selected}:${month}`} detail={openDetail} />
+              <ClientDetail
+                key={`${selected}:${month}`}
+                detail={openDetail}
+                canEdit={canEdit}
+                preview={preview}
+                onMappingSaved={onMappingSaved}
+              />
             )
           ) : (
             <ClientDetailSkeleton />
@@ -100,13 +124,44 @@ export default function ClientBrowser({
             estimate.
           </p>
           {shown ? (
-            <ClientsTable clients={shown.clients} onSelect={onSelect} />
+            <ClientsTable clients={shown.clients} onSelect={onSelect} canEdit={canEdit} />
           ) : (
             <ClientsTableSkeleton />
           )}
         </section>
       )}
     </>
+  )
+}
+
+/** What an agency admin sees on a client's page before anyone has set it up for billing: the
+ * mapping editor instead of usage, with nothing yet to read. */
+function SetUpMapping({
+  locationId,
+  clientName,
+  preview,
+  onSaved,
+}: {
+  locationId: string
+  clientName: string
+  preview: boolean
+  onSaved: (result: MappingResult) => void
+}) {
+  return (
+    <section className="card">
+      <h2>{clientName || 'This client'}</h2>
+      <p className="muted small">
+        Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to
+        start tracking usage.
+      </p>
+      <MappingEditor
+        locationId={locationId}
+        clientName={clientName}
+        initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
+        preview={preview}
+        onSaved={onSaved}
+      />
+    </section>
   )
 }
 

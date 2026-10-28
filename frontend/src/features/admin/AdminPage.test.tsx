@@ -434,6 +434,185 @@ describe('AdminPage', () => {
     expect(row.getAllByText('—')).toHaveLength(2)
   })
 
+  // --- mapping: the one thing an agency admin can write ---------------------------------
+
+  function addButtonFor(input: HTMLElement) {
+    return within(input.closest('.chip-add') as HTMLElement).getByRole('button', { name: 'Add' })
+  }
+
+  it('lets an agency admin edit a mapped client, and the save reaches the backend', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    let savedBody: Record<string, unknown> | null = null
+    const newSid = 'AC' + '7'.repeat(32)
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const json = (body: unknown) =>
+          Promise.resolve(
+            new Response(JSON.stringify(body), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          )
+
+        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
+        if (method === 'PUT' && url === '/api/rebilling/admin/clients/loc1/mapping/') {
+          savedBody = JSON.parse(init!.body as string)
+          return json({ location_id: 'loc1', client_name: 'Cool Breeze HVAC', ...savedBody })
+        }
+        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
+          return json({
+            ...detail,
+            twilio_subaccount_sid: savedBody
+              ? (savedBody.twilio_subaccount_sid as string)
+              : detail.twilio_subaccount_sid,
+          })
+        }
+        if (url.startsWith('/api/rebilling/admin/clients/')) {
+          return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
+        }
+        return Promise.resolve(new Response('', { status: 404 }))
+      },
+    )
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const sidInput = screen.getByPlaceholderText('AC…')
+    await user.clear(sidInput)
+    await user.type(sidInput, newSid)
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await waitFor(() =>
+      expect(savedBody).toEqual({
+        twilio_subaccount_sid: newSid,
+        retell_agent_ids: ['agent_1'],
+        phone_numbers: ['+15551234567'],
+      }),
+    )
+    // The page reads back what it just saved rather than trusting its own optimism.
+    await screen.findByDisplayValue(newSid)
+  })
+
+  it('sets up a previously unmapped client, which then opens as a full page', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    let isMapped = false
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const json = (body: unknown, status = 200) =>
+          Promise.resolve(
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          )
+
+        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
+        if (method === 'PUT' && url === '/api/rebilling/admin/clients/loc-new/mapping/') {
+          isMapped = true
+          return json({
+            location_id: 'loc-new',
+            client_name: 'Polar Peak Heating',
+            ...JSON.parse(init!.body as string),
+          })
+        }
+        if (url.startsWith('/api/rebilling/admin/clients/loc-new/')) {
+          return json({
+            month: THIS_MONTH,
+            location_id: 'loc-new',
+            client_name: 'Polar Peak Heating',
+            mapped: true,
+            active: true,
+            billing_mode: 'auto_charge',
+            retell_agent_ids: ['agent_9'],
+            phone_numbers: [],
+            twilio_subaccount_sid: '',
+            rates: null,
+            rate_history: [],
+            usage: {
+              ...mapped.usage!,
+              ai_minutes: '0.00',
+              call_minutes: '0.00',
+              estimated_bill_cents: null,
+            },
+            twilio_days: [],
+            recent_calls: [],
+          })
+        }
+        if (url.startsWith('/api/rebilling/admin/clients/')) {
+          return json({
+            scope: 'agency',
+            month: THIS_MONTH,
+            clients: [mapped, { ...unmapped, mapped: isMapped, retell_connected: isMapped }],
+          })
+        }
+        return Promise.resolve(new Response('', { status: 404 }))
+      },
+    )
+
+    render(<AdminPage />)
+    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating' }))
+    await screen.findByText('Not set up for billing yet.', { exact: false })
+
+    const agentInput = screen.getByLabelText('Add a retell agent id')
+    await user.type(agentInput, 'agent_9')
+    await user.click(addButtonFor(agentInput))
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    // Now a real client page, not the setup card - the mapping it just saved is on it.
+    await screen.findByText('agent_9')
+    expect(
+      screen.queryByText('Not set up for billing yet.', { exact: false }),
+    ).not.toBeInTheDocument()
+  })
+
+  it('shows an error and keeps what was typed when a save is rejected', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation(
+      (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const json = (body: unknown, status = 200) =>
+          Promise.resolve(
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          )
+
+        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
+        if (method === 'PUT') return json({}, 400)
+        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json(detail)
+        if (url.startsWith('/api/rebilling/admin/clients/')) {
+          return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
+        }
+        return Promise.resolve(new Response('', { status: 404 }))
+      },
+    )
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const sidInput = screen.getByPlaceholderText('AC…')
+    await user.clear(sidInput)
+    await user.type(sidInput, 'not-a-sid')
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    expect(
+      await screen.findByText('Check the Twilio subaccount SID', { exact: false }),
+    ).toBeInTheDocument()
+    expect(sidInput).toHaveValue('not-a-sid')
+  })
+
   it('opens straight into the one client when GHL says this is a sub-account', async () => {
     parentAnswers()
     mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })

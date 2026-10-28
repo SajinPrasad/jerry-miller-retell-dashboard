@@ -2,6 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminPreviewPage from './AdminPreviewPage'
+import { resetPreviewMappings } from './demoData'
 import { currentMonth, shiftMonth } from './format'
 
 const THIS_MONTH = currentMonth()
@@ -20,6 +21,8 @@ function tile(label: string) {
 describe('AdminPreviewPage', () => {
   afterEach(() => {
     vi.restoreAllMocks()
+    // Edits made in one test must not bleed into the next.
+    resetPreviewMappings()
   })
 
   it('renders sample clients behind a clearly marked banner, with no network calls', async () => {
@@ -58,10 +61,52 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('never shows the unmapped sample client as clickable', async () => {
-    render(<AdminPreviewPage />)
+  it('opens the unmapped sample client to set it up, with no network call', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
 
-    expect(await screen.findByText('Summit Air Solutions')).toBeInTheDocument()
-    expect(screen.queryByRole('button', { name: 'Summit Air Solutions' })).not.toBeInTheDocument()
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
+
+    expect(await screen.findByText('Not set up for billing yet.', { exact: false })).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('edits a mapping in the preview with no network call, and it sticks on reopen', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+    const newSid = 'AC' + '9'.repeat(32)
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+
+    const sidInput = await screen.findByPlaceholderText('AC…')
+    await user.clear(sidInput)
+    await user.type(sidInput, newSid)
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await user.click(screen.getByRole('button', { name: '← All clients' }))
+    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+
+    expect(await screen.findByPlaceholderText('AC…')).toHaveValue(newSid)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('sets up the unmapped sample client, which then appears mapped in the list', async () => {
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
+
+    const agentInput = screen.getByLabelText('Add a retell agent id')
+    await user.type(agentInput, 'agent_summit')
+    await user.click(
+      within(agentInput.closest('.chip-add') as HTMLElement).getByRole('button', { name: 'Add' }),
+    )
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await user.click(screen.getByRole('button', { name: '← All clients' }))
+
+    expect(await screen.findByRole('button', { name: 'Summit Air Solutions' })).toBeInTheDocument()
   })
 })

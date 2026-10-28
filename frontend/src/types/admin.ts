@@ -71,6 +71,19 @@ export interface RecentCall {
   unbillable_reason: string
 }
 
+/** What an agency admin can set on a client's mapping, and nothing else - rates and billing
+ * mode have their own rules and are not edited here. */
+export interface MappingFields {
+  twilio_subaccount_sid: string
+  retell_agent_ids: string[]
+  phone_numbers: string[]
+}
+
+export interface MappingResult extends MappingFields {
+  location_id: string
+  client_name: string
+}
+
 export interface ClientDetail {
   month: string
   location_id: string

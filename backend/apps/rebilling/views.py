@@ -14,7 +14,8 @@ from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import GHLOAuthService
 
 from .models import ClientMapping
-from .services import client_detail, client_rows, month_window, store_call
+from .serializers import ClientMappingSerializer
+from .services import client_detail, client_rows, month_window, set_mapping, store_call
 
 logger = logging.getLogger(__name__)
 
@@ -146,3 +147,38 @@ class AdminClientDetailView(APIView):
             raise NotFound('This client has not been mapped for billing yet.')
 
         return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
+
+
+class AdminClientMappingView(APIView):
+    """PUT /api/rebilling/admin/clients/<location_id>/mapping/: set up or edit a client's mapping.
+
+    Agency admins only. Opened inside a sub-account the page shows usage, not settings, so a
+    location session is refused here even for its own client - there is no request to let a
+    client edit their own mapping.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def put(self, request, location_id):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can edit client mapping.')
+
+        location = GHLOAuthToken.objects.filter(is_agency=False, location_id=location_id).first()
+        if location is None:
+            raise NotFound('This sub-account has not been onboarded.')
+
+        serializer = ClientMappingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        mapping = set_mapping(location_id, location.name, serializer.validated_data)
+        return Response(
+            {
+                'location_id': mapping.location_id,
+                'client_name': mapping.client_name,
+                'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
+                'retell_agent_ids': mapping.retell_agent_ids,
+                'phone_numbers': mapping.phone_numbers,
+            }
+        )

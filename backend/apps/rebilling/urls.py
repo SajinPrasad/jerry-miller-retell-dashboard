@@ -12,4 +12,9 @@ urlpatterns = [
         views.AdminClientDetailView.as_view(),
         name='admin-client-detail',
     ),
+    path(
+        'admin/clients/<str:location_id>/mapping/',
+        views.AdminClientMappingView.as_view(),
+        name='admin-client-mapping',
+    ),
 ]

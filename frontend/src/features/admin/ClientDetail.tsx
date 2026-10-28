@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import type { ClientDetail as Detail, RecentCall } from '../../types/admin'
+import type { ClientDetail as Detail, MappingResult, RecentCall } from '../../types/admin'
 import {
   DASH,
   centsFromInput,
@@ -12,8 +12,17 @@ import {
   formatRate,
   marginCents,
 } from './format'
+import MappingEditor from './MappingEditor'
 
-export default function ClientDetail({ detail }: { detail: Detail }) {
+interface Props {
+  detail: Detail
+  /** Agency scope only - opened inside a sub-account the page shows usage, not settings. */
+  canEdit: boolean
+  preview: boolean
+  onMappingSaved: (result: MappingResult) => void
+}
+
+export default function ClientDetail({ detail, canEdit, preview, onMappingSaved }: Props) {
   const { usage, rates } = detail
   const storedVoice = rates?.voice_rate_cents ?? 0
   const storedCall = rates?.call_rate_cents ?? 0
@@ -133,34 +142,49 @@ export default function ClientDetail({ detail }: { detail: Detail }) {
 
       <section className="card">
         <h2>Mapping</h2>
-        <dl className="facts">
-          <dt>Retell agents</dt>
-          <dd>
-            {detail.retell_agent_ids.length > 0 ? (
-              detail.retell_agent_ids.map((id) => <code key={id}>{id}</code>)
-            ) : (
-              <span className="muted">None mapped</span>
-            )}
-          </dd>
-          <dt>Phone numbers</dt>
-          <dd>
-            {detail.phone_numbers.length > 0 ? (
-              detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
-            ) : (
-              <span className="muted">None mapped</span>
-            )}
-          </dd>
-          <dt>Twilio subaccount</dt>
-          <dd>
-            {detail.twilio_subaccount_sid ? (
-              <code>{detail.twilio_subaccount_sid}</code>
-            ) : (
-              <span className="muted">Not billed for regular calls</span>
-            )}
-          </dd>
-          <dt>Billing mode</dt>
-          <dd>{detail.billing_mode === 'auto_charge' ? 'Auto charge' : 'Send invoice'}</dd>
-        </dl>
+        {canEdit ? (
+          <MappingEditor
+            locationId={detail.location_id}
+            clientName={detail.client_name}
+            initial={{
+              twilio_subaccount_sid: detail.twilio_subaccount_sid,
+              retell_agent_ids: detail.retell_agent_ids,
+              phone_numbers: detail.phone_numbers,
+            }}
+            preview={preview}
+            onSaved={onMappingSaved}
+          />
+        ) : (
+          <dl className="facts">
+            <dt>Retell agents</dt>
+            <dd>
+              {detail.retell_agent_ids.length > 0 ? (
+                detail.retell_agent_ids.map((id) => <code key={id}>{id}</code>)
+              ) : (
+                <span className="muted">None mapped</span>
+              )}
+            </dd>
+            <dt>Phone numbers</dt>
+            <dd>
+              {detail.phone_numbers.length > 0 ? (
+                detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
+              ) : (
+                <span className="muted">None mapped</span>
+              )}
+            </dd>
+            <dt>Twilio subaccount</dt>
+            <dd>
+              {detail.twilio_subaccount_sid ? (
+                <code>{detail.twilio_subaccount_sid}</code>
+              ) : (
+                <span className="muted">Not billed for regular calls</span>
+              )}
+            </dd>
+          </dl>
+        )}
+        <p className="muted small">
+          Billing mode: {detail.billing_mode === 'auto_charge' ? 'Auto charge' : 'Send invoice'}
+        </p>
       </section>
 
       {detail.twilio_days.length > 0 && (
