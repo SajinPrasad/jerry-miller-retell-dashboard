@@ -39,9 +39,10 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 | # | Task | Due | Status |
 |---|---|---|---|
 | 1 | Marketplace app: GHL OAuth install, agency token, per-sub-account tokens | Oct 23 | **Built** (backend + onboarding page) |
+| 1b | Agency admin page: client list and usage by period | — | **Built** (`/admin` live, `/admin/preview` demo; read-only) |
 | 2 | Agency dashboard: MRR, live clients, leads/calls/signed by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (frontend feature folders hold only `.gitkeep`) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2 and 2b built**; Phases 3–6 not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2 and 2b built**; Phase 3+ not started |
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -118,11 +119,14 @@ screen → GHL redirects to `GET /api/oauth/callback/?code=…` → the backend 
 the **agency token** (`user_type=Company`) → rejects the install if it was made on a sub-account →
 stores the agency row → syncs sub-accounts → redirects to
 `FRONTEND_URL/onboarding?status=connected` (or `?error=install_cancelled` / `?error=install_failed`).
+**Sync failures do not fail the install** — the agency connection is treated as successful once
+the code is exchanged; sync logs a warning and continues.
 
 **Model:** `GHLOAuthToken` (`apps/ghl/models.py`). One table holds both agency and sub-account
 tokens. Fields: `company_id`, `location_id` (blank on the agency row), `name`, `is_agency`,
 `is_active`, `access_token`, `refresh_token` (agency row only), `expires_at`. Tokens are
-Fernet-encrypted with `FIELD_ENCRYPTION_KEY`.
+Fernet-encrypted with `FIELD_ENCRYPTION_KEY`. A sub-account row can have an empty `access_token`
+when the app isn't yet installed on it; it will still be visible in the admin dashboard.
 
 **Service:** `GHLOAuthService` (`apps/ghl/services.py`):
 
@@ -133,9 +137,14 @@ Fernet-encrypted with `FIELD_ENCRYPTION_KEY`.
   are single-use**, so it takes a `select_for_update` lock first.
 - `get_location_token(location_id)` re-mints a sub-account token from the agency token when it is
   expiring.
-- `sync_locations(agency)` calls `GET /oauth/installed-locations`, then `POST /oauth/locationToken`
-  for each new or expired sub-account, and deactivates sub-accounts no longer listed. It skips
-  `AGENCY_LOCATION_ID`. A sub-account whose token can't be minted is logged and skipped.
+- `sync_locations(agency)` calls `GET /oauth/installed-locations` with `Version: v3` header (not
+  the default `2021-07-28`; v3 is required to avoid a 404), then `POST /oauth/locationToken` for
+  each sub-account. It skips `AGENCY_LOCATION_ID`. If a sub-account's token can't be minted, it
+  stores the row anyway with an empty `access_token` and a future `expires_at` (so it appears in
+  the dashboard), logs the error with GHL's reason, and continues.
+- **Error handling in `_request()`:** catches `httpx.HTTPStatusError` separately and includes the
+  response body in the exception message, so GHL's error reasons are visible in logs instead of
+  being discarded.
 
 **Marketplace app config (set in GHL, must match the code):** redirect URI = `GHL_REDIRECT_URI`;
 scopes = `GHL_SCOPES`; target user = Agency; auto-install on future sub-accounts.
@@ -156,7 +165,55 @@ which limits the exposure.
 
 ---
 
-## 5. Task 4: voice rebilling (Phases 1, 2 and 2b built)
+## 5. Agency admin page (Task 4 Phase 3 prerequisite, built)
+
+The embedded admin interface Jerry opens from the GHL left nav: onboarded clients, their rates and
+voice usage by period. Read-only — editing rates/mapping is Phase 4 and is not built.
+
+**Routes:** `/admin/` is live data (requires GHL SSO); `/admin/preview` is bundled sample data
+(development only, never calls the API). Both share rendering logic through `ClientBrowser.tsx`.
+
+**How GHL identifies the viewer.** The page runs in a GHL iframe, posts
+`{message: 'REQUEST_USER_DATA'}` to `window.parent`, and gets `REQUEST_USER_DATA_RESPONSE` with
+an encrypted blob in `payload`. `apps/ghl/sso.py` opens it: OpenSSL-compatible AES-256-CBC
+(`Salted__` + 8-byte salt, key/IV from EVP_BytesToKey with MD5) using `GHL_APP_SSO_KEY`, the
+app's **Shared Secret** (Advanced Settings > Auth). Tests verify against real `openssl enc` vectors.
+
+**Scope from `activeLocation`.** GHL reports `type: "agency"` even inside a sub-account, so
+reading `type` alone would show one client every other client's numbers. The real identifier is
+`activeLocation`. For the agency account itself, `activeLocation` is the agency's own `location_id`
+(`AGENCY_LOCATION_ID`). `SSOContext.scope` compares it to decide `AGENCY` or `LOCATION` scope.
+**Agency scope** sees all clients and their rates/usage; **location scope** sees only that
+sub-account's own page. `activeLocation` is the credential that prevents cross-account viewing.
+
+**Endpoints** (both require valid SSO blob in `X-GHL-Session`):
+- `POST /api/ghl/sso/session/` — who is viewing (user name, email, role, scope, active location).
+- `GET /api/rebilling/admin/clients/` — list of all sub-accounts (left-joined to `ClientMapping`),
+  with `month=YYYY-MM` filter. An unmapped client shows `mapped: false` (not an error).
+- `GET /api/rebilling/admin/clients/<location_id>/` — detail for one client, with usage and rates.
+  Returns `{month, location_id, client_name, mapped: false}` (no usage fields) for an unmapped
+  sub-account viewing its own page; agency scope requests for unmapped clients still 404 because
+  the list already marked them unmapped and there is nothing to show.
+
+**Frontend** (`features/admin/AdminPage.tsx`, `AdminPreviewPage.tsx`, `ClientBrowser.tsx`):
+- Unframed pages (no GHL parent, or the SSO handshake failed) render a message linking to
+  `/admin/preview` instead of showing an error.
+- The preview page (`AdminPreviewPage.tsx`) renders bundled sample data (`demoData.ts`) behind an
+  amber "Standalone preview" banner and **never calls the admin API**. It is for development and
+  walkthrough only, not for live testing inside GHL.
+- Both live and preview pages use `ClientBrowser.tsx` for list/detail rendering, so they are
+  visually identical.
+- An unmapped sub-account on its own page sees a friendly card explaining setup is in progress.
+- Money shown in the admin is an estimate: `minutes × current rate`, labelled as such. Phase 3
+  owns the real `Bill` and `BillLine` models, which apply per-call/per-day rates.
+
+**Period filter** (`MonthPicker.tsx`): on the client page, arrows and a dropdown to select a month.
+Bounded at the current month (no future billing) and at the oldest month in the list (so the
+selected value always exists). Drives both the detail request and the rendering of all figures.
+
+---
+
+## 6. Task 4: voice rebilling (Phases 1, 2 and 2b built)
 
 ### 5.1 The business rule
 
@@ -391,7 +448,7 @@ Run these from `backend/` unless noted. The venv is `backend/.venv`. On Windows,
 `.venv/Scripts/python.exe`.
 
 ```
-pytest                                                    # 110 tests, config.settings.test
+pytest                                                    # 154 tests, config.settings.test
 ruff check . && ruff format .                             # lint / format (line 100, single quotes)
 python manage.py check
 python manage.py makemigrations --check --dry-run         # must say "No changes detected"
@@ -423,7 +480,8 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 - Shared helpers: `apps/rebilling/tests/test_services.py` (`make_client`, `call_payload`) is reused
   by the other rebilling test modules. `test_reconciliation.py` has `recent_call()`, which builds
   timestamps inside the 48-hour window. The fixed-date payload is deliberately **outside** it.
-- Current count: **110 backend tests, all passing**. That is 81 before Phase 2b plus 29 for 2b.
+- Current count: **154 backend tests, all passing**. Tests added for the GHL v3 header fix,
+  decoupled sync failures, and sub-account storage without tokens.
 
 | File | Covers |
 |---|---|
@@ -540,7 +598,7 @@ These cannot be answered from the docs.
   failing Retell audit or Twilio pull under-bills with no visible signal.
 - **No Django admin** for the rebilling or GHL models. Mappings are created from the Django shell.
 - **The install check is weaker** (see section 4). Any agency that satisfies the "Company" type can
-  install.
+  install. (A marketplace app being private limits the exposure.)
 - **Refresh-token locking assumes one database.** It is fine on a single Postgres. Revisit it
   before running multiple app instances.
 - **The 48-hour Retell window is a constant**, not a setting. A correction older than 48 hours is
@@ -551,11 +609,49 @@ These cannot be answered from the docs.
   machine**. Commit `6d0b7b1` claims `plan.md` is in it, and it is not.
 - **`apps/dashboards` is empty**, and the `frontend/src/features/*-dashboard` folders hold only
   placeholders.
-- **The frontend tests have not been run** in recent sessions.
+- **The admin page is built but not verified in a browser yet.** SSO handshake logic is tested,
+  and all backend endpoints pass their tests, but the React UI rendering and the GHL iframe
+  embedding have not been verified live.
 
 ---
 
-## 16. Git history
+## 16. Recent session: GHL location sync fixes and admin page
+
+**GHL `/oauth/installed-locations` 404 error (fixed):**
+- The endpoint was returning 404 under the default `Version: 2021-07-28` header.
+- `_installed_locations()` now sends `Version: v3` (GHL v3 API required).
+- `_request()` now accepts an optional `version` parameter to override per-call.
+
+**Decoupled OAuth callback (fixed):**
+- `exchange_code()` and `sync_locations()` are now in separate try-catch blocks.
+- A sync failure (e.g., app not installed on a sub-account) no longer fails the whole install.
+- Sync logs the error with GHL's reason and continues; install still redirects with
+  `status=connected`.
+
+**Improved error diagnostics:**
+- `_request()` catches `httpx.HTTPStatusError` separately and includes the response body in
+  the error message (capped at 500 chars), so GHL's 400/500 reasons are visible in logs.
+
+**Sub-account visibility without tokens (fixed):**
+- Removed `isInstalled: 'true'` filter from `_installed_locations()`, so **all** sub-accounts
+  under the agency are fetched, not just ones with the app installed.
+- When `_mint_location_token()` fails, the sub-account is stored anyway with `access_token=''`
+  and a future `expires_at`, so it appears in the admin dashboard even before the app is
+  installed on it.
+
+**Frontend admin page (built):**
+- Route `/admin/` is live; requires valid GHL SSO and reads real sub-accounts + rates + usage.
+- Route `/admin/preview` is standalone demo data; development only, never calls the API.
+- Both share rendering via `ClientBrowser.tsx`, `AdminPage.tsx`, and `AdminPreviewPage.tsx`.
+- Unmapped sub-accounts on their own page see a friendly "setup in progress" card, not a 404.
+- SSO scope resolved from `activeLocation` matches `AGENCY_LOCATION_ID` correctly.
+
+**Test count:** 154 passing (up from 110). New tests verify v3 header, decoupled sync failure,
+sub-account storage without tokens, and error message propagation.
+
+---
+
+## 17. Git history
 
 | Commit | Message (abridged) |
 |---|---|
@@ -566,11 +662,15 @@ These cannot be answered from the docs.
 | `d9ab56a` | feat(rebilling): add unbillable call tracking and Celery daily audit schedule |
 | `ea95a0c` | Integrated twillio calls with Retell. This is the Phase 2b work |
 
-The working tree was clean when this file was written. Nothing has been pushed by Claude.
+The working tree has uncommitted changes from the most recent session:
+- GHL API v3 header fix for `/oauth/installed-locations`
+- Decoupled sync failures from install failures
+- Sub-account storage without tokens
+- Frontend admin page (`/admin`, `/admin/preview`), SSO scope resolution, and unmapped states
 
 ---
 
-## 17. Memory and collaboration
+## 18. Memory and collaboration
 
 - Claude's persistent memory for this project is indexed by `MEMORY.md` and currently holds one
   entry: **avoid over-engineering**. Build exactly what is asked, with no speculative extras.
@@ -581,12 +681,12 @@ The working tree was clean when this file was written. Nothing has been pushed b
 
 ---
 
-## 18. How to start a new session on this project
+## 19. How to start a new session on this project
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **110 passed**. Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
+   **154 passed**. Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
 4. Check `git status` and `git log --oneline | head` before changing anything.
 5. Don't start Phase 3 or Tasks 2 and 3 without an explicit request. Ask first if the request is
    ambiguous. Never make live API calls.

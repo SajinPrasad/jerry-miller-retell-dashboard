@@ -97,7 +97,11 @@ class GHLOAuthService:
         return location.access_token
 
     def sync_locations(self, agency: GHLOAuthToken) -> None:
-        """Store a token for each installed sub-account; deactivate ones no longer installed."""
+        """Store a row for every sub-account under the agency; deactivate ones that are gone.
+
+        A sub-account the app isn't installed on can't be minted a token, but it is still stored
+        (tokenless) so it stays visible in the billing dashboard.
+        """
         agency_token = self.get_agency_token(agency)
         installed = self._installed_locations(agency_token, agency.company_id)
         installed.pop(settings.AGENCY_LOCATION_ID, None)
@@ -113,9 +117,18 @@ class GHLOAuthService:
                 continue
             try:
                 data = self._mint_location_token(agency_token, agency.company_id, location_id)
-            except GHLError:
-                logger.warning('ghl: could not get a token for location %s', location_id)
-                continue
+                token_fields = {
+                    'access_token': data['access_token'],
+                    'expires_at': self._expires_at(data),
+                }
+            except GHLError as exc:
+                # Still store the sub-account so it shows up in the dashboard; it just has no
+                # token to call GHL with until the app is installed on it.
+                logger.warning('ghl: could not get a token for location %s: %s', location_id, exc)
+                token_fields = {
+                    'access_token': '',
+                    'expires_at': timezone.now() + timedelta(days=1),
+                }
             GHLOAuthToken.objects.update_or_create(
                 is_agency=False,
                 location_id=location_id,
@@ -123,8 +136,7 @@ class GHLOAuthService:
                     'company_id': agency.company_id,
                     'name': name,
                     'is_active': True,
-                    'access_token': data['access_token'],
-                    'expires_at': self._expires_at(data),
+                    **token_fields,
                 },
             )
 
@@ -155,14 +167,13 @@ class GHLOAuthService:
         )
 
     def _installed_locations(self, agency_token: str, company_id: str) -> dict[str, str]:
-        """Return {location_id: name} for every sub-account the app is installed on."""
+        """Return {location_id: name} for every sub-account under the agency."""
         locations = {}
         page_token = None
         while True:
             params = {
                 'companyId': company_id,
                 'appId': settings.GHL_APP_ID,
-                'isInstalled': 'true',
                 'pageSize': 100,
             }
             if page_token:
@@ -191,6 +202,11 @@ class GHLOAuthService:
             response = self.client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            # GHL puts the real reason in the body; the status line alone isn't diagnosable.
+            raise GHLError(
+                f'GHL {method} {path} failed: {exc.response.status_code} {exc.response.text[:500]}'
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise GHLError(f'GHL {method} {path} failed: {exc}') from exc
 

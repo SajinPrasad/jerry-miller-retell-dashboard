@@ -137,6 +137,16 @@ def test_exchange_code_http_error(service):
 
 
 @pytest.mark.django_db
+@respx.mock
+def test_http_errors_carry_the_reason_ghl_gave(service):
+    respx.post(f'{BASE}/oauth/token').mock(
+        return_value=httpx.Response(400, json={'message': 'This app is not installed'})
+    )
+    with pytest.raises(GHLError, match='This app is not installed'):
+        service.exchange_code('c')
+
+
+@pytest.mark.django_db
 def test_get_agency_requires_active_install(service):
     make_agency(is_active=False)
     with pytest.raises(GHLNotConnectedError):
@@ -235,7 +245,7 @@ def test_sync_keeps_fresh_tokens_and_deactivates_uninstalled(service):
 
 @pytest.mark.django_db
 @respx.mock
-def test_sync_skips_a_location_whose_token_fails(service):
+def test_sync_stores_a_location_even_when_its_token_fails(service):
     agency = make_agency()
     mock_installed(('loc1', 'A'), ('loc2', 'B'))
     respx.post(f'{BASE}/oauth/locationToken').mock(
@@ -245,7 +255,11 @@ def test_sync_skips_a_location_whose_token_fails(service):
     service.sync_locations(agency)
 
     locations = GHLOAuthToken.objects.filter(is_agency=False)
-    assert list(locations.values_list('location_id', flat=True)) == ['loc2']
+    assert list(locations.values_list('location_id', flat=True)) == ['loc1', 'loc2']
+    tokenless = GHLOAuthToken.objects.get(location_id='loc1')
+    assert tokenless.access_token == ''
+    assert tokenless.name == 'A' and tokenless.is_active
+    assert not tokenless.needs_refresh
 
 
 @pytest.mark.django_db
