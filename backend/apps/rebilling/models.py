@@ -75,6 +75,9 @@ class ClientMapping(models.Model):
     # The client's own Twilio subaccount. Blank = no Twilio voice billing for this client.
     twilio_subaccount_sid = models.CharField(max_length=64, blank=True, default='')
     billing_mode = models.CharField(max_length=20, choices=BILLING_MODES, default=AUTO_CHARGE)
+    # Where the usage bill goes. Also the key an existing Stripe customer is looked up by, so
+    # a client who already pays Jerry through Stripe is reused rather than duplicated.
+    billing_email = models.EmailField(blank=True, default='')
     stripe_customer_id = models.CharField(max_length=255, blank=True, default='')
     billing_contact_id = models.CharField(max_length=255, blank=True, default='')
     active = models.BooleanField(default=True)
@@ -226,6 +229,20 @@ RETELL_LINE = 'retell'
 TWILIO_LINE = 'twilio'
 LINE_TYPES = [(RETELL_LINE, 'Retell AI minutes'), (TWILIO_LINE, 'Twilio call minutes')]
 
+# Values for `Bill.status`. A bill is calculated long before it is charged, and the charge is
+# answered by a webhook rather than by the call that started it, so these are four real states
+# and not a progress bar: `charging` means Stripe has the invoice and we are waiting to hear.
+UNCHARGED = 'uncharged'
+CHARGING = 'charging'
+PAID = 'paid'
+FAILED = 'failed'
+BILL_STATUSES = [
+    (UNCHARGED, 'Uncharged'),
+    (CHARGING, 'Charging'),
+    (PAID, 'Paid'),
+    (FAILED, 'Failed'),
+]
+
 
 class Bill(models.Model):
     """One bill for one client for one month.
@@ -240,6 +257,13 @@ class Bill(models.Model):
     billing_period = models.CharField(max_length=7)
     # Total amount to bill, in cents. Sum of all lines.
     total_cents = models.PositiveIntegerField(default=0)
+    # Where this bill is in the charging run. Calculation leaves it `uncharged`.
+    status = models.CharField(max_length=20, choices=BILL_STATUSES, default=UNCHARGED)
+    # The Stripe invoice this bill was charged on. Set once the invoice exists, which is also
+    # what the webhook looks the bill up by.
+    stripe_invoice_id = models.CharField(max_length=255, blank=True, default='')
+    # When Stripe told us it was paid. Empty until then, including while `charging`.
+    paid_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'rebilling_bill'
