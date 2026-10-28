@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getClientDetail, getClients, openSession } from '../../api/admin'
+import { getClientDetail, getClients, openSession, syncClients } from '../../api/admin'
 import { ApiError } from '../../api/client'
 import { requestSessionBlob } from '../../lib/ghlSession'
 import type { ClientDetailResult, ClientsResponse, SsoSession } from '../../types/admin'
@@ -28,6 +28,7 @@ export default function AdminPage() {
   const [selected, setSelected] = useState<string | null>(null)
   const [detail, setDetail] = useState<ClientDetailResult | null>(null)
   const [failed, setFailed] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   // 1. Resolve the session once. The period filter must not re-run the handshake.
   useEffect(() => {
@@ -106,6 +107,20 @@ export default function AdminPage() {
     }
   }, [selected, month, session])
 
+  // Re-syncs sub-accounts from GoHighLevel, then swaps in the fresh list - no reload needed.
+  async function handleSync() {
+    setSyncing(true)
+    try {
+      const loaded = await syncClients(month)
+      setClients(loaded)
+      setFailed(false)
+    } catch {
+      setFailed(true)
+    } finally {
+      setSyncing(false)
+    }
+  }
+
   if (session.kind === 'loading') {
     return (
       <Shell>
@@ -166,6 +181,8 @@ export default function AdminPage() {
         onBack={() => setSelected(null)}
         shown={shown}
         openDetail={openDetail}
+        onSync={handleSync}
+        syncing={syncing}
       />
     </Shell>
   )

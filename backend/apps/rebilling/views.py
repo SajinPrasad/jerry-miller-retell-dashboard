@@ -9,7 +9,9 @@ from rest_framework.views import APIView
 from retell.lib import verify
 
 from apps.ghl import sso
+from apps.ghl.exceptions import GHLError
 from apps.ghl.models import GHLOAuthToken
+from apps.ghl.services import GHLOAuthService
 
 from .models import ClientMapping
 from .services import client_detail, client_rows, month_window, store_call
@@ -47,6 +49,25 @@ class RetellWebhookView(APIView):
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
+def _clients_response(context, request) -> Response:
+    try:
+        start, end = month_window(request.query_params.get('month'))
+    except ValueError as exc:
+        raise ValidationError({'month': str(exc)}) from exc
+
+    # Only a sub-account session is narrowed to one client. An agency session widens to every
+    # client regardless of what `activeLocation` happens to hold - GHL can report the agency's
+    # own location there too.
+    location_id = context.active_location if context.scope == sso.LOCATION else None
+    return Response(
+        {
+            'scope': context.scope,
+            'month': start.strftime('%Y-%m'),
+            'clients': client_rows(start, end, location_id=location_id),
+        }
+    )
+
+
 class AdminClientsView(APIView):
     """GET /api/rebilling/admin/clients/: every onboarded client, with rates and usage.
 
@@ -60,22 +81,32 @@ class AdminClientsView(APIView):
 
     def get(self, request):
         context = sso.context_from_request(request)
-        try:
-            start, end = month_window(request.query_params.get('month'))
-        except ValueError as exc:
-            raise ValidationError({'month': str(exc)}) from exc
+        return _clients_response(context, request)
 
-        # Only a sub-account session is narrowed to one client. An agency session widens to
-        # every client regardless of what `activeLocation` happens to hold - GHL can report the
-        # agency's own location there too.
-        location_id = context.active_location if context.scope == sso.LOCATION else None
-        return Response(
-            {
-                'scope': context.scope,
-                'month': start.strftime('%Y-%m'),
-                'clients': client_rows(start, end, location_id=location_id),
-            }
-        )
+
+class AdminClientsSyncView(APIView):
+    """POST /api/rebilling/admin/clients/sync/: re-sync sub-accounts from GHL, then list them.
+
+    What the "Refresh clients" button on the admin page calls. Agency scope only - a sub-account
+    session has no "all clients" list to refresh.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        context = sso.context_from_request(request)
+        if context.scope == sso.LOCATION:
+            raise PermissionDenied('This session cannot sync clients.')
+
+        service = GHLOAuthService()
+        try:
+            service.sync_locations(service.get_agency())
+        except GHLError:
+            logger.exception('rebilling: admin client sync failed')
+            return Response({'detail': 'GHL request failed.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return _clients_response(context, request)
 
 
 class AdminClientDetailView(APIView):

@@ -48,6 +48,19 @@
   box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
 }
 
+.admin .card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.75rem;
+}
+
+.admin .card-header h2 {
+  margin: 0;
+}
+
 .admin .banner {
   padding: 0.75rem 1rem;
   border-radius: 10px;

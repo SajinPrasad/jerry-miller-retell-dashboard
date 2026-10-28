@@ -13,6 +13,13 @@ export function getClients(month?: string): Promise<ClientsResponse> {
   return apiFetch<ClientsResponse>(`/rebilling/admin/clients/${monthQuery(month)}`)
 }
 
+/** Re-syncs sub-accounts from GoHighLevel, then returns the updated list. */
+export function syncClients(month?: string): Promise<ClientsResponse> {
+  return apiFetch<ClientsResponse>(`/rebilling/admin/clients/sync/${monthQuery(month)}`, {
+    method: 'POST',
+  })
+}
+
 export function getClientDetail(locationId: string, month?: string): Promise<ClientDetailResult> {
   return apiFetch<ClientDetailResult>(
     `/rebilling/admin/clients/${encodeURIComponent(locationId)}/${monthQuery(month)}`,

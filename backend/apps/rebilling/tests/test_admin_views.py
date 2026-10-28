@@ -1,14 +1,17 @@
-"""The read-only admin endpoints behind the embedded GHL page."""
+"""The admin endpoints behind the embedded GHL page: read-only, plus the one sync action."""
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import httpx
 import pytest
+import respx
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
 
 from apps.ghl.models import GHLOAuthToken
+from apps.ghl.tests.test_services import BASE, mock_installed, mock_location_token
 from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency, seal
 from apps.rebilling.models import (
     BILLABLE,
@@ -72,6 +75,15 @@ def get_detail(client, location_id, blob=VECTOR_AGENCY, month=MONTH):
         {'month': month},
         HTTP_X_GHL_SESSION=blob,
     )
+
+
+def sync_clients(client, blob=VECTOR_AGENCY, month=MONTH):
+    url = reverse('rebilling:admin-clients-sync')
+    # `.post()`'s second argument is the request body, not the query string - the month has to
+    # go on the URL itself, the same place the real frontend puts it.
+    if month:
+        url = f'{url}?month={month}'
+    return client.post(url, HTTP_X_GHL_SESSION=blob)
 
 
 # --- authentication ---------------------------------------------------------------------
@@ -372,3 +384,44 @@ def test_the_rate_in_effect_is_the_one_for_the_month_being_viewed(client):
     RateHistory.objects.create(client=mapping, start_date=date(2026, 9, 1), voice_rate_cents=99)
 
     assert get_detail(client, 'loc1', month='2026-03').json()['rates']['voice_rate_cents'] == 20
+
+
+# --- the "Refresh clients" sync action ---------------------------------------------------
+
+
+def test_sync_401s_without_a_session(client):
+    make_agency()
+
+    response = client.post(reverse('rebilling:admin-clients-sync'))
+
+    assert response.status_code == 401
+
+
+def test_sync_is_refused_for_a_sub_account_session(client):
+    make_agency()
+
+    assert sync_clients(client, blob=VECTOR_LOCATION).status_code == 403
+
+
+@respx.mock
+def test_sync_discovers_a_new_sub_account_and_returns_the_updated_list(client):
+    make_agency()
+    mock_installed(('loc-new', 'Polar Peak Heating'))
+    mock_location_token()
+
+    response = sync_clients(client)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body['month'] == MONTH
+    assert [row['location_id'] for row in body['clients']] == ['loc-new']
+    location = GHLOAuthToken.objects.get(location_id='loc-new')
+    assert location.is_active and location.name == 'Polar Peak Heating'
+
+
+@respx.mock
+def test_sync_returns_502_on_ghl_failure(client):
+    make_agency()
+    respx.get(f'{BASE}/oauth/installed-locations').mock(return_value=httpx.Response(500))
+
+    assert sync_clients(client).status_code == 502

@@ -34,6 +34,9 @@ interface Props {
   onBack: () => void
   shown: ClientsResponse | null
   openDetail: ClientDetailResult | null
+  /** Omitted on the standalone preview, which never calls the real API. */
+  onSync?: () => void
+  syncing?: boolean
 }
 
 /**
@@ -49,6 +52,8 @@ export default function ClientBrowser({
   onBack,
   shown,
   openDetail,
+  onSync,
+  syncing,
 }: Props) {
   const isSubAccount = shown?.scope === 'location'
 
@@ -82,7 +87,14 @@ export default function ClientBrowser({
         </>
       ) : (
         <section className="card">
-          <h2>Clients</h2>
+          <div className="card-header">
+            <h2>Clients</h2>
+            {onSync && (
+              <button type="button" className="button ghost" onClick={onSync} disabled={syncing}>
+                {syncing ? 'Refreshing…' : 'Refresh clients'}
+              </button>
+            )}
+          </div>
           <p className="muted small">
             Every sub-account onboarded in GoHighLevel. Open one for its minutes, rates and bill
             estimate.

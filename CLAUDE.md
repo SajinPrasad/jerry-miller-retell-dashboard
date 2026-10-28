@@ -40,12 +40,14 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 - **Service** `GHLOAuthService` (`apps/ghl/services.py`): `install_url`, `exchange_code`, `get_agency`, `get_agency_token` (refreshes within 5 min of expiry; refresh tokens are single-use, so it locks the row), `get_location_token(location_id)` (re-mints from the agency token when expiring), `sync_locations` (`GET /oauth/installed-locations`, then `POST /oauth/locationToken` per new or expired sub-account; deactivates sub-accounts no longer listed).
 - **Endpoints:** `GET /api/ghl/onboarding/` (install link, agency, sub-accounts; no tokens), `POST /api/ghl/onboarding/sync/`, `GET /api/oauth/callback/`.
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts. The Custom Page needs the **Shared Secret** (`GHL_APP_SSO_KEY`); SSO is not an OAuth scope, so `GHL_SCOPES` is unchanged.
-- **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, and the white-label install host (`GHL_INSTALL_URL_BASE`).
+- **New sub-accounts show up two ways:** the agency admin can click "Refresh clients" on `/admin` (`POST /api/rebilling/admin/clients/sync/`, agency scope only), and GHL's own `LocationCreate` webhook calls `POST /api/ghl/webhooks/location-created/` the moment Jerry creates one - available only to agency-level apps, which is what this one is. Both just call `sync_locations` again; neither reads the location fields off the webhook payload directly, so there's one code path for discovering a sub-account, not two. The webhook verifies `X-GHL-Signature` (Ed25519) against `GHL_WEBHOOK_PUBLIC_KEY` - GHL's own public key, published in its docs and the same for every app, not a per-app secret - and always answers 200/401/400 quickly so GHL doesn't retry; a sync failure is logged and left for the next webhook, manual refresh or install callback to catch.
+- **Verify on Jerry's account:** the `Version` header (`GHL_API_VERSION`), the `/oauth/locationToken` path (newer docs say `/oauth/location-token`), `installed-locations` pagination, the white-label install host (`GHL_INSTALL_URL_BASE`), and the `LocationCreate` webhook itself - register it under the marketplace app's Advanced Settings > Webhooks pointing at `/api/ghl/webhooks/location-created/`, and confirm GHL still signs with `X-GHL-Signature` (the legacy `X-WH-Signature`/RSA header, which this app does not implement, was slated for deprecation).
 
-## Agency admin page (GHL Custom Page, read-only, built)
+## Agency admin page (GHL Custom Page, mostly read-only, built)
 
 The embedded admin interface Jerry opens from GHL's left nav: onboarded clients, their rates and
-their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and is not built.
+their voice usage. Read-only aside from the "Refresh clients" sync - editing rates/mapping is the
+rest of Phase 4 and is not built.
 
 - **How GHL identifies the viewer.** The page runs in a GHL iframe, posts
   `{message: 'REQUEST_USER_DATA'}` to `window.parent`, and gets `REQUEST_USER_DATA_RESPONSE` with
@@ -70,6 +72,11 @@ their voice usage. Read-only - editing rates/mapping is the rest of Phase 4 and 
   onboarded-but-unmapped client shows as `mapped: false` with null usage - "nobody set this up" must
   not read as "used nothing". Each row also carries `retell_connected` / `twilio_connected`, which
   is what the list's single status pill says on hover.
+- **"Refresh clients"** (`ClientBrowser.tsx`'s clients-card header, agency scope only - a
+  sub-account's own page never reaches the list, so it never renders): `POST
+  /api/rebilling/admin/clients/sync/`, same `?month=` as the list. Re-runs Task 1's
+  `sync_locations` against GHL, then returns the same shape `GET /api/rebilling/admin/clients/`
+  does, so `AdminPage.tsx` swaps the table in place - no reload, just the state update.
 - **Two pages, two jobs.** The list answers "who is onboarded, and is anyone billing them": client
   name and status, nothing else. Every figure - minutes, rates, estimate, cost, margin - and the
   period filter live on the client's own page, where there is room to show how they were reached.

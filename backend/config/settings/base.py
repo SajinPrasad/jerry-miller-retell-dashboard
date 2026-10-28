@@ -123,6 +123,19 @@ GHL_SCOPES = env(
 # embedded admin Custom Page receives from GHL. Server-side only, never sent to the browser.
 GHL_APP_SSO_KEY = env('GHL_APP_SSO_KEY', default='')
 
+# GHL's own Ed25519 public key, published in its webhook docs and the same for every
+# marketplace app (not a per-app secret). Verifies the `X-GHL-Signature` header on webhooks it
+# sends us. Overridable in case GHL ever rotates it.
+# https://marketplace.gohighlevel.com/docs/webhook/WebhookIntegrationGuide
+GHL_WEBHOOK_PUBLIC_KEY = env(
+    'GHL_WEBHOOK_PUBLIC_KEY',
+    default=(
+        '-----BEGIN PUBLIC KEY-----\n'
+        'MCowBQYDK2VwAyEAi2HR1srL4o18O8BRa7gVJY7G7bupbN3H9AwJrHCDiOg=\n'
+        '-----END PUBLIC KEY-----'
+    ),
+)
+
 # Fernet key that encrypts OAuth tokens at rest (see .env.example to generate one).
 FIELD_ENCRYPTION_KEY = env('FIELD_ENCRYPTION_KEY', default='')
 

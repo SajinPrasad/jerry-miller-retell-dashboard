@@ -130,9 +130,16 @@ function parentIgnores() {
  * The admin API, echoing back the month it was asked for — which is what the real endpoints do,
  * and what the page relies on to tell this period's figures from one still in flight.
  *
- * `perMonth` overrides the client returned for a given month.
+ * `perMonth` overrides the client returned for a given month. `synced` overrides what the
+ * "Refresh clients" sync endpoint returns, in place of the regular list's own clients.
  */
-function mockApi(options: { session?: SsoSession; perMonth?: Record<string, ClientSummary> } = {}) {
+function mockApi(
+  options: {
+    session?: SsoSession
+    perMonth?: Record<string, ClientSummary>
+    synced?: ClientSummary[]
+  } = {},
+) {
   const { session = agencySession, perMonth = {} } = options
 
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
@@ -151,6 +158,15 @@ function mockApi(options: { session?: SsoSession; perMonth?: Record<string, Clie
 
     if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
       return json({ ...detail, month, usage: (perMonth[month] ?? mapped).usage })
+    }
+
+    if (url.startsWith('/api/rebilling/admin/clients/sync/')) {
+      const body: ClientsResponse = {
+        scope: session.scope,
+        month,
+        clients: [...(options.synced ?? [perMonth[month] ?? mapped, unmapped])],
+      }
+      return json(body)
     }
 
     if (url.startsWith('/api/rebilling/admin/clients/')) {
@@ -287,6 +303,70 @@ describe('AdminPage', () => {
     expect(screen.getByLabelText('Loading clients')).toBeInTheDocument()
     await screen.findByText('Cool Breeze HVAC')
     expect(screen.queryByLabelText('Loading clients')).not.toBeInTheDocument()
+  })
+
+  // --- the "Refresh clients" button -------------------------------------------------------
+
+  it('discovers a newly onboarded client and updates the table in place, with no reload', async () => {
+    parentAnswers()
+    const justOnboarded: ClientSummary = {
+      ...unmapped,
+      location_id: 'loc-brand-new',
+      client_name: 'Brand New HVAC',
+    }
+    mockApi({ synced: [mapped, unmapped, justOnboarded] })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+    expect(screen.queryByText('Brand New HVAC')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Refresh clients' }))
+
+    expect(await screen.findByText('Brand New HVAC')).toBeInTheDocument()
+    // Still the same client list in the same page - not a reload.
+    expect(screen.getByText('Cool Breeze HVAC')).toBeInTheDocument()
+  })
+
+  it('disables the button and says so while the sync is running', async () => {
+    parentAnswers()
+    const fetchMock = mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    fetchMock.mockImplementation(() => new Promise(() => {}))
+    await user.click(screen.getByRole('button', { name: 'Refresh clients' }))
+
+    const button = screen.getByRole('button', { name: 'Refreshing…' })
+    expect(button).toBeDisabled()
+  })
+
+  it('shows the failure banner when the sync fails', async () => {
+    parentAnswers()
+    const fetchMock = mockApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await screen.findByText('Cool Breeze HVAC')
+
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 502 }))
+    await user.click(screen.getByRole('button', { name: 'Refresh clients' }))
+
+    expect(
+      await screen.findByText('Could not load billing data.', { exact: false }),
+    ).toBeInTheDocument()
+  })
+
+  it('has no refresh button on a sub-account session, which has no list to refresh', async () => {
+    parentAnswers()
+    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+
+    render(<AdminPage />)
+
+    await screen.findByText('Mapping')
+    expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
   })
 
   // --- the client's own page ------------------------------------------------------------

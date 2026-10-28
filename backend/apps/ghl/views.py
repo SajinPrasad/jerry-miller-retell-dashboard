@@ -1,6 +1,11 @@
+import base64
+import binascii
+import json
 import logging
 from urllib.parse import urlencode
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from django.conf import settings
 from django.http import HttpResponseRedirect
 from rest_framework import status
@@ -14,6 +19,10 @@ from .serializers import GHLOAuthTokenSerializer
 from .services import GHLOAuthService
 
 logger = logging.getLogger(__name__)
+
+# The only location lifecycle event this app subscribes to: fired whenever a new sub-account is
+# created under the agency. Available only to agency-level apps, which is what this one is.
+LOCATION_CREATE_EVENT = 'LocationCreate'
 
 
 def _onboarding_payload() -> dict:
@@ -73,6 +82,57 @@ class OAuthCallbackView(APIView):
             logger.exception('ghl: initial location sync failed')
 
         return _redirect_to_onboarding(status='connected')
+
+
+def _verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
+    """GHL signs the webhook body with its own private key; this checks it against the matching
+    public key (`GHL_WEBHOOK_PUBLIC_KEY`), which is the same for every marketplace app.
+    """
+    if not signature:
+        return False
+    try:
+        public_key = load_pem_public_key(settings.GHL_WEBHOOK_PUBLIC_KEY.encode())
+        public_key.verify(base64.b64decode(signature), raw_body)
+        return True
+    except (InvalidSignature, ValueError, binascii.Error):
+        return False
+
+
+class LocationCreatedWebhookView(APIView):
+    """POST /api/ghl/webhooks/location-created/: GHL's `LocationCreate` event.
+
+    Lets a new sub-account show up automatically, the moment Jerry creates it in GHL, instead of
+    waiting for someone to click "Refresh clients". GHL retries up to 12 times on anything but a
+    2xx, so this always answers quickly; a sync failure here is logged and left for the next
+    webhook, manual refresh or install callback to catch - the same as the initial sync in
+    `OAuthCallbackView`.
+    """
+
+    # The signature in `X-GHL-Signature` is the authentication.
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        # Read before anything parses the stream: the signature covers the raw body.
+        raw_body = request.body
+        signature = request.headers.get('X-GHL-Signature', '')
+        if not _verify_webhook_signature(raw_body, signature):
+            logger.warning('ghl: webhook signature rejected')
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            payload = json.loads(raw_body)
+        except ValueError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        if payload.get('type') == LOCATION_CREATE_EVENT:
+            service = GHLOAuthService()
+            try:
+                service.sync_locations(service.get_agency())
+            except GHLError:
+                logger.exception('ghl: webhook-triggered location sync failed')
+
+        return Response(status=status.HTTP_200_OK)
 
 
 class SSOSessionView(APIView):
