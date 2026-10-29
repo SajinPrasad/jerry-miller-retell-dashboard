@@ -10,13 +10,11 @@ import json
 import time
 from datetime import UTC, datetime
 from decimal import Decimal
-from io import StringIO
 from types import SimpleNamespace
 
 import pytest
 import stripe
 from django.conf import settings
-from django.core.management import call_command
 from rest_framework.test import APIClient
 
 from apps.rebilling import stripe_billing
@@ -343,22 +341,6 @@ def test_the_invoice_id_survives_a_failure_after_the_invoice_exists(fake):
     # Still uncharged, but traceable to the Stripe object that was already created.
     assert bill.status == UNCHARGED
     assert bill.stripe_invoice_id == 'in_test1'
-
-
-def test_the_command_reports_what_it_charged(fake):
-    client = make_billable_client(stripe_customer_id='cus_known')
-    make_bill(client)
-    out = StringIO()
-
-    call_command('charge_bills', '--month', MONTH, stdout=out)
-
-    assert '1 bill(s) sent to Stripe' in out.getvalue()
-    assert '650¢' in out.getvalue()
-
-
-def test_the_command_rejects_a_month_it_cannot_read(fake):
-    with pytest.raises(Exception, match='YYYY-MM'):
-        call_command('charge_bills', '--month', 'March', stdout=StringIO())
 
 
 # --- the webhook ----------------------------------------------------------------------------------

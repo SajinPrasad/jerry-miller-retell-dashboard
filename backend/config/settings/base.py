@@ -97,6 +97,11 @@ AGENCY_LOCATION_ID = env('AGENCY_LOCATION_ID', default='')
 GHL_API_BASE_URL = env('GHL_API_BASE_URL', default='https://services.leadconnectorhq.com')
 GHL_API_VERSION = env('GHL_API_VERSION', default='2021-07-28')
 GHL_REQUEST_TIMEOUT = env.int('GHL_REQUEST_TIMEOUT', default=30)
+# The sub-account that holds the client contacts and their saved cards, which is where Phase 5's
+# invoices are raised. This is NOT `AGENCY_LOCATION_ID`: GHL order forms and payment methods are
+# sub-account scoped, and the agency account holds no contacts at all, so an invoice pointed at
+# the agency would find nobody to bill.
+GHL_MAIN_LOCATION_ID = env('GHL_MAIN_LOCATION_ID', default='')
 # Host of the app's Installation URL (Advanced Settings > Auth); white-label hosts differ.
 GHL_INSTALL_URL_BASE = env('GHL_INSTALL_URL_BASE', default='https://marketplace.gohighlevel.com')
 GHL_REDIRECT_URI = env('GHL_REDIRECT_URI', default='http://localhost:8000/api/oauth/callback/')
@@ -164,6 +169,17 @@ TWILIO_REQUEST_TIMEOUT = env.int('TWILIO_REQUEST_TIMEOUT', default=30)
 # different secrets and are not interchangeable.
 STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
+
+# GHL invoices are the rail the usage bills are charged on first; Stripe above is the fallback.
+# `liveMode` decides whether an invoice moves real money, and is deliberately its own setting
+# rather than DEBUG's shadow, so a staging box can be pointed at live and production can be put
+# in test mode for a dry run without either one lying about which it is.
+GHL_INVOICE_LIVE_MODE = env.bool('GHL_INVOICE_LIVE_MODE', default=False)
+# How long GHL keeps a declined invoice before we give up on it and charge the card on Stripe
+# instead. GHL retries a decline twice more, 24 hours apart, and that schedule is not
+# configurable, so falling back any sooner than 72 hours races GHL's own retry and bills the
+# client twice for the same month.
+BILLING_FALLBACK_WINDOW_HOURS = env.int('BILLING_FALLBACK_WINDOW_HOURS', default=72)
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')

@@ -8,3 +8,7 @@ class TwilioError(Exception):
 
 class StripeBillingError(Exception):
     """A bill cannot be charged for a reason on our side, before Stripe is ever asked."""
+
+
+class GHLInvoiceError(Exception):
+    """A GHL invoice could not be raised, sent or voided."""

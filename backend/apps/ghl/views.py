@@ -1,18 +1,14 @@
-import base64
-import binascii
 import json
 import logging
 from urllib.parse import urlencode
 
-from cryptography.exceptions import InvalidSignature
-from cryptography.hazmat.primitives.serialization import load_pem_public_key
 from django.conf import settings
 from django.http import HttpResponseRedirect
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import sso
+from . import sso, webhooks
 from .exceptions import GHLError, GHLNotConnectedError
 from .models import GHLOAuthToken
 from .serializers import GHLOAuthTokenSerializer
@@ -84,20 +80,6 @@ class OAuthCallbackView(APIView):
         return _redirect_to_onboarding(status='connected')
 
 
-def _verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
-    """GHL signs the webhook body with its own private key; this checks it against the matching
-    public key (`GHL_WEBHOOK_PUBLIC_KEY`), which is the same for every marketplace app.
-    """
-    if not signature:
-        return False
-    try:
-        public_key = load_pem_public_key(settings.GHL_WEBHOOK_PUBLIC_KEY.encode())
-        public_key.verify(base64.b64decode(signature), raw_body)
-        return True
-    except (InvalidSignature, ValueError, binascii.Error):
-        return False
-
-
 class LocationCreatedWebhookView(APIView):
     """POST /api/ghl/webhooks/location-created/: GHL's `LocationCreate` event.
 
@@ -116,7 +98,7 @@ class LocationCreatedWebhookView(APIView):
         # Read before anything parses the stream: the signature covers the raw body.
         raw_body = request.body
         signature = request.headers.get('X-GHL-Signature', '')
-        if not _verify_webhook_signature(raw_body, signature):
+        if not webhooks.verify_signature(raw_body, signature):
             logger.warning('ghl: webhook signature rejected')
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 

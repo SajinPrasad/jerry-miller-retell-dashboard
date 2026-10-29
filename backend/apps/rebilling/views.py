@@ -10,10 +10,12 @@ from rest_framework.views import APIView
 from retell.lib import verify
 
 from apps.ghl import sso
+from apps.ghl import webhooks as ghl_webhooks
 from apps.ghl.exceptions import GHLError
 from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import GHLOAuthService
 
+from . import ghl_billing
 from .exceptions import RetellError, TwilioError
 from .models import ClientMapping
 from .serializers import ClientMappingSerializer
@@ -86,6 +88,38 @@ class StripeWebhookView(APIView):
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         apply_event(event)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GHLInvoiceWebhookView(APIView):
+    """POST /api/rebilling/webhooks/ghl-invoices/: how a GHL invoice's payment gets back to us.
+
+    Subscribed to GHL's invoice events, of which only `InvoicePaid` changes anything - GHL
+    publishes no event for a charge that failed, so an unpaid invoice is something the fallback
+    window notices rather than something this hears about.
+
+    GHL retries anything that is not a 2xx, so this does one indexed lookup and one write and
+    answers 204 empty, the same shape as the Retell and Stripe webhooks.
+    """
+
+    # A machine-to-machine webhook: the signature is the authentication.
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        # Read before anything parses the stream: the signature covers the raw body.
+        raw_body = request.body
+        signature = request.headers.get('X-GHL-Signature', '')
+        if not ghl_webhooks.verify_signature(raw_body, signature):
+            logger.warning('ghl: invoice webhook signature rejected')
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            event = json.loads(raw_body)
+        except ValueError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        ghl_billing.apply_event(event)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

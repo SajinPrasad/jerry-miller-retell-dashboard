@@ -231,7 +231,13 @@ LINE_TYPES = [(RETELL_LINE, 'Retell AI minutes'), (TWILIO_LINE, 'Twilio call min
 
 # Values for `Bill.status`. A bill is calculated long before it is charged, and the charge is
 # answered by a webhook rather than by the call that started it, so these are four real states
-# and not a progress bar: `charging` means Stripe has the invoice and we are waiting to hear.
+# and not a progress bar: `charging` means a provider has the invoice and we are waiting to hear.
+#
+# There is no state for which rail a `charging` bill is on, because `ghl_invoice_id` and
+# `stripe_invoice_id` already answer that. There is no state for "GHL declined it" either:
+# GHL publishes no charge-failed webhook, so a decline and a silent no-op reach us the same
+# way, as a `charging` bill that simply never becomes `paid`. Age is the only signal either
+# one gives, which is what the fallback window reads.
 UNCHARGED = 'uncharged'
 CHARGING = 'charging'
 PAID = 'paid'
@@ -259,9 +265,20 @@ class Bill(models.Model):
     total_cents = models.PositiveIntegerField(default=0)
     # Where this bill is in the charging run. Calculation leaves it `uncharged`.
     status = models.CharField(max_length=20, choices=BILL_STATUSES, default=UNCHARGED)
+    # The GHL invoice this bill was raised on, and what the GHL webhook looks the bill up by.
+    # Set the moment the invoice exists, before it is sent, so a failure in between still leaves
+    # a bill that can be traced to a real invoice rather than an orphan nobody can find.
+    ghl_invoice_id = models.CharField(max_length=255, blank=True, default='')
+    # When the GHL invoice was voided to clear the way for the Stripe fallback. This is the
+    # evidence that the first rail was stopped before the second one was started; without it a
+    # fallback cannot be told apart from a double charge after the fact.
+    ghl_invoice_voided_at = models.DateTimeField(null=True, blank=True)
     # The Stripe invoice this bill was charged on. Set once the invoice exists, which is also
     # what the webhook looks the bill up by.
     stripe_invoice_id = models.CharField(max_length=255, blank=True, default='')
+    # When the GHL invoice was sent. The fallback window is measured from this, so it is the
+    # start of the clock rather than a record of when anything was paid.
+    charged_at = models.DateTimeField(null=True, blank=True)
     # When Stripe told us it was paid. Empty until then, including while `charging`.
     paid_at = models.DateTimeField(null=True, blank=True)
 

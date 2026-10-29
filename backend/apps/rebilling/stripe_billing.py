@@ -127,7 +127,7 @@ def charge_bills(month: str | None = None) -> dict:
             result['skipped'] += 1
             continue
         try:
-            _charge_one(bill)
+            charge_on_stripe(bill)
         except (StripeBillingError, stripe.StripeError):
             logger.warning(
                 'billing: could not charge %s for %s',
@@ -143,8 +143,11 @@ def charge_bills(month: str | None = None) -> dict:
     return result
 
 
-def _charge_one(bill: Bill) -> None:
+def charge_on_stripe(bill: Bill) -> None:
     """Put one bill on a Stripe invoice and finalise it, which is what starts the charge.
+
+    Called both by this module's own monthly run and by `dual_rail` when a GHL invoice has gone
+    unpaid long enough to fall back, which is why it is named rather than private.
 
     The invoice id is saved the moment it exists, before the lines are added, so a failure
     halfway through leaves a bill that can be traced to a real Stripe object rather than an

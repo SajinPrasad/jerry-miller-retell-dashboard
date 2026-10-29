@@ -170,7 +170,7 @@ the rest of Phase 4 and is not built.
 
 ## Voice rebilling (Task 4, Phases 1, 2, 2b, 3 and 5 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe. Phase 4's writing half (rates, unassigned calls, bills table) and Phase 6 (alerts) are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through a GHL invoice with an automated Stripe fallback. Phase 4's writing half (rates, unassigned calls, bills table) and Phase 6 (alerts) are not started.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 
@@ -181,21 +181,70 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
 - **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
 - **Twilio pull** `TwilioUsageService.pull(start_date, end_date)`: for each `active` client with a `twilio_subaccount_sid`, `GET /2010-04-01/Accounts/{sid}/Usage/Records/Daily.json` with `Category=calls`, `IncludeSubaccounts=false` (its default is **true**) and `PageSize=1000`, paging on the `next_page_uri` Twilio hands back. Stored with `update_or_create` on `(client, usage_date, category)` because Twilio keeps revising a day after it ends. Defaults to a rolling 3-day window; pass both dates for the month-close run. Only `calls` is billed — it excludes SIP and trunking calls by Twilio's definition, which is where Retell's minutes land. A failed client is logged, counted in `failed` and skipped; the others still land.
 - **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
-- **Charging (Phase 5, built on `feat/stripe-billing`)** lives in its own module,
-  `apps/rebilling/stripe_billing.py`, and uses the **official `stripe` SDK** - not a hand-rolled
-  `httpx` client like the two ingest paths, because this is money movement. `charge_bills(month)`
-  takes each `uncharged` `Bill` for a period and puts it on a Stripe invoice: look the customer up
-  by `ClientMapping.billing_email` (**new field**) before ever creating one, create the invoice
-  with `collection_method='charge_automatically'` and `auto_advance=True`, one `InvoiceItem` per
+- **Charging (Phase 5) has two rails and one entry point.** `apps/rebilling/dual_rail.py`'s
+  `charge_bills(month)` is the only thing that may start a charge; `ghl_billing.py` and
+  `stripe_billing.py` each only know how to work one provider. Command:
+  `manage.py charge_bills [--month YYYY-MM]` - deliberately **not** on the Celery schedule, and
+  safe to re-run, because re-running is how the fallback happens at all.
+- **The primary rail is a GHL invoice** (`apps/rebilling/ghl_billing.py`, `httpx` like the ingest
+  paths). Per `uncharged` `Bill`: read the contact from GHL, `POST /invoices/`, save
+  `ghl_invoice_id` **before** sending so a half-failure is still traceable, then
+  `POST /invoices/{id}/send` with `autoPayment: {enable: true}` - which with no `paymentMethodId`
+  is what charges the card already on file, and there is no public endpoint that reads a saved
+  card so there is no id to send anyway. `Bill` moves to `charging` and `charged_at` starts the
+  fallback clock.
+  - **Invoices are raised in `GHL_MAIN_LOCATION_ID`, never `AGENCY_LOCATION_ID`.** Order forms,
+    contacts and saved cards are sub-account scoped; the agency account holds none of them, so an
+    invoice pointed there silently finds nobody to bill. The existing `get_location_token()`
+    mints the token.
+  - **`items[].amount` is in dollars, not cents** - GHL types it as a number where Stripe's is an
+    integer. The division lives in `_item()` and nowhere else; `bill_cents` stays Phase 3's
+    integer and no money is ever held as a float. *Unverified against a real invoice.*
+  - The contact's **name, email and phone are read from GHL per invoice**, so they cannot drift;
+    a contact we cannot read stops the invoice rather than guessing. A missing phone bills as
+    `N/A`. The email is written back to `ClientMapping.billing_email`, which is the only thing
+    that carries across to the Stripe rail.
+- **The fallback is a timer, not a reaction, because GHL publishes no charge-failed webhook.** A
+  declined invoice and one GHL accepted and quietly did nothing with are indistinguishable from
+  here - both are a `charging` bill that never becomes `paid`, and the silent no-op is the
+  dangerous one because it reads as success in every log. So `_fall_back_to_stripe()` sweeps
+  `charging` bills older than `BILLING_FALLBACK_WINDOW_HOURS` **across every month**, not just
+  the one being charged.
+  - **72 hours is a floor, not a preference.** GHL retries a decline twice more, 24h apart, and
+    that is not configurable. Falling back sooner races GHL's own retry and bills twice.
+  - **The GHL invoice is voided before Stripe is touched, always.** A void that fails withholds
+    the fallback entirely (`fallback_blocked`) and waits for a human: a bill nobody charged can
+    be charged tomorrow, a bill charged on both rails has taken the money twice.
+- **The fallback rail is Stripe** (`apps/rebilling/stripe_billing.py`, the **official SDK**, not
+  hand-rolled `httpx`, because this is money movement). `charge_on_stripe(bill)` looks the
+  customer up by `ClientMapping.billing_email` before ever creating one, creates the invoice with
+  `collection_method='charge_automatically'` and `auto_advance=True`, one `InvoiceItem` per
   `BillLine` whose `amount` **is** `bill_cents` (no conversion), then `finalize_invoice`, which is
-  what makes Stripe attempt the card. `Bill` gains `status` (`uncharged`/`charging`/`paid`/
-  `failed`), `stripe_invoice_id` and `paid_at`. Every write carries an idempotency key derived from
-  the bill (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`), and only `uncharged` bills are
-  picked up - two independent reasons a re-run cannot charge twice. A client whose `billing_mode`
-  is not `auto_charge` is skipped, never charged. `setup_link()` returns a Stripe Checkout session
-  in `mode='setup'` for a client with no card; nothing calls it from a UI yet. Command:
-  `manage.py charge_bills [--month YYYY-MM]` - deliberately **not** on the Celery schedule.
-  Settings: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (two different secrets).
+  what makes Stripe attempt the card. Every write carries an idempotency key derived from the bill
+  (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`). `setup_link()` returns a Checkout session
+  in `mode='setup'` for a client with no card; nothing calls it from a UI yet.
+  - `stripe_billing.charge_bills(month)` is kept as a deliberate escape hatch, reachable only
+    through `manage.py charge_bills --stripe-only --i-understand-this-skips-ghl` - **two flags,
+    not one**, so a typo, a copied command, or cron inheriting old arguments cannot trigger it.
+    Nothing on the Celery schedule ever passes either flag. It only ever touches `uncharged`
+    bills, so it cannot collide with one GHL already has an invoice out for (that bill is already
+    `charging`).
+- **`Bill` carries both rails:** `status` (`uncharged`/`charging`/`paid`/`failed`),
+  `ghl_invoice_id`, `ghl_invoice_voided_at`, `charged_at`, `stripe_invoice_id`, `paid_at`. There
+  is no status saying which rail a `charging` bill is on, because the two invoice ids already
+  answer that, and none saying "GHL declined" because GHL never tells us. A client whose
+  `billing_mode` is not `auto_charge` is skipped on **both** rails, never charged.
+  Settings: `GHL_MAIN_LOCATION_ID`, `GHL_INVOICE_LIVE_MODE` (deliberately not DEBUG's shadow, so
+  staging can be live and production can dry-run), `BILLING_FALLBACK_WINDOW_HOURS`,
+  `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (the last two are different secrets).
+- **GHL invoice webhook** `POST /api/rebilling/webhooks/ghl-invoices/`: **`InvoicePaid` only**.
+  GHL sends six other invoice events and not one of them means the charge failed, because no such
+  event exists - that gap is what the fallback window covers. Signature verified over the raw body
+  with `apps/ghl/webhooks.py`'s `verify_signature`, the same Ed25519 check `LocationCreate` uses
+  (moved out of `ghl/views.py` once there were two callers, so the two cannot drift). 401 bad
+  signature, 400 unreadable body, 204 otherwise. `paid_at` comes from GHL's `paidAt`, not `now()`.
+  An event for an invoice we did not raise is ignored, not an error: that sub-account invoices
+  clients for their plans too.
 - **Stripe webhook** `POST /api/rebilling/webhooks/stripe/`: `invoice.paid` and
   `invoice.payment_failed` only, signature verified over the raw body with
   `stripe.Webhook.construct_event` before anything parses it; 401 bad signature, 400 unreadable

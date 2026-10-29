@@ -42,7 +42,7 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 | 1b | Agency admin page: client list and usage by period | — | **Built** (`/admin` live, `/admin/preview` demo; read-only for usage, editable for mapping) |
 | 2 | Agency dashboard: MRR, live clients, leads/calls/signed by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (frontend feature folders hold only `.gitkeep`) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3 (calculation), 4 (mapping edit UI) and 5 (Stripe charging) built**; rest of Phase 4 (rate editing, unassigned-call mapping, bills in the UI) and Phase 6 not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3 (calculation), 4 (mapping edit UI) and 5 (dual-rail charging: GHL invoice + Stripe fallback) built**; rest of Phase 4 (rate editing, unassigned-call mapping, bills in the UI) and Phase 6 not started |
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -409,8 +409,8 @@ re-run of an already-billed month, two clients billing independently, the intege
 | 2b | Twilio daily usage pull (`calls` only) | Built. Latest commit `ea95a0c` |
 | 3 | Period calculation and bills, both sources, typed bill lines, integer cents | **Built** (§5.8) |
 | 4 | Admin page: rates, mapping edit UI, unassigned calls, bills, usage split by source | **Mapping edit UI built** (live and preview, admin registration, Django admin for mapping); rate editing, unassigned-call mapping and showing real bills not started |
-| 5 | Charging: Stripe off-session invoice + auto-charge, webhook for payment events | **Built** (§5.10) |
-| 6 | Alerts (failed pulls, unassigned calls, failed charges, overdue bills), then the Branwynn end-to-end test | Not started |
+| 5 | Charging: GHL invoice with auto-payment, Stripe fallback after 72h, webhooks for both | **Built** (§5.10, §24) |
+| 6 | Alerts (failed pulls, unassigned calls, failed charges, overdue bills, **bills stranded by a GHL invoice that would not void**), then the Branwynn end-to-end test | Not started |
 
 **Backend (Phase 4 mapping UI):** `ClientMappingSerializer` validates Retell agent IDs (non-blank,
 deduplicated), phone numbers (7–15 digits, deduplicated, normalized), and Twilio subaccount SID
@@ -1050,15 +1050,92 @@ The working tree has **uncommitted changes** for **Task 4 Phase 5 Stripe chargin
 
 ---
 
-## 22. How to start a new session on this project
+## 22. Recent session: Task 4 Phase 5 dual-rail charging (GHL invoice + Stripe fallback)
+
+**Task:** build the full dual-rail charge on `feat/ghl-billing-with-stripe-fallback`: merge the
+Stripe engine in, add the GHL invoice rail in front of it, and a 72-hour fallback between them.
+The wallet path is formally closed (§21).
+
+**The merge.** `feat/stripe-billing` merged in with one conflict, `views.py`, where both branches
+had appended imports — both sets kept. Commit `d3f7201`. Its migration `0005` came with it, so the
+Stripe fields (`Bill.status`, `stripe_invoice_id`, `paid_at`, `ClientMapping.billing_email`) are
+not new work here.
+
+**What was built:**
+
+- **`apps/rebilling/ghl_billing.py`** — `GHLInvoiceService.create_invoice` / `send_invoice` /
+  `void_invoice`, plus `apply_event` for the webhook. Invoices are raised in the new
+  **`GHL_MAIN_LOCATION_ID`**, never `AGENCY_LOCATION_ID`; a blank setting refuses to charge rather
+  than invoicing an account that holds no contacts. `send_invoice` sends
+  `autoPayment: {enable: true}` and nothing else, which is the whole mechanism — no public
+  endpoint reads a saved card, so there is no `paymentMethodId` to send.
+- **`apps/rebilling/dual_rail.py`** — `charge_bills(month)`, now the only thing that may start a
+  charge. GHL first, then a sweep of `charging` bills older than `BILLING_FALLBACK_WINDOW_HOURS`
+  **across every month**, not only the one being charged.
+- **`POST /api/rebilling/webhooks/ghl-invoices/`** — `InvoicePaid` only. The Ed25519 verification
+  moved out of `apps/ghl/views.py` into **`apps/ghl/webhooks.py`** so both GHL webhooks share one
+  check instead of two copies.
+- **Migration `0006`** — `Bill.ghl_invoice_id`, `ghl_invoice_voided_at`, `charged_at`.
+- **`stripe_billing._charge_one` → `charge_on_stripe`**, now that the fallback is a second caller.
+
+**Three decisions worth knowing:**
+
+- **A `failed_ghl` status was drafted and then removed.** GHL publishes no charge-failed webhook,
+  so nothing could ever have written it. A decline and a silent no-op both arrive as a `charging`
+  bill that never becomes `paid`; age is the only signal either gives, which is why the fallback
+  is a timer and not a reaction. `Bill.status` stayed at four states, and which rail a `charging`
+  bill is on is read off the two invoice ids.
+- **The void is a gate, not a step.** A GHL invoice that will not void stops the fallback entirely
+  (counted as `fallback_blocked`) and waits for a human. A bill nobody charged can be charged
+  tomorrow; a bill charged on both rails has taken the money twice.
+- **`items[].amount` is sent in dollars**, from the `number`-not-`integer` inference — still
+  unverified. The division is in `ghl_billing._item()` and nowhere else, so a 100× error has one
+  site to fix.
+
+**Contact details and billing email** are read from GHL per invoice rather than stored (two open
+questions closed in `CriticalFindings.md` §5). The email is written back to
+`ClientMapping.billing_email`, which is the only thing carrying across to the Stripe rail.
+
+**Tests:** 28 new in `tests/test_dual_rail.py` — both rails, the window boundary either side, the
+void gate, no-double-fallback, the cross-month sweep, and the webhook including four GHL events
+that must change nothing. Two command tests moved out of `test_stripe_billing.py`, since the
+command is dual-rail now. **257 backend, 50 frontend, lint/format/migrations/`check` all clean.**
+
+**Left undone, deliberately:** nothing is on the Celery schedule (the command is manual, as the
+Stripe path already was); no Phase 6 alerting; the admin page still shows Phase 3's estimate
+rather than these bills.
+
+**`stripe_billing.charge_bills()` kept as a gated escape hatch (follow-up, same session):** the
+user asked to keep it rather than delete it, on the condition that it can never fire except by
+strict manual choice. `manage.py charge_bills` now takes `--stripe-only`, which requires a second
+flag, `--i-understand-this-skips-ghl`, passed in the same invocation — neither does anything
+alone, so a typo, a copied command, or a cron job inheriting old arguments cannot trigger it.
+Nothing on the Celery schedule ever passes either flag; the schedule doesn't call this command at
+all. The escape hatch only ever touches `status=uncharged` bills, the same filter the GHL rail
+uses, so it structurally cannot double-charge a bill GHL already has a live invoice out for — that
+bill is already `charging` and neither path looks at it. Five new tests in `test_dual_rail.py`
+cover: the default command never reaching the hatch, `--stripe-only` alone being rejected,
+`--i-understand-this-skips-ghl` alone doing nothing, both flags together charging through Stripe
+with no GHL call even registered, and the confirmation message. **262 backend tests passing.**
+
+**Still blocked on one live test:** whether `autoPayment: {enable: true}` actually debits the
+card (§21). The code does not change whichever way it goes — "sent forever" is exactly what the
+72-hour sweep handles — but until it is run, "cards are charged automatically" is an assumption
+on the GHL rail, not a fact.
+
+---
+
+## 23. How to start a new session on this project
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **221 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **43 passed**
+   **257 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **50 passed**
    (frontend). Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
 4. Check `git status` and `git log --oneline | head` before changing anything.
-5. **Note:** Task 4 Phases 1, 2, 2b, 3, 4 (mapping edit UI), and 5 (Stripe charging) are built.
-   Phase 4's rate editing, unassigned-call mapping, and bills display in the admin page remain.
-   Phase 6 (alerts) is not started. Tasks 2 and 3 are not started. Don't start any of these
-   without an explicit request. Ask first if the request is ambiguous. Never make live API calls.
+5. **Note:** Task 4 Phases 1, 2, 2b, 3, 4 (mapping edit UI), and 5 (dual-rail charging) are
+   built — see §22. Phase 4's rate editing, unassigned-call mapping, and bills display in the
+   admin page remain. Phase 6 (alerts) is not started. Tasks 2 and 3 are not started. Don't start
+   any of these without an explicit request. Ask first if the request is ambiguous.
+   **Never make live API calls** — and note Phase 5 is the first code here that can move real
+   money, so `GHL_INVOICE_LIVE_MODE` stays false until Jerry says otherwise.
