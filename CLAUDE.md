@@ -90,6 +90,22 @@ the rest of Phase 4 and is not built.
   read-only `dl`) and on an unmapped one (`ClientBrowser.tsx`'s `SetUpMapping`, in place of the
   sub-account-facing `UnmappedNotice`) - `canEdit` (`!isSubAccount`) picks which a given viewer
   gets. `ClientMapping` also has a plain Django admin registration now, as a fallback to the page.
+- **The agent and the subaccount are picked, not typed.** `GET /api/rebilling/admin/retell-agents/`
+  and `GET /api/rebilling/admin/twilio-subaccounts/` (agency scope only, like the mapping write
+  they serve) read Jerry's live Retell and Twilio accounts through the services that already hold
+  those credentials - `RetellReconciliationService.list_agents()` (`POST /v2/list-agents`, paged on
+  `pagination_key`) and `TwilioUsageService.list_subaccounts()` (`GET /2010-04-01/Accounts.json`,
+  paged on `next_page_uri`). Each returns the two fields a picker needs, sorted by name. **The
+  Twilio parent account is left out of its list**: a client mapped to it would be billed for every
+  other client's minutes. A provider that cannot be reached is a 502, which the dropdown says in
+  words. `SearchableSelect.tsx` is the one dropdown, used for both: it fetches **when the panel is
+  first opened**, not on page load (most visits to a client's page never touch the mapping, and
+  each one would otherwise cost two live provider calls), keeps the list for later opens, retries
+  on the next open after a failure, and filters on name *or* id as you type. An agent already on
+  the client is marked `Added` and not offerable twice; the Twilio list carries a
+  `No Twilio subaccount` row, which is how a client is taken off regular-call billing now that the
+  SID is not a text box. **Phone numbers are still typed** - they are the backup match for calls no
+  mapped agent covers, and they come off a GHL sub-account, not off Retell.
 - **An agency admin opening an unmapped client never calls the 404ing detail endpoint.** Both
   `AdminPage.tsx` and `AdminPreviewPage.tsx` skip the detail fetch whenever the clients list has
   already marked the selected row `mapped: false`, and hand `ClientBrowser` a synthesized
@@ -145,6 +161,8 @@ the rest of Phase 4 and is not built.
   requires a valid session for every admin request.** A mapping edit in the preview
   (`MappingEditor`'s `preview` prop) never reaches `saveMapping` - it writes into `demoData.ts`'s
   own in-memory `previewMappings` map instead, which `resetPreviewMappings()` clears between tests.
+  The same prop feeds the two pickers from `demoRetellAgents()` / `demoTwilioSubaccounts()`, so
+  previewing never reaches Retell or Twilio either.
 - **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
   seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The

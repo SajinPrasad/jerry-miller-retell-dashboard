@@ -1,15 +1,16 @@
 import { useState } from 'react'
-import { saveMapping } from '../../api/admin'
+import { getRetellAgents, getTwilioSubaccounts, saveMapping } from '../../api/admin'
 import { ApiError } from '../../api/client'
 import type { MappingFields, MappingResult } from '../../types/admin'
-import { savePreviewMapping } from './demoData'
+import SearchableSelect, { type Option } from './SearchableSelect'
+import { demoRetellAgents, demoTwilioSubaccounts, savePreviewMapping } from './demoData'
 
 interface Props {
   locationId: string
   clientName: string
   initial: MappingFields
   /** The standalone preview never reaches the admin API: saving here only updates the sample
-   * data held for this tab, so the workflow can still be demonstrated end to end. */
+   * data held for this tab, and the pickers read sample agents and subaccounts too. */
   preview: boolean
   onSaved: (result: MappingResult) => void
 }
@@ -18,6 +19,11 @@ interface Props {
  * The one thing an agency admin can write on a client's page: their Retell agents, their backup
  * phone numbers, and their Twilio subaccount. Rates and billing mode have their own rules and
  * are not edited here.
+ *
+ * The agent and the subaccount are chosen from what Retell and Twilio actually have, not typed:
+ * an id that came out of a picker cannot be a typo, and a mapping nobody can see is a client
+ * whose minutes quietly land in `UnassignedCall`. Phone numbers stay typed - they are the backup
+ * match for calls an agent id does not cover, and they come off a GHL sub-account, not Retell.
  */
 export default function MappingEditor({ locationId, clientName, initial, preview, onSaved }: Props) {
   const [twilioSid, setTwilioSid] = useState(initial.twilio_subaccount_sid)
@@ -26,11 +32,34 @@ export default function MappingEditor({ locationId, clientName, initial, preview
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  async function loadAgents(): Promise<Option[]> {
+    const agents = preview ? demoRetellAgents() : await getRetellAgents()
+    return agents.map((agent) => ({
+      value: agent.agent_id,
+      label: agent.agent_name || agent.agent_id,
+      detail: agent.agent_id,
+    }))
+  }
+
+  async function loadSubaccounts(): Promise<Option[]> {
+    const subaccounts = preview ? demoTwilioSubaccounts() : await getTwilioSubaccounts()
+    return [
+      // Clearing the subaccount is a real choice: it stops this client being billed for regular
+      // calls, the same as an empty field used to.
+      { value: '', label: 'No Twilio subaccount' },
+      ...subaccounts.map((subaccount) => ({
+        value: subaccount.sid,
+        label: subaccount.friendly_name || subaccount.sid,
+        detail: subaccount.sid,
+      })),
+    ]
+  }
+
   async function handleSave() {
     setSaving(true)
     setError(null)
     const fields: MappingFields = {
-      twilio_subaccount_sid: twilioSid.trim(),
+      twilio_subaccount_sid: twilioSid,
       retell_agent_ids: agentIds,
       phone_numbers: phoneNumbers,
     }
@@ -46,7 +75,7 @@ export default function MappingEditor({ locationId, clientName, initial, preview
       // status), so a 400 gets one plain sentence naming where to look rather than its wording.
       setError(
         err instanceof ApiError && err.status === 400
-          ? 'Check the Twilio subaccount SID and the phone numbers below.'
+          ? 'Check the phone numbers below.'
           : 'Could not save. Try again.',
       )
     } finally {
@@ -56,23 +85,38 @@ export default function MappingEditor({ locationId, clientName, initial, preview
 
   return (
     <div className="mapping-editor">
-      <label className="mapping-field">
-        <span className="tile-label">Twilio subaccount SID</span>
-        <input
-          type="text"
-          value={twilioSid}
-          placeholder="AC…"
-          onChange={(event) => setTwilioSid(event.target.value)}
+      <div className="mapping-field">
+        <span className="tile-label">Retell agents</span>
+        <ChipList
+          items={agentIds}
+          onRemove={(agentId) => setAgentIds(agentIds.filter((item) => item !== agentId))}
+          empty="No agents yet."
         />
-      </label>
+        <SearchableSelect
+          triggerLabel="Add a Retell agent"
+          searchLabel="Search Retell agents"
+          errorMessage="Could not load the Retell agents. Close this and try again."
+          load={loadAgents}
+          chosen={agentIds}
+          chosenLabel="Added"
+          onChoose={(option) => setAgentIds([...agentIds, option.value])}
+        />
+      </div>
 
-      <ListEditor label="Retell agent IDs" items={agentIds} onChange={setAgentIds} placeholder="agent_…" />
-      <ListEditor
-        label="Phone numbers"
-        items={phoneNumbers}
-        onChange={setPhoneNumbers}
-        placeholder="+1…"
-      />
+      <div className="mapping-field">
+        <span className="tile-label">Twilio subaccount</span>
+        <SearchableSelect
+          triggerLabel={twilioSid || 'Choose a Twilio subaccount'}
+          searchLabel="Search Twilio subaccounts"
+          errorMessage="Could not load the Twilio subaccounts. Close this and try again."
+          load={loadSubaccounts}
+          chosen={[twilioSid]}
+          chosenLabel="Selected"
+          onChoose={(option) => setTwilioSid(option.value)}
+        />
+      </div>
+
+      <PhoneNumbers numbers={phoneNumbers} onChange={setPhoneNumbers} />
 
       {error && (
         <div className="banner error" role="alert">
@@ -87,50 +131,61 @@ export default function MappingEditor({ locationId, clientName, initial, preview
   )
 }
 
-/** A short list of typed-in values - agent IDs, phone numbers - each removable, with one input
- * to add the next. Enter adds without needing the mouse. */
-function ListEditor({
-  label,
+/** What is mapped so far, each removable. */
+function ChipList({
   items,
-  onChange,
-  placeholder,
+  onRemove,
+  empty,
 }: {
-  label: string
   items: string[]
-  onChange: (items: string[]) => void
-  placeholder: string
+  onRemove: (item: string) => void
+  empty: string
+}) {
+  if (items.length === 0) return <p className="muted small">{empty}</p>
+  return (
+    <ul className="chip-list">
+      {items.map((item) => (
+        <li key={item} className="chip">
+          <code>{item}</code>
+          <button type="button" aria-label={`Remove ${item}`} onClick={() => onRemove(item)}>
+            ×
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** The client's own lines, typed in: the backup match for a call no mapped agent covers. */
+function PhoneNumbers({
+  numbers,
+  onChange,
+}: {
+  numbers: string[]
+  onChange: (numbers: string[]) => void
 }) {
   const [draft, setDraft] = useState('')
 
   function add() {
     const value = draft.trim()
-    if (value && !items.includes(value)) onChange([...items, value])
+    if (value && !numbers.includes(value)) onChange([...numbers, value])
     setDraft('')
   }
 
   return (
     <div className="mapping-field">
-      <span className="tile-label">{label}</span>
-      <ul className="chip-list">
-        {items.map((item) => (
-          <li key={item} className="chip">
-            <code>{item}</code>
-            <button
-              type="button"
-              aria-label={`Remove ${item}`}
-              onClick={() => onChange(items.filter((candidate) => candidate !== item))}
-            >
-              ×
-            </button>
-          </li>
-        ))}
-      </ul>
+      <span className="tile-label">Phone numbers</span>
+      <ChipList
+        items={numbers}
+        onRemove={(number) => onChange(numbers.filter((item) => item !== number))}
+        empty="No phone numbers yet."
+      />
       <div className="chip-add">
         <input
           type="text"
           value={draft}
-          placeholder={placeholder}
-          aria-label={`Add a ${label.toLowerCase().replace(/s$/, '')}`}
+          placeholder="+1…"
+          aria-label="Add a phone number"
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter') {

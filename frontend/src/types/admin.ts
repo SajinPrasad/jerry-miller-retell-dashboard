@@ -71,6 +71,18 @@ export interface RecentCall {
   unbillable_reason: string
 }
 
+/** One agent on Jerry's Retell account, as the mapping editor's picker lists it. */
+export interface RetellAgent {
+  agent_id: string
+  agent_name: string
+}
+
+/** One subaccount under Jerry's Twilio parent account. The parent itself is never listed. */
+export interface TwilioSubaccount {
+  sid: string
+  friendly_name: string
+}
+
 /** What an agency admin can set on a client's mapping, and nothing else - rates and billing
  * mode have their own rules and are not edited here. */
 export interface MappingFields {

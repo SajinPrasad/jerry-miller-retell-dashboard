@@ -621,3 +621,116 @@
 .admin .chip-add input {
   flex: 1;
 }
+
+/* --- searchable picker (Retell agents, Twilio subaccounts) --- */
+
+.admin .select {
+  position: relative;
+}
+
+.admin .select-trigger {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.45rem 0.6rem;
+  background: #fff;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin .select-trigger:hover {
+  border-color: var(--accent);
+}
+
+.admin .select-trigger[aria-expanded='true'],
+.admin .select-trigger:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* The chosen value can be a 34-character SID; the trigger stays one line wide. */
+.admin .select-trigger-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin .select-panel {
+  position: absolute;
+  z-index: 20;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  right: 0;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  background: #fff;
+  box-shadow: 0 8px 24px rgb(15 23 42 / 12%);
+  padding: 0.4rem;
+}
+
+.admin .select-search {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.4rem 0.55rem;
+  font: inherit;
+}
+
+.admin .select-search:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.admin .select-options {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  max-height: 15rem;
+  overflow-y: auto;
+}
+
+.admin .select-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  border: 0;
+  border-radius: 0.3rem;
+  padding: 0.4rem 0.5rem;
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.admin .select-option:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+.admin .select-option:disabled {
+  cursor: default;
+  color: var(--muted);
+}
+
+.admin .select-option-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.admin .select-option code {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.admin .select-note {
+  margin: 0.5rem 0.5rem 0.25rem;
+}

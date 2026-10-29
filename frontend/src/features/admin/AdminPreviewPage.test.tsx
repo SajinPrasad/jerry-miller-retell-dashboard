@@ -72,41 +72,59 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('edits a mapping in the preview with no network call, and it sticks on reopen', async () => {
+  it('picks a sample Twilio subaccount in the preview, and it sticks on reopen', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()
-    const newSid = 'AC' + '9'.repeat(32)
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
 
-    const sidInput = await screen.findByPlaceholderText('AC…')
-    await user.clear(sidInput)
-    await user.type(sidInput, newSid)
+    // The SID Polar Peak is on today. The picker offers the sample subaccounts, not Twilio's.
+    await user.click(await screen.findByRole('button', { name: 'ACdemopolarpeak00000000000000002' }))
+    await user.click(await screen.findByRole('button', { name: /Cool Breeze HVAC/ }))
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
     await user.click(screen.getByRole('button', { name: '← All clients' }))
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
 
-    expect(await screen.findByPlaceholderText('AC…')).toHaveValue(newSid)
+    expect(
+      await screen.findByRole('button', { name: 'ACdemocoolbreeze0000000000000001' }),
+    ).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('searches the sample agent list without calling Retell', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    await user.type(screen.getByLabelText('Search Retell agents'), 'after-hours')
+
+    expect(await screen.findByText('Shared after-hours line')).toBeInTheDocument()
+    expect(screen.queryByText('Branwynn Destinations — main line')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('sets up the unmapped sample client, which then appears mapped in the list', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
 
-    const agentInput = screen.getByLabelText('Add a retell agent id')
-    await user.type(agentInput, 'agent_summit')
-    await user.click(
-      within(agentInput.closest('.chip-add') as HTMLElement).getByRole('button', { name: 'Add' }),
-    )
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await user.click(await screen.findByRole('button', { name: /Summit Air Solutions — main line/ }))
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    // The setup card is gone: it is a mapped client's page now, with the agent it was given.
+    expect(await screen.findByText('agent_summit_air')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '← All clients' }))
 
     expect(await screen.findByRole('button', { name: 'Summit Air Solutions' })).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })

@@ -101,6 +101,25 @@ const detail: ClientDetail = {
   ],
 }
 
+const NEW_SID = 'AC' + '7'.repeat(32)
+
+/** What `GET /admin/retell-agents/` answers: Jerry's whole Retell account, not one client's. */
+const retellAgents = {
+  agents: [
+    { agent_id: 'agent_1', agent_name: 'Cool Breeze front desk' },
+    { agent_id: 'agent_2', agent_name: 'Cool Breeze after hours' },
+    { agent_id: 'agent_9', agent_name: 'Polar Peak service calls' },
+  ],
+}
+
+/** What `GET /admin/twilio-subaccounts/` answers. The parent account is never among them. */
+const twilioSubaccounts = {
+  subaccounts: [
+    { sid: 'ACchild', friendly_name: 'Cool Breeze HVAC' },
+    { sid: NEW_SID, friendly_name: 'Polar Peak Heating' },
+  ],
+}
+
 /**
  * Stand in for the GHL parent frame.
  *
@@ -155,6 +174,8 @@ function mockApi(
       )
 
     if (url.startsWith('/api/ghl/sso/session/')) return json(session)
+    if (url.startsWith('/api/rebilling/admin/retell-agents/')) return json(retellAgents)
+    if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) return json(twilioSubaccounts)
 
     if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
       return json({ ...detail, month, usage: (perMonth[month] ?? mapped).usage })
@@ -436,74 +457,18 @@ describe('AdminPage', () => {
 
   // --- mapping: the one thing an agency admin can write ---------------------------------
 
-  function addButtonFor(input: HTMLElement) {
-    return within(input.closest('.chip-add') as HTMLElement).getByRole('button', { name: 'Add' })
-  }
-
-  it('lets an agency admin edit a mapped client, and the save reaches the backend', async () => {
-    parentAnswers()
-    const user = userEvent.setup()
-    let savedBody: Record<string, unknown> | null = null
-    const newSid = 'AC' + '7'.repeat(32)
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation(
-      (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input)
-        const method = init?.method ?? 'GET'
-        const json = (body: unknown) =>
-          Promise.resolve(
-            new Response(JSON.stringify(body), {
-              status: 200,
-              headers: { 'Content-Type': 'application/json' },
-            }),
-          )
-
-        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
-        if (method === 'PUT' && url === '/api/rebilling/admin/clients/loc1/mapping/') {
-          savedBody = JSON.parse(init!.body as string)
-          return json({ location_id: 'loc1', client_name: 'Cool Breeze HVAC', ...savedBody })
-        }
-        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
-          return json({
-            ...detail,
-            twilio_subaccount_sid: savedBody
-              ? (savedBody.twilio_subaccount_sid as string)
-              : detail.twilio_subaccount_sid,
-          })
-        }
-        if (url.startsWith('/api/rebilling/admin/clients/')) {
-          return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
-        }
-        return Promise.resolve(new Response('', { status: 404 }))
-      },
-    )
-
-    render(<AdminPage />)
-    await openClient(user)
-
-    const sidInput = screen.getByPlaceholderText('AC…')
-    await user.clear(sidInput)
-    await user.type(sidInput, newSid)
-    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
-
-    await waitFor(() =>
-      expect(savedBody).toEqual({
-        twilio_subaccount_sid: newSid,
-        retell_agent_ids: ['agent_1'],
-        phone_numbers: ['+15551234567'],
-      }),
-    )
-    // The page reads back what it just saved rather than trusting its own optimism.
-    await screen.findByDisplayValue(newSid)
-  })
-
-  it('sets up a previously unmapped client, which then opens as a full page', async () => {
-    parentAnswers()
-    const user = userEvent.setup()
+  /**
+   * The admin API with the mapping endpoints live: the two pickers, and a PUT whose body is
+   * captured so a test can assert what the page actually sent.
+   */
+  function mockMappingApi(options: { putStatus?: number } = {}) {
+    const { putStatus = 200 } = options
+    const saved: { body: Record<string, unknown> | null } = { body: null }
     let isMapped = false
 
-    vi.spyOn(globalThis, 'fetch').mockImplementation(
-      (input: RequestInfo | URL, init?: RequestInit) => {
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
         const url = String(input)
         const method = init?.method ?? 'GET'
         const json = (body: unknown, status = 200) =>
@@ -515,12 +480,26 @@ describe('AdminPage', () => {
           )
 
         if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
-        if (method === 'PUT' && url === '/api/rebilling/admin/clients/loc-new/mapping/') {
+        if (url.startsWith('/api/rebilling/admin/retell-agents/')) return json(retellAgents)
+        if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) {
+          return json(twilioSubaccounts)
+        }
+
+        if (method === 'PUT' && url.endsWith('/mapping/')) {
+          if (putStatus !== 200) return json({}, putStatus)
+          saved.body = JSON.parse(init!.body as string)
           isMapped = true
+          return json({ location_id: 'loc1', client_name: 'Cool Breeze HVAC', ...saved.body })
+        }
+
+        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
           return json({
-            location_id: 'loc-new',
-            client_name: 'Polar Peak Heating',
-            ...JSON.parse(init!.body as string),
+            ...detail,
+            twilio_subaccount_sid:
+              (saved.body?.twilio_subaccount_sid as string | undefined) ??
+              detail.twilio_subaccount_sid,
+            retell_agent_ids:
+              (saved.body?.retell_agent_ids as string[] | undefined) ?? detail.retell_agent_ids,
           })
         }
         if (url.startsWith('/api/rebilling/admin/clients/loc-new/')) {
@@ -531,7 +510,7 @@ describe('AdminPage', () => {
             mapped: true,
             active: true,
             billing_mode: 'auto_charge',
-            retell_agent_ids: ['agent_9'],
+            retell_agent_ids: (saved.body?.retell_agent_ids as string[] | undefined) ?? [],
             phone_numbers: [],
             twilio_subaccount_sid: '',
             rates: null,
@@ -554,16 +533,198 @@ describe('AdminPage', () => {
           })
         }
         return Promise.resolve(new Response('', { status: 404 }))
-      },
+      })
+
+    return { fetchMock, saved }
+  }
+
+  /** How many times one of the picker endpoints was asked for its list. */
+  function listCalls(fetchMock: ReturnType<typeof mockMappingApi>['fetchMock'], path: string) {
+    return fetchMock.mock.calls.filter(([url]) => String(url).startsWith(`/api${path}`)).length
+  }
+
+  it('leaves both provider lists alone until a picker is opened', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { fetchMock } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    // Every visit to a client's page would otherwise cost a live call to Retell and to Twilio,
+    // and most of them never touch the mapping at all.
+    expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(0)
+    expect(listCalls(fetchMock, '/rebilling/admin/twilio-subaccounts/')).toBe(0)
+
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    await screen.findByText('Cool Breeze after hours')
+    expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(1)
+    expect(listCalls(fetchMock, '/rebilling/admin/twilio-subaccounts/')).toBe(0)
+  })
+
+  it('filters the agent list as the admin types, and reuses it on the next open', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { fetchMock } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await screen.findByText('Polar Peak service calls')
+
+    const search = screen.getByLabelText('Search Retell agents')
+    await user.type(search, 'after')
+
+    expect(screen.getByText('Cool Breeze after hours')).toBeInTheDocument()
+    expect(screen.queryByText('Polar Peak service calls')).not.toBeInTheDocument()
+
+    // The id is searchable too: it is what a Retell dashboard shows against a call.
+    await user.clear(search)
+    await user.type(search, 'agent_9')
+    expect(screen.getByText('Polar Peak service calls')).toBeInTheDocument()
+    expect(screen.queryByText('Cool Breeze front desk')).not.toBeInTheDocument()
+
+    // Closing and reopening searches the list already in hand rather than asking Retell again.
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await screen.findByText('Cool Breeze front desk')
+    expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(1)
+  })
+
+  it('marks an agent already on this client rather than offering it twice', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    // `agent_1` is already mapped to Cool Breeze, so it cannot be added a second time.
+    const alreadyMapped = await screen.findByRole('button', { name: /Cool Breeze front desk/ })
+    expect(alreadyMapped).toBeDisabled()
+    expect(within(alreadyMapped).getByText('Added')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /Cool Breeze after hours/ })).toBeEnabled()
+  })
+
+  it('adds a picked agent to the mapping and sends its id to the backend', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { saved } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await user.click(await screen.findByRole('button', { name: /Cool Breeze after hours/ }))
+
+    // Picked by name, stored as the id, which is what the webhook matches a call on.
+    expect(screen.getByText('agent_2')).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await waitFor(() =>
+      expect(saved.body).toEqual({
+        twilio_subaccount_sid: 'ACchild',
+        retell_agent_ids: ['agent_1', 'agent_2'],
+        phone_numbers: ['+15551234567'],
+      }),
     )
+  })
+
+  it('picks a Twilio subaccount by name and saves its SID', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { saved } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    // The trigger reads the SID this client is on today, not an empty text box.
+    await user.click(screen.getByRole('button', { name: 'ACchild' }))
+    await user.click(await screen.findByRole('button', { name: /Polar Peak Heating/ }))
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await waitFor(() =>
+      expect(saved.body).toEqual({
+        twilio_subaccount_sid: NEW_SID,
+        retell_agent_ids: ['agent_1'],
+        phone_numbers: ['+15551234567'],
+      }),
+    )
+    // The page reads back what it just saved rather than trusting its own optimism.
+    expect(await screen.findByRole('button', { name: NEW_SID })).toBeInTheDocument()
+  })
+
+  it('can take a client off Twilio billing from the same list', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { saved } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    await user.click(screen.getByRole('button', { name: 'ACchild' }))
+    await user.click(await screen.findByRole('button', { name: 'No Twilio subaccount' }))
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await waitFor(() => expect(saved.body?.twilio_subaccount_sid).toBe(''))
+  })
+
+  it('says so when a provider list cannot be loaded, and retries on the next open', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    let agentsAsked = false
+
+    vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input)
+      const json = (body: unknown, status = 200) =>
+        Promise.resolve(
+          new Response(JSON.stringify(body), {
+            status,
+            headers: { 'Content-Type': 'application/json' },
+          }),
+        )
+
+      if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
+      if (url.startsWith('/api/rebilling/admin/retell-agents/')) {
+        if (agentsAsked) return json(retellAgents)
+        agentsAsked = true
+        return json({ detail: 'Retell request failed.' }, 502)
+      }
+      if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json(detail)
+      if (url.startsWith('/api/rebilling/admin/clients/')) {
+        return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
+      }
+      return Promise.resolve(new Response('', { status: 404 }))
+    })
+
+    render(<AdminPage />)
+    await openClient(user)
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    expect(
+      await screen.findByText('Could not load the Retell agents.', { exact: false }),
+    ).toBeInTheDocument()
+
+    // Opening it again asks Retell once more rather than stranding the admin on the error.
+    await user.keyboard('{Escape}')
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    expect(await screen.findByText('Cool Breeze after hours')).toBeInTheDocument()
+  })
+
+  it('sets up a previously unmapped client, which then opens as a full page', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    mockMappingApi()
 
     render(<AdminPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating' }))
     await screen.findByText('Not set up for billing yet.', { exact: false })
 
-    const agentInput = screen.getByLabelText('Add a retell agent id')
-    await user.type(agentInput, 'agent_9')
-    await user.click(addButtonFor(agentInput))
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await user.click(await screen.findByRole('button', { name: /Polar Peak service calls/ }))
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
     // Now a real client page, not the setup card - the mapping it just saved is on it.
@@ -573,44 +734,26 @@ describe('AdminPage', () => {
     ).not.toBeInTheDocument()
   })
 
-  it('shows an error and keeps what was typed when a save is rejected', async () => {
+  it('shows an error and keeps the choices when a save is rejected', async () => {
     parentAnswers()
     const user = userEvent.setup()
-
-    vi.spyOn(globalThis, 'fetch').mockImplementation(
-      (input: RequestInfo | URL, init?: RequestInit) => {
-        const url = String(input)
-        const method = init?.method ?? 'GET'
-        const json = (body: unknown, status = 200) =>
-          Promise.resolve(
-            new Response(JSON.stringify(body), {
-              status,
-              headers: { 'Content-Type': 'application/json' },
-            }),
-          )
-
-        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
-        if (method === 'PUT') return json({}, 400)
-        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json(detail)
-        if (url.startsWith('/api/rebilling/admin/clients/')) {
-          return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
-        }
-        return Promise.resolve(new Response('', { status: 404 }))
-      },
-    )
+    mockMappingApi({ putStatus: 400 })
 
     render(<AdminPage />)
     await openClient(user)
 
-    const sidInput = screen.getByPlaceholderText('AC…')
-    await user.clear(sidInput)
-    await user.type(sidInput, 'not-a-sid')
+    const phoneInput = screen.getByLabelText('Add a phone number')
+    await user.type(phoneInput, '12')
+    await user.click(
+      within(phoneInput.closest('.chip-add') as HTMLElement).getByRole('button', { name: 'Add' }),
+    )
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
     expect(
-      await screen.findByText('Check the Twilio subaccount SID', { exact: false }),
+      await screen.findByText('Check the phone numbers below.', { exact: false }),
     ).toBeInTheDocument()
-    expect(sidInput).toHaveValue('not-a-sid')
+    // Nothing was thrown away: the rejected number is still there to be corrected.
+    expect(screen.getByText('12')).toBeInTheDocument()
   })
 
   it('opens straight into the one client when GHL says this is a sub-account', async () => {
