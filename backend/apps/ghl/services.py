@@ -84,12 +84,12 @@ class GHLOAuthService:
 
     def get_location_token(self, location_id: str) -> str:
         if location_id == settings.AGENCY_LOCATION_ID:
-            # The agency's own location has no `is_agency=False` row to find - it IS the agency
-            # account, stored with `is_agency=True`. A caller that was handed this id (for
-            # example a billing setting pointed at the agency location by mistake) gets the
-            # agency's own token rather than a DoesNotExist that looks like a missing install.
-            agency = self.get_agency()
-            return self.get_agency_token(agency)
+            # sync_locations() deliberately never creates an `is_agency=False` row for this id
+            # (see below), so it has no regular row to look up. GHL still accepts it as a
+            # locationId for /oauth/locationToken, and in some deployments it is also where
+            # billing happens (local_folder/plan.md, "Live test-phase topology"), so it gets its
+            # own small path that mints and keeps its own row rather than raising.
+            return self._agency_location_token()
 
         location = GHLOAuthToken.objects.get(
             is_agency=False, is_active=True, location_id=location_id
@@ -101,6 +101,32 @@ class GHLOAuthService:
             )
             location.access_token = data['access_token']
             location.expires_at = self._expires_at(data)
+            location.save()
+        return location.access_token
+
+    def _agency_location_token(self) -> str:
+        """A location token for `AGENCY_LOCATION_ID` itself, minted and kept like any other.
+
+        `sync_locations()` excludes this id from the installed set so it never shows up as a
+        client sub-account, and its cleanup step deactivates anything not in that set - so this
+        row would be flipped `is_active=False` by every sync. Rather than treat that as an
+        error, remint and reactivate; the row is otherwise identical to one `sync_locations()`
+        would have made.
+        """
+        location, _ = GHLOAuthToken.objects.get_or_create(
+            is_agency=False,
+            location_id=settings.AGENCY_LOCATION_ID,
+            defaults={'company_id': '', 'access_token': '', 'expires_at': timezone.now()},
+        )
+        if not location.is_active or location.needs_refresh:
+            agency = self.get_agency()
+            data = self._mint_location_token(
+                self.get_agency_token(agency), agency.company_id, settings.AGENCY_LOCATION_ID
+            )
+            location.company_id = agency.company_id
+            location.access_token = data['access_token']
+            location.expires_at = self._expires_at(data)
+            location.is_active = True
             location.save()
         return location.access_token
 

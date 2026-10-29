@@ -284,30 +284,49 @@ def test_fresh_location_token_is_reused(service):
 
 @pytest.mark.django_db
 @respx.mock
-def test_location_token_for_the_agency_location_id_returns_the_agency_token(service):
-    """A caller handed `AGENCY_LOCATION_ID` - for example a billing setting pointed at the
-    agency by mistake - gets the agency's own token rather than a DoesNotExist. The agency row
-    is stored with `is_agency=True` and no matching `is_agency=False` row ever exists for it.
+def test_location_token_for_the_agency_location_id_mints_one(service):
+    """`AGENCY_LOCATION_ID` has no `is_agency=False` row from `sync_locations()`, which
+    deliberately excludes it so it never shows up as a client sub-account - but GHL still
+    accepts it as a locationId for `/oauth/locationToken`, and it is also where billing
+    currently happens for live testing. First call mints and stores a row for it.
     """
     make_agency()
     route = mock_location_token()
 
-    assert service.get_location_token(settings.AGENCY_LOCATION_ID) == 'agency-access'
+    token = service.get_location_token(settings.AGENCY_LOCATION_ID)
+
+    assert token == f'{settings.AGENCY_LOCATION_ID}-minted'
+    assert route.called
+    location = GHLOAuthToken.objects.get(is_agency=False, location_id=settings.AGENCY_LOCATION_ID)
+    assert location.is_active
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_fresh_agency_location_token_is_reused(service):
+    make_agency()
+    make_location(settings.AGENCY_LOCATION_ID)
+    route = mock_location_token()
+
+    assert service.get_location_token(settings.AGENCY_LOCATION_ID) == (
+        f'{settings.AGENCY_LOCATION_ID}-access'
+    )
     assert not route.called
 
 
 @pytest.mark.django_db
 @respx.mock
-def test_location_token_for_the_agency_location_id_refreshes_like_the_agency_token(service):
-    make_agency(expires_at=timezone.now() + timedelta(seconds=30))
-    respx.post(f'{BASE}/oauth/token').mock(
-        return_value=httpx.Response(200, json=token_response(access_token='new-access'))
-    )
+def test_agency_location_token_is_reminted_once_sync_deactivates_it(service):
+    """sync_locations() deactivates this row on every run, since it excludes
+    AGENCY_LOCATION_ID from the installed set by design. get_location_token() treats that as
+    needing a remint, not as a missing install.
+    """
+    make_agency()
+    make_location(settings.AGENCY_LOCATION_ID, is_active=False)
+    route = mock_location_token()
 
-    assert service.get_location_token(settings.AGENCY_LOCATION_ID) == 'new-access'
+    token = service.get_location_token(settings.AGENCY_LOCATION_ID)
 
-
-@pytest.mark.django_db
-def test_location_token_for_the_agency_location_id_requires_an_install(service):
-    with pytest.raises(GHLNotConnectedError):
-        service.get_location_token(settings.AGENCY_LOCATION_ID)
+    assert token == f'{settings.AGENCY_LOCATION_ID}-minted'
+    assert route.called
+    assert GHLOAuthToken.objects.get(location_id=settings.AGENCY_LOCATION_ID).is_active

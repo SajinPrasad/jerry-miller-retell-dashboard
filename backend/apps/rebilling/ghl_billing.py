@@ -90,6 +90,7 @@ class GHLInvoiceService:
                 'name': f'Voice usage {bill.billing_period}',
                 'currency': CURRENCY,
                 'liveMode': settings.GHL_INVOICE_LIVE_MODE,
+                'businessDetails': {'name': settings.GHL_BUSINESS_NAME},
                 'contactDetails': {
                     'id': client.billing_contact_id,
                     'name': contact.get('contactName') or client.client_name,
@@ -143,7 +144,13 @@ class GHLInvoiceService:
 
     @property
     def _location(self) -> str:
-        """The sub-account the invoices live in."""
+        """The sub-account the invoices live in.
+
+        Usually the real Main Sub-Account, distinct from `AGENCY_LOCATION_ID` - see
+        `local_folder/plan.md`, "Live test-phase topology", for why the two are currently the
+        same id in Jerry's account, and `GHLOAuthService._agency_location_token()` for how a
+        valid Location-class token still gets minted for it either way.
+        """
         if not settings.GHL_MAIN_LOCATION_ID:
             raise GHLInvoiceError('GHL_MAIN_LOCATION_ID is not set; no sub-account to invoice in.')
         return settings.GHL_MAIN_LOCATION_ID
