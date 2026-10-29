@@ -120,6 +120,8 @@ def store_call(call: dict) -> bool:
 class RetellReconciliationService:
     """The nightly audit: catch calls whose webhook never arrived, and fill in what it left out.
 
+    Also answers the admin page's "which agents are there?" with the same client and key.
+
     Docs: https://docs.retellai.com/api-references/list-calls
     """
 
@@ -204,6 +206,36 @@ class RetellReconciliationService:
             filled += 1
         return filled
 
+    def list_agents(self) -> list[dict]:
+        """Every agent on the Retell account, for the admin page's agent picker.
+
+        `/v2/list-agents` returns one row per agent rather than one per agent version, which is
+        what someone mapping a client is choosing between. Sorted by name here because Retell
+        sorts by timestamp, and a picker is read alphabetically.
+
+        Docs: https://docs.retellai.com/api-references/list-agents
+        """
+        agents = []
+        pagination_key = None
+        while True:
+            params = {'limit': PAGE_SIZE}
+            if pagination_key:
+                params['pagination_key'] = pagination_key
+
+            page = self._request('POST', '/v2/list-agents', params=params, json={})
+            agents.extend(
+                {'agent_id': item['agent_id'], 'agent_name': item.get('agent_name') or ''}
+                for item in page.get('items', [])
+                if item.get('agent_id')
+            )
+
+            pagination_key = page.get('pagination_key')
+            if not (page.get('has_more') and pagination_key):
+                break
+
+        agents.sort(key=lambda agent: (agent['agent_name'].lower(), agent['agent_id']))
+        return agents
+
     def _request(self, method: str, path: str, **kwargs) -> dict:
         headers = {
             'Accept': 'application/json',
@@ -224,6 +256,8 @@ class TwilioUsageService:
 
     Only the `calls` category is read. Twilio's own definition of it excludes SIP and trunking
     calls, which is where Retell's traffic lands, so an AI minute can never be billed twice.
+
+    Also answers the admin page's "which subaccounts are there?" with the same credentials.
 
     Docs: https://www.twilio.com/docs/usage/api/usage-record
     """
@@ -320,6 +354,34 @@ class TwilioUsageService:
             },
         )
         return not created
+
+    def list_subaccounts(self) -> list[dict]:
+        """Every subaccount under the parent account, for the admin page's subaccount picker.
+
+        Twilio lists the parent account alongside its subaccounts. The parent is left out: a
+        client mapped to it would be billed for every other client's minutes as well as its own.
+
+        Docs: https://www.twilio.com/docs/iam/api/account#read-multiple-account-resources
+        """
+        subaccounts = []
+        path = '/2010-04-01/Accounts.json'
+        params = {'PageSize': TWILIO_PAGE_SIZE}
+        while True:
+            page = self._request('GET', path, params=params)
+            subaccounts.extend(
+                {'sid': account['sid'], 'friendly_name': account.get('friendly_name') or ''}
+                for account in page.get('accounts') or []
+                if account.get('sid') and account['sid'] != settings.TWILIO_ACCOUNT_SID
+            )
+
+            next_uri = page.get('next_page_uri')
+            if not next_uri:
+                break
+            # Twilio builds the next page's path and query itself, same as the usage pull.
+            path, params = next_uri, None
+
+        subaccounts.sort(key=lambda account: (account['friendly_name'].lower(), account['sid']))
+        return subaccounts
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
         try:

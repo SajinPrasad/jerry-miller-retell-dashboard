@@ -8,6 +8,16 @@ urlpatterns = [
     path('admin/clients/', views.AdminClientsView.as_view(), name='admin-clients'),
     path('admin/clients/sync/', views.AdminClientsSyncView.as_view(), name='admin-clients-sync'),
     path(
+        'admin/retell-agents/',
+        views.AdminRetellAgentsView.as_view(),
+        name='admin-retell-agents',
+    ),
+    path(
+        'admin/twilio-subaccounts/',
+        views.AdminTwilioSubaccountsView.as_view(),
+        name='admin-twilio-subaccounts',
+    ),
+    path(
         'admin/clients/<str:location_id>/',
         views.AdminClientDetailView.as_view(),
         name='admin-client-detail',

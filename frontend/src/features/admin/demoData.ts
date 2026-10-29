@@ -20,8 +20,10 @@ import type {
   ClientsResponse,
   MappingFields,
   RecentCall,
+  RetellAgent,
   SsoSession,
   TwilioDay,
+  TwilioSubaccount,
   UsageSummary,
 } from '../../types/admin'
 import { currentMonth } from './format'
@@ -147,6 +149,33 @@ function withPreviewMapping(spec: Spec): Spec {
     numbers: edit.phone_numbers,
     twilio_sid: edit.twilio_subaccount_sid,
   }
+}
+
+/**
+ * What the mapping editor's pickers offer in the preview, in place of a live call to Retell.
+ *
+ * The agents the sample clients already use, plus a spare apiece, so the unmapped sample client
+ * can be set up here the same way a real one is.
+ */
+export function demoRetellAgents(): RetellAgent[] {
+  return [
+    ...SPECS.flatMap((spec) =>
+      spec.agents.map((agent_id) => ({ agent_id, agent_name: `${spec.client_name} — main line` })),
+    ),
+    { agent_id: 'agent_summit_air', agent_name: 'Summit Air Solutions — main line' },
+    { agent_id: 'agent_after_hours', agent_name: 'Shared after-hours line' },
+  ]
+}
+
+/** The same, for the Twilio picker. The parent account is not among them, as on the real one. */
+export function demoTwilioSubaccounts(): TwilioSubaccount[] {
+  return [
+    ...SPECS.filter((spec) => spec.twilio_sid).map((spec) => ({
+      sid: spec.twilio_sid,
+      friendly_name: spec.client_name,
+    })),
+    { sid: 'ACdemosummitair00000000000000003', friendly_name: 'Summit Air Solutions' },
+  ]
 }
 
 const EMPTY_USAGE: UsageSummary = {

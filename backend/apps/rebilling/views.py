@@ -13,9 +13,18 @@ from apps.ghl.exceptions import GHLError
 from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import GHLOAuthService
 
+from .exceptions import RetellError, TwilioError
 from .models import ClientMapping
 from .serializers import ClientMappingSerializer
-from .services import client_detail, client_rows, month_window, set_mapping, store_call
+from .services import (
+    RetellReconciliationService,
+    TwilioUsageService,
+    client_detail,
+    client_rows,
+    month_window,
+    set_mapping,
+    store_call,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -147,6 +156,55 @@ class AdminClientDetailView(APIView):
             raise NotFound('This client has not been mapped for billing yet.')
 
         return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
+
+
+class AdminRetellAgentsView(APIView):
+    """GET /api/rebilling/admin/retell-agents/: the Retell agents a client can be mapped to.
+
+    What the agent picker in the mapping editor reads, so an agency admin chooses an agent off
+    the Retell account instead of pasting an id. Agency scope only, because mapping itself is.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can read the Retell agents.')
+
+        try:
+            agents = RetellReconciliationService().list_agents()
+        except RetellError:
+            logger.exception('rebilling: Retell agent list failed')
+            return Response(
+                {'detail': 'Retell request failed.'}, status=status.HTTP_502_BAD_GATEWAY
+            )
+        return Response({'agents': agents})
+
+
+class AdminTwilioSubaccountsView(APIView):
+    """GET /api/rebilling/admin/twilio-subaccounts/: the subaccounts a client can be mapped to.
+
+    The subaccount picker's other half. Agency scope only, for the same reason.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can read the Twilio subaccounts.')
+
+        try:
+            subaccounts = TwilioUsageService().list_subaccounts()
+        except TwilioError:
+            logger.exception('rebilling: Twilio subaccount list failed')
+            return Response(
+                {'detail': 'Twilio request failed.'}, status=status.HTTP_502_BAD_GATEWAY
+            )
+        return Response({'subaccounts': subaccounts})
 
 
 class AdminClientMappingView(APIView):

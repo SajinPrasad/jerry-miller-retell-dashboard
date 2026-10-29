@@ -3,7 +3,9 @@ import type {
   ClientsResponse,
   MappingFields,
   MappingResult,
+  RetellAgent,
   SsoSession,
+  TwilioSubaccount,
 } from '../types/admin'
 import { apiFetch } from './client'
 
@@ -38,6 +40,20 @@ export function saveMapping(locationId: string, mapping: MappingFields): Promise
     method: 'PUT',
     body: JSON.stringify(mapping),
   })
+}
+
+/** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */
+export async function getRetellAgents(): Promise<RetellAgent[]> {
+  const body = await apiFetch<{ agents: RetellAgent[] }>('/rebilling/admin/retell-agents/')
+  return body.agents
+}
+
+/** Every subaccount under Jerry's Twilio parent account, for the subaccount picker. */
+export async function getTwilioSubaccounts(): Promise<TwilioSubaccount[]> {
+  const body = await apiFetch<{ subaccounts: TwilioSubaccount[] }>(
+    '/rebilling/admin/twilio-subaccounts/',
+  )
+  return body.subaccounts
 }
 
 function monthQuery(month?: string): string {
