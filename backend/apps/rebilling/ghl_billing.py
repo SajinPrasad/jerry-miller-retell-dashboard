@@ -111,10 +111,15 @@ class GHLInvoiceService:
     def send_invoice(self, invoice_id: str) -> dict:
         """Send the invoice and ask GHL to take the contact's card.
 
-        `autoPayment.enable` on its own, with no `paymentMethodId`, is what charges the card
-        already on file. The published schema requires nothing else, and no public endpoint
-        reads a contact's saved cards, so there is no id we could send even if we wanted to.
-        Whether GHL acts on it is the one thing the docs cannot answer and the live test must.
+        `AutoPaymentDetailsDto`'s published OpenAPI schema marks only `enable` as required and
+        gives `type` no enum, but the live API disagrees: omitting `type` 422s with
+        `"autoPayment.type must be a valid enum value"` (confirmed against a real invoice,
+        30 Oct). GHL's payment-method `type` values are documented in exactly one place - the
+        custom-payments integration guide - which names `card` and `us_bank_account` as the two
+        examples, matching this DTO's sibling `card`/`usBankAccount` objects. Jerry's billing is
+        card-only, so `card` is what we send. There is still no public endpoint to look up a
+        contact's saved card id, so `paymentMethodId`/`cardId` stay unset - `type: card` plus
+        `enable: true` is the request for "charge whatever card is on file."
         """
         return self._request(
             'POST',
@@ -124,7 +129,7 @@ class GHLInvoiceService:
                 'altType': 'location',
                 'action': 'send_manually',
                 'liveMode': settings.GHL_INVOICE_LIVE_MODE,
-                'autoPayment': {'enable': True},
+                'autoPayment': {'enable': True, 'type': 'card'},
             },
         )
 

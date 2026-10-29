@@ -450,64 +450,101 @@ Linting clean; `makemigrations --check --dry-run` clean.
 does this, using `billing_status = billable` rows only. The admin page itself still shows an
 estimate rather than these real bills — see §5, "Money shown in the admin."
 
-### 5.10 Phase 5 — charging (Stripe path, built)
+### 5.10 Phase 5 — charging (dual-rail: GHL invoice + Stripe fallback, built)
 
-Stripe is the payment processor. Bills are converted to Stripe invoices with automatic off-session
-charging (`collection_method='charge_automatically'`). Idempotency keys prevent double-charging on
-retry. Webhook handlers update bill status to `PAID` or `FAILED`.
+Bills are charged through two rails in sequence: GHL invoice first, Stripe fallback after 72 hours if
+GHL does not collect. The primary GHL rail reads client contacts live from `GHL_MAIN_LOCATION_ID` and
+auto-charges their saved cards. If GHL's invoice never becomes `paid` after 72 hours (decline or silent
+no-op; GHL publishes no charge-failed event), the invoice is voided and Stripe takes over. Stripe
+handles off-session charging with idempotency keys and webhooks.
 
-**Customer setup:** `customer_id(client)` looks up the Stripe customer by `billing_email` (from
-`ClientMapping`), then saves the found or newly-created customer ID. A client who already pays
-through this Stripe account must not end up with a second cardless customer record. First lookup
-must happen **before** any charge attempt.
+**GHL Invoice Service** (`apps/rebilling/ghl_billing.py`, new):
+- `create_invoice(bill)` — raises a draft invoice in `GHL_MAIN_LOCATION_ID`, fetches contact details
+  live from GHL (name, email, phone; phone falls back to `'N/A'`), writes the email back to
+  `ClientMapping.billing_email` for the Stripe rail.
+- `send_invoice(invoice_id)` — sends the invoice with `autoPayment: {enable: true}`, which is the
+  entire mechanism for auto-charging the card on file (no `paymentMethodId` to send; GHL has no
+  public endpoint to read saved cards).
+- `void_invoice(invoice_id)` — voids the invoice, critical safeguard before Stripe fallback (prevents
+  double-charge if GHL retries).
+- `apply_event(event)` — webhook handler for `InvoicePaid` only; other invoice events are ignored.
 
-**Idempotency:** Every call to Stripe (`Invoice.create`, `InvoiceItem.create`, `finalize_invoice`)
-carries an idempotency key derived from the `Bill.pk`. A re-run of the monthly charge command
-re-reaches the same Stripe objects; only bills still `uncharged` are picked up. Combining both
-guards makes the charge safe against crashes and manual reruns.
+**Stripe Billing Service** (`apps/rebilling/stripe_billing.py`, new):
+- `charge_on_stripe(bill)` — creates a Stripe invoice (`collection_method='charge_automatically'`,
+  `auto_advance=True`), adds line items from `BillLine` rows (amounts in integer cents), finalizes
+  it (triggers card attempt), and sets bill status to `CHARGING`.
+- `customer_id(client)` — looks up or creates a Stripe customer by `billing_email`. A client who
+  already pays through this account is found and reused (no duplicate cardless customers). Cached
+  after first lookup.
+- `read_event(payload, signature)` — verifies webhook signature using `stripe.Webhook.construct_event`.
+- `apply_event(event)` — processes `invoice.paid` and `invoice.payment_failed`, updating bill status
+  and `paid_at`.
 
-**Invoice lifecycle:** `Invoice.create(collection_method='charge_automatically', auto_advance=True)`
-→ `InvoiceItem.create` for each `BillLine` → `finalize_invoice`, which starts the card attempt.
-The `stripe_invoice_id` is saved immediately, so a failure mid-charge still leaves a traceable
-Stripe object.
+**Dual-Rail Orchestrator** (`apps/rebilling/dual_rail.py`, new):
+- `charge_bills(month=None)` — the only entry point for charging. All `uncharged` bills for a month →
+  GHL rails first (creates, sends, awaits webhook). Then a separate sweep of `charging` bills **across
+  every month** older than `BILLING_FALLBACK_WINDOW_HOURS` (72 hours by default): if they are still
+  `charging` (never got `InvoicePaid`), void the GHL invoice (gate: if void fails, fallback is blocked
+  and bill waits for human intervention), then charge via Stripe.
 
-**Bill status:** `UNCHARGED` (new bill, not yet sent to Stripe) → `CHARGING` (invoice sent, awaiting
-result) → `PAID` (webhook received `invoice.paid`) or `FAILED` (webhook received
-`invoice.payment_failed`). `paid_at` is set by the webhook to Stripe's own timestamp, not the
-server's.
+**Bill status transitions:** `UNCHARGED` → `CHARGING` (GHL or Stripe invoice sent) → `PAID` (webhook
+from either rail received `paid` event) or `FAILED` (webhook received `payment_failed` from Stripe,
+or both rails exhausted). `paid_at` is set by webhook to provider's timestamp, not server time.
+
+**GHL Webhook** (`POST /api/rebilling/webhooks/ghl-invoices/`, new):
+- Verifies Ed25519 signature using `GHLOAuthService._verify_signature()`.
+- Handles `InvoicePaid` only. Other invoice events are logged and ignored.
+- Returns 204 on success, 401 on bad signature, 400 on invalid JSON.
+
+**Stripe Webhook** (`POST /api/rebilling/webhooks/stripe/`):
+- Verifies `Stripe-Signature` HMAC-SHA256 header.
+- Handles `invoice.paid` and `invoice.payment_failed` events.
+- Returns 204 on success, 401 on bad signature, 400 on invalid JSON.
+
+**Management command:** `python manage.py charge_bills [--month YYYY-MM]`. Default month is this month.
+Charges all `uncharged` bills for that month, then sweeps for fallback. Skips clients with
+`billing_mode != auto_charge`. Logs per-client failures but continues for others. Prints summary:
+GHL sent/paid/failed, Stripe fallback/paid/failed, total cents, and fallback-blocked count.
+
+**Idempotency in Stripe:** Every Stripe call (`Invoice.create`, `InvoiceItem.create`, `finalize_invoice`)
+carries an idempotency key derived from `Bill.pk`. A re-run re-reaches the same Stripe objects; only
+bills still `uncharged` are picked up. Combining both guards makes the charge safe against crashes and
+manual reruns.
+
+**Escape hatch (Stripe-only mode):** `python manage.py charge_bills --stripe-only
+--i-understand-this-skips-ghl` charges `uncharged` bills straight to Stripe, skipping GHL entirely.
+Both flags required (neither does anything alone), so a typo or old cron job cannot trigger it.
+Structured to never double-charge — it only touches `status=uncharged` bills, and bills GHL already
+has live invoices for are `charging`, not `uncharged`.
 
 **Settings:**
-- `STRIPE_SECRET_KEY` — the secret key for the API
-- `STRIPE_WEBHOOK_SECRET` — the webhook signing secret, different from the API key
+- `GHL_MAIN_LOCATION_ID` — the sub-account invoices are raised in (blank means no charging).
+- `GHL_BUSINESS_NAME` — defaults to `'SurPro Labs AI'`; required by GHL Invoices API v3.
+- `STRIPE_SECRET_KEY` — API secret for Stripe.
+- `STRIPE_WEBHOOK_SECRET` — webhook signing secret (different from API key).
+- `BILLING_FALLBACK_WINDOW_HOURS` — default 72; how long to wait on GHL before Stripe fallback.
 
-**Endpoint:** `POST /api/rebilling/webhooks/stripe/` with Stripe-Signature verification. Handles
-`invoice.paid` and `invoice.payment_failed` events. Returns 204 on success, 401 on bad signature,
-400 on invalid JSON.
+**Test coverage:** 28 new tests in `apps/rebilling/tests/test_dual_rail.py`. Both rails, window
+boundary, void gate, no-double-fallback, cross-month sweep, webhook events. FakeStripe mocks the
+SDK; respx mocks GHL. Tests cover: successful GHL charge (no fallback), fallback after timeout,
+void failure blocks fallback, Stripe success on fallback, both rails fail, escape hatch isolation,
+and webhook signature verification/rejection.
 
-**Management command:** `python manage.py charge_bills [--month YYYY-MM]`. Charges all `uncharged`
-bills for the given month (defaults to this month). Skips clients with `billing_mode != auto_charge`.
-Logs failures per client but continues for the others. Prints the count charged and total cents.
+**Risks documented in `CriticalFindings.md`:**
+- Stripe's **$0.50 minimum charge** — a bill under 50 cents fails at the card. No policy yet.
+- **GHL publishes no charge-failed webhook** — a decline and a silent no-op both arrive as `charging`
+  bills that never become `paid`; age is the only signal. The 72-hour sweep exists for this.
+- **GHL retries declines 2×, 24 hours apart** — cannot be switched off. The fallback window exists
+  to outlast this.
+- **Webhook is the single point of failure** — no reconciliation pass. A bill can stay `charging`
+  forever if the webhook endpoint is wrong. Phase 6 should alert on bills stuck in `charging` for N
+  days.
+- **`billing_email` is unpopulated by the UI** — every client needs one filled in by hand before
+  Phase 5 charging works.
+- Stripe's **Smart Retries** can flip a `failed` invoice to `paid` later.
 
-**Module:** `apps/rebilling/stripe_billing.py` (new). Contains `customer_id()`, `setup_link()`,
-`charge_bills()`, `read_event()`, `apply_event()`, and their helpers. Like `apps/ghl/sso.py`, it
-sits beside `services.py` to keep charging separate from ingest.
-
-**Test coverage:** 26 new tests in `apps/rebilling/tests/test_stripe_billing.py`. FakeStripe class
-mocks the SDK. Tests cover customer lookup (cached, created, duplicates avoided), invoice creation
-and finalization, idempotency key derivation, line item amounts (integer cents, type-verified),
-re-running the month safely, skipping non-auto-charge clients, one client's failure not stopping
-others, and webhook signature verification/rejection.
-
-**Risks documented in `CriticalFindings.md` (§2.6, new):**
-- Stripe's **$0.50 minimum charge** — a 30-cent bill will fail at the card.
-- `billing_email` is new and unpopulated by the UI; every client needs one by hand until Phase 4's
-  mapping editor grows the field.
-- The webhook is the **single point of failure** for the record of what has been paid; no
-  reconciliation pass exists. A bill can stay `charging` forever if the webhook endpoint is
-  unregistered or the secret is wrong.
-- `failed` status is not final: Stripe's Smart Retries can later flip a failed invoice to `paid`.
-
-**Status:** 221 backend tests passing (195 + 26 new). Linting clean. `makemigrations --check` clean.
+**Status:** 265 backend tests passing (257 + 8 new from location-token work). Linting, format,
+migrations all clean.
 
 ---
 
@@ -584,8 +621,10 @@ Everything is in `backend/.env`, which is gitignored. `backend/.env.example` doc
   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
   **Rotating it makes every stored token unreadable**, so it needs a plan first.
 - **GHL:** `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`, `GHL_APP_ID`, `AGENCY_LOCATION_ID`,
-  `GHL_REDIRECT_URI` (`http://localhost:8000/api/oauth/callback/`), `GHL_INSTALL_URL_BASE`,
-  `GHL_API_VERSION` (default `2021-07-28`), `GHL_SCOPES`, `GHL_API_BASE_URL`,
+  `GHL_MAIN_LOCATION_ID` (the sub-account holding client contacts and saved cards; Phase 5 requires
+  this, blank means no charging), `GHL_BUSINESS_NAME` (defaults to `'SurPro Labs AI'`; required by
+  GHL Invoices API v3), `GHL_REDIRECT_URI` (`http://localhost:8000/api/oauth/callback/`),
+  `GHL_INSTALL_URL_BASE`, `GHL_API_VERSION` (default `2021-07-28`), `GHL_SCOPES`, `GHL_API_BASE_URL`,
   `GHL_REQUEST_TIMEOUT`.
 - **Retell:** `RETELL_API_KEY`, `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
 - **Twilio:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_BASE_URL`,
@@ -603,7 +642,7 @@ Run these from `backend/` unless noted. The venv is `backend/.venv`. On Windows,
 `.venv/Scripts/python.exe`.
 
 ```
-pytest                                                    # 221 tests, config.settings.test
+pytest                                                    # 265 tests, config.settings.test
 ruff check . && ruff format .                             # lint / format (line 100, single quotes)
 python manage.py check
 python manage.py makemigrations --check --dry-run         # must say "No changes detected"
@@ -1125,16 +1164,62 @@ on the GHL rail, not a fact.
 
 ---
 
-## 23. How to start a new session on this project
+## 23. Recent session: GHL location token handling for live test-phase topology (30 Oct)
+
+**Context:** Phase 5 dual-rail charging (§22) requires invoices to be raised in `GHL_MAIN_LOCATION_ID`
+(the sub-account holding client contacts and saved cards). Jerry's test account intentionally has
+`GHL_MAIN_LOCATION_ID` equal to `AGENCY_LOCATION_ID` (`RKzecZGFmWPnQfpEZTr5`), where the test
+contact and card are verified to live. GHL's `/invoices/` and `/contacts/` endpoints require
+`authClass: Location` tokens (not Company tokens), but `sync_locations()` deliberately never creates
+a location-scoped row for `AGENCY_LOCATION_ID` (it excludes this id so the agency never shows up as
+a fake client sub-account).
+
+**The solution:** `GHLOAuthService.get_location_token()` now special-cases `AGENCY_LOCATION_ID` via
+a new `_agency_location_token()` method:
+- **First call:** mints a fresh `authClass: Location` token from the agency token (GHL accepts this
+  id as a valid `locationId` for `/oauth/locationToken`), stores it in a new `is_agency=False` row,
+  and returns the token.
+- **Refresh needed:** re-mints a fresh token.
+- **After sync_locations():** `sync_locations()` deactivates the row (since this id is excluded from
+  the installed/client set). On the next `get_location_token()` call, the row's `is_active=False`
+  status triggers a remint, so the token is always fresh and valid for billing calls.
+
+The row is otherwise identical to one `sync_locations()` would have created for a real sub-account —
+this handles the self-healing needed for the test topology while staying self-contained and not
+disrupting the broader architecture.
+
+**GHL invoice payload:** The GHL Invoices API v3 requires a top-level `businessDetails` object with
+at least a `name` field. This is set to `GHL_BUSINESS_NAME` (env var, defaults to `'SurPro Labs AI'`).
+The payload construction is in `ghl_billing.GHLInvoiceService.create_invoice()`.
+
+**Tests:** Three new in `apps/ghl/tests/test_services.py` (mint on first call, reuse when fresh,
+remint after sync deactivates). Two tests in `apps/rebilling/tests/test_dual_rail.py` verify the
+full flow works. Removed a guard test that was checking for an error that no longer happens.
+
+**No hard guard:** The earlier approach added a hard guard rejecting `GHL_MAIN_LOCATION_ID == AGENCY_LOCATION_ID`.
+That was removed because Jerry's real test account uses this exact configuration. The guide in
+`local_folder/plan.md` ("Live test-phase topology") documents why the two ids are the same for now,
+and that production is still expected to move to a separate Main Sub-Account eventually. Nothing
+enforces the separation in code; it was a deliberate choice to avoid blocking the test.
+
+**Verified:** 265 backend tests passing (257 + 8 new: 3 in services, 2 in dual_rail, 3 removed/changed).
+Lint, format, and migrations all clean.
+
+**Status:** All changes ready to push to the server. The end-to-end `python manage.py charge_bills`
+test can now run with Jerry's test account and contact.
+
+---
+
+## 24. How to start a new session on this project
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **257 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **50 passed**
+   **265 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **50 passed**
    (frontend). Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
 4. Check `git status` and `git log --oneline | head` before changing anything.
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 4 (mapping edit UI), and 5 (dual-rail charging) are
-   built — see §22. Phase 4's rate editing, unassigned-call mapping, and bills display in the
+   built — see §§22–23. Phase 4's rate editing, unassigned-call mapping, and bills display in the
    admin page remain. Phase 6 (alerts) is not started. Tasks 2 and 3 are not started. Don't start
    any of these without an explicit request. Ask first if the request is ambiguous.
    **Never make live API calls** — and note Phase 5 is the first code here that can move real

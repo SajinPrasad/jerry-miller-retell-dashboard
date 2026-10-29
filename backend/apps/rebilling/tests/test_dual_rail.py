@@ -133,9 +133,12 @@ def test_the_invoice_asks_ghl_to_take_the_card(billable, fake):  # noqa: F811
     dual_rail.charge_bills(MONTH)
 
     sent = json.loads(send.calls.last.request.content)
-    # `enable` on its own is the whole mechanism: there is no public way to read a saved card,
-    # so there is no paymentMethodId to send even if GHL wanted one.
-    assert sent['autoPayment'] == {'enable': True}
+    # `type: 'card'` is required by the live API despite not being in the published schema -
+    # omitting it 422s with "autoPayment.type must be a valid enum value" (confirmed on a real
+    # invoice). There's still no public endpoint to read a saved card's id, so paymentMethodId
+    # stays unset: this is "charge whatever card is on file."
+    assert sent['autoPayment'] == {'enable': True, 'type': 'card'}
+    assert sent['action'] == 'send_manually'
     assert sent['altId'] == MAIN
     assert sent['altType'] == 'location'
 
