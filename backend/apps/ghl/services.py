@@ -83,6 +83,14 @@ class GHLOAuthService:
         return agency.access_token
 
     def get_location_token(self, location_id: str) -> str:
+        if location_id == settings.AGENCY_LOCATION_ID:
+            # The agency's own location has no `is_agency=False` row to find - it IS the agency
+            # account, stored with `is_agency=True`. A caller that was handed this id (for
+            # example a billing setting pointed at the agency location by mistake) gets the
+            # agency's own token rather than a DoesNotExist that looks like a missing install.
+            agency = self.get_agency()
+            return self.get_agency_token(agency)
+
         location = GHLOAuthToken.objects.get(
             is_agency=False, is_active=True, location_id=location_id
         )

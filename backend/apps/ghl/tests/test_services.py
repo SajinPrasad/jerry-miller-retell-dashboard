@@ -280,3 +280,34 @@ def test_fresh_location_token_is_reused(service):
     route = mock_location_token()
     assert service.get_location_token('loc1') == 'loc1-access'
     assert not route.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_location_token_for_the_agency_location_id_returns_the_agency_token(service):
+    """A caller handed `AGENCY_LOCATION_ID` - for example a billing setting pointed at the
+    agency by mistake - gets the agency's own token rather than a DoesNotExist. The agency row
+    is stored with `is_agency=True` and no matching `is_agency=False` row ever exists for it.
+    """
+    make_agency()
+    route = mock_location_token()
+
+    assert service.get_location_token(settings.AGENCY_LOCATION_ID) == 'agency-access'
+    assert not route.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_location_token_for_the_agency_location_id_refreshes_like_the_agency_token(service):
+    make_agency(expires_at=timezone.now() + timedelta(seconds=30))
+    respx.post(f'{BASE}/oauth/token').mock(
+        return_value=httpx.Response(200, json=token_response(access_token='new-access'))
+    )
+
+    assert service.get_location_token(settings.AGENCY_LOCATION_ID) == 'new-access'
+
+
+@pytest.mark.django_db
+def test_location_token_for_the_agency_location_id_requires_an_install(service):
+    with pytest.raises(GHLNotConnectedError):
+        service.get_location_token(settings.AGENCY_LOCATION_ID)
