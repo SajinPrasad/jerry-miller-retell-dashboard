@@ -103,6 +103,9 @@ GHL_REQUEST_TIMEOUT = env.int('GHL_REQUEST_TIMEOUT', default=30)
 # the agency would find nobody to bill.
 GHL_MAIN_LOCATION_ID = env('GHL_MAIN_LOCATION_ID', default='')
 GHL_BUSINESS_NAME = env('GHL_BUSINESS_NAME', default='SurPro Labs AI')
+# Required by /invoices/{id}/send as `sentFrom.fromEmail` - GHL rejects the call without either
+# this or a `userId`, and this avoids needing an internal employee/agency user id.
+GHL_BUSINESS_EMAIL = env('GHL_BUSINESS_EMAIL', default='billing@surprolabs.ai')
 # Host of the app's Installation URL (Advanced Settings > Auth); white-label hosts differ.
 GHL_INSTALL_URL_BASE = env('GHL_INSTALL_URL_BASE', default='https://marketplace.gohighlevel.com')
 GHL_REDIRECT_URI = env('GHL_REDIRECT_URI', default='http://localhost:8000/api/oauth/callback/')

@@ -111,15 +111,22 @@ class GHLInvoiceService:
     def send_invoice(self, invoice_id: str) -> dict:
         """Send the invoice and ask GHL to take the contact's card.
 
-        `AutoPaymentDetailsDto`'s published OpenAPI schema marks only `enable` as required and
-        gives `type` no enum, but the live API disagrees: omitting `type` 422s with
-        `"autoPayment.type must be a valid enum value"` (confirmed against a real invoice,
-        30 Oct). GHL's payment-method `type` values are documented in exactly one place - the
-        custom-payments integration guide - which names `card` and `us_bank_account` as the two
-        examples, matching this DTO's sibling `card`/`usBankAccount` objects. Jerry's billing is
-        card-only, so `card` is what we send. There is still no public endpoint to look up a
-        contact's saved card id, so `paymentMethodId`/`cardId` stay unset - `type: card` plus
-        `enable: true` is the request for "charge whatever card is on file."
+        Two things the published OpenAPI schema gets wrong, both confirmed against a real
+        invoice on Jerry's server, 30 Oct:
+
+        * `autoPayment.type` has no documented enum and isn't marked required, but omitting it
+          422s with `"autoPayment.type must be a valid enum value"`, and `'card'` (matching the
+          sibling `card` object's name, and the value GHL's own custom-payments guide uses) is
+          itself rejected the same way. The value the live API actually accepts is
+          `'customer_card'`.
+        * `userId` is marked required but sending neither it nor `sentFrom` is what triggers the
+          error - `sentFrom` alone satisfies it. `sentFrom` is sender identity for the invoice
+          (name and email), not an internal employee/agency user id, so it needs no lookup
+          anywhere in this codebase.
+
+        There is still no public endpoint to look up a contact's saved card id, so
+        `paymentMethodId`/`cardId` stay unset - `enable: true` + `type: customer_card` is the
+        request for "charge whatever card is on file."
         """
         return self._request(
             'POST',
@@ -129,7 +136,11 @@ class GHLInvoiceService:
                 'altType': 'location',
                 'action': 'send_manually',
                 'liveMode': settings.GHL_INVOICE_LIVE_MODE,
-                'autoPayment': {'enable': True, 'type': 'card'},
+                'sentFrom': {
+                    'fromName': settings.GHL_BUSINESS_NAME,
+                    'fromEmail': settings.GHL_BUSINESS_EMAIL,
+                },
+                'autoPayment': {'enable': True, 'type': 'customer_card'},
             },
         )
 
