@@ -35,10 +35,15 @@ certifi==2026.10.18
     #   -c requirements/base.txt
     #   httpcore
     #   httpx
+    #   requests
 cffi==2.1.1
     # via
     #   -c requirements/base.txt
     #   cryptography
+charset-normalizer==3.5.2
+    # via
+    #   -c requirements/base.txt
+    #   requests
 click==8.5.0
     # via
     #   -c requirements/base.txt
@@ -121,6 +126,7 @@ idna==3.20
     #   -c requirements/base.txt
     #   anyio
     #   httpx
+    #   requests
 iniconfig==2.3.1
     # via pytest
 kombu[redis]==5.6.2
@@ -179,6 +185,10 @@ redis==6.4.0
     # via
     #   -c requirements/base.txt
     #   kombu
+requests==2.34.2
+    # via
+    #   -c requirements/base.txt
+    #   stripe
 respx==0.23.1
     # via -r requirements/dev.in
 retell-sdk==6.2.10
@@ -199,6 +209,10 @@ sqlparse==0.6.0
     # via
     #   -c requirements/base.txt
     #   django
+stripe==16.0.1
+    # via
+    #   -c requirements/base.txt
+    #   -r requirements/base.in
 typing-extensions==4.16.0
     # via
     #   -c requirements/base.txt
@@ -208,6 +222,7 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   retell-sdk
+    #   stripe
     #   typing-inspection
 typing-inspection==0.4.4
     # via
@@ -225,6 +240,10 @@ tzlocal==5.4.4
     # via
     #   -c requirements/base.txt
     #   celery
+urllib3==2.8.0
+    # via
+    #   -c requirements/base.txt
+    #   requests
 vine==5.1.0
     # via
     #   -c requirements/base.txt

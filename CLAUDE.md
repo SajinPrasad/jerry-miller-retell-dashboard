@@ -168,9 +168,9 @@ the rest of Phase 4 and is not built.
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
   backend verifies a dev blob exactly like a real one - there is no server-side bypass.
 
-## Voice rebilling (Task 4, Phases 1, 2 and 2b built)
+## Voice rebilling (Task 4, Phases 1, 2, 2b, 3 and 5 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull; Phases 3-6 (calculation, admin page, charging, alerts) are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe. Phase 4's writing half (rates, unassigned calls, bills table) and Phase 6 (alerts) are not started.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 
@@ -181,7 +181,30 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
 - **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
 - **Twilio pull** `TwilioUsageService.pull(start_date, end_date)`: for each `active` client with a `twilio_subaccount_sid`, `GET /2010-04-01/Accounts/{sid}/Usage/Records/Daily.json` with `Category=calls`, `IncludeSubaccounts=false` (its default is **true**) and `PageSize=1000`, paging on the `next_page_uri` Twilio hands back. Stored with `update_or_create` on `(client, usage_date, category)` because Twilio keeps revising a day after it ends. Defaults to a rolling 3-day window; pass both dates for the month-close run. Only `calls` is billed — it excludes SIP and trunking calls by Twilio's definition, which is where Retell's minutes land. A failed client is logged, counted in `failed` and skipped; the others still land.
 - **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
-- **Not built yet:** no alerts beyond a log line; no bills. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates still come from the shell.
+- **Charging (Phase 5, built on `feat/stripe-billing`)** lives in its own module,
+  `apps/rebilling/stripe_billing.py`, and uses the **official `stripe` SDK** - not a hand-rolled
+  `httpx` client like the two ingest paths, because this is money movement. `charge_bills(month)`
+  takes each `uncharged` `Bill` for a period and puts it on a Stripe invoice: look the customer up
+  by `ClientMapping.billing_email` (**new field**) before ever creating one, create the invoice
+  with `collection_method='charge_automatically'` and `auto_advance=True`, one `InvoiceItem` per
+  `BillLine` whose `amount` **is** `bill_cents` (no conversion), then `finalize_invoice`, which is
+  what makes Stripe attempt the card. `Bill` gains `status` (`uncharged`/`charging`/`paid`/
+  `failed`), `stripe_invoice_id` and `paid_at`. Every write carries an idempotency key derived from
+  the bill (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`), and only `uncharged` bills are
+  picked up - two independent reasons a re-run cannot charge twice. A client whose `billing_mode`
+  is not `auto_charge` is skipped, never charged. `setup_link()` returns a Stripe Checkout session
+  in `mode='setup'` for a client with no card; nothing calls it from a UI yet. Command:
+  `manage.py charge_bills [--month YYYY-MM]` - deliberately **not** on the Celery schedule.
+  Settings: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (two different secrets).
+- **Stripe webhook** `POST /api/rebilling/webhooks/stripe/`: `invoice.paid` and
+  `invoice.payment_failed` only, signature verified over the raw body with
+  `stripe.Webhook.construct_event` before anything parses it; 401 bad signature, 400 unreadable
+  body, 204 empty otherwise. `paid_at` comes from the event's own timestamp, not `now()`, because
+  a webhook can be retried hours later. **The webhook is the only thing that moves a bill off
+  `charging`** - if it is misconfigured, charges succeed at Stripe while every bill here still
+  reads `charging`. Note the SDK hands `event['data']['object']` back as a `stripe.Invoice`, not a
+  dict, so `.get()` raises rather than returning `None`.
+- **Not built yet:** no alerts beyond a log line. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates still come from the shell.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 
 ## Structure

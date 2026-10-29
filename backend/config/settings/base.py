@@ -158,6 +158,13 @@ TWILIO_AUTH_TOKEN = env('TWILIO_AUTH_TOKEN', default='')
 TWILIO_API_BASE_URL = env('TWILIO_API_BASE_URL', default='https://api.twilio.com')
 TWILIO_REQUEST_TIMEOUT = env.int('TWILIO_REQUEST_TIMEOUT', default=30)
 
+# Charging clients for their voice usage (Task 4, Phase 5). The secret key is the live or test
+# key of the Stripe account the usage bills are charged through; the webhook secret is the
+# signing secret of the endpoint registered against /api/rebilling/webhooks/stripe/. They are
+# different secrets and are not interchangeable.
+STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
+STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
+
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')
 

@@ -10,3 +10,4 @@ whitenoise
 gunicorn
 celery[redis]
 retell-sdk
+stripe

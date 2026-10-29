@@ -24,8 +24,11 @@ certifi==2026.10.18
     # via
     #   httpcore
     #   httpx
+    #   requests
 cffi==2.1.1
     # via cryptography
+charset-normalizer==3.5.2
+    # via requests
 click==8.5.0
     # via
     #   celery
@@ -72,6 +75,7 @@ idna==3.20
     # via
     #   anyio
     #   httpx
+    #   requests
 kombu[redis]==5.6.2
     # via celery
 packaging==26.3
@@ -92,6 +96,8 @@ python-dateutil==2.9.0.post0
     # via celery
 redis==6.4.0
     # via kombu
+requests==2.34.2
+    # via stripe
 retell-sdk==6.2.10
     # via -r requirements/base.in
 six==1.17.0
@@ -100,6 +106,8 @@ sniffio==1.3.1
     # via retell-sdk
 sqlparse==0.6.0
     # via django
+stripe==16.0.1
+    # via -r requirements/base.in
 typing-extensions==4.16.0
     # via
     #   anyio
@@ -108,6 +116,7 @@ typing-extensions==4.16.0
     #   pydantic
     #   pydantic-core
     #   retell-sdk
+    #   stripe
     #   typing-inspection
 typing-inspection==0.4.4
     # via pydantic
@@ -119,6 +128,8 @@ tzdata==2026.5
     #   tzlocal
 tzlocal==5.4.4
     # via celery
+urllib3==2.8.0
+    # via requests
 vine==5.1.0
     # via
     #   amqp

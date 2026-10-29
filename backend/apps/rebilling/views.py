@@ -1,6 +1,7 @@
 import json
 import logging
 
+import stripe
 from django.conf import settings
 from rest_framework import status
 from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
@@ -25,6 +26,7 @@ from .services import (
     set_mapping,
     store_call,
 )
+from .stripe_billing import apply_event, read_event
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +58,34 @@ class RetellWebhookView(APIView):
 
         if payload.get('event') == 'call_ended':
             store_call(payload.get('call') or {})
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class StripeWebhookView(APIView):
+    """POST /api/rebilling/webhooks/stripe/: how a charge's outcome gets back to us.
+
+    Subscribed to `invoice.paid` and `invoice.payment_failed`. Stripe retries a webhook that
+    does not answer 2xx, so this does one indexed lookup and one write and answers 204 empty -
+    the same shape as the Retell webhook, for the same reason.
+    """
+
+    # A machine-to-machine webhook: the signature is the authentication.
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        # Read before anything parses the stream: the signature covers the raw body.
+        raw_body = request.body
+        signature = request.headers.get('Stripe-Signature', '')
+        try:
+            event = read_event(raw_body, signature)
+        except stripe.SignatureVerificationError:
+            logger.warning('stripe: webhook signature rejected')
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+        except ValueError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        apply_event(event)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 

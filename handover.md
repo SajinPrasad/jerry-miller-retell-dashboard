@@ -42,7 +42,7 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 | 1b | Agency admin page: client list and usage by period | — | **Built** (`/admin` live, `/admin/preview` demo; read-only for usage, editable for mapping) |
 | 2 | Agency dashboard: MRR, live clients, leads/calls/signed by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (frontend feature folders hold only `.gitkeep`) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b and 3 (calculation) built; Phase 4's mapping edit UI built**; rest of Phase 4 (rate editing, unassigned-call mapping, bills in the UI), Phase 5 and Phase 6 not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3 (calculation), 4 (mapping edit UI) and 5 (Stripe charging) built**; rest of Phase 4 (rate editing, unassigned-call mapping, bills in the UI) and Phase 6 not started |
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -108,7 +108,8 @@ to `config.settings.development`. pytest uses `config.settings.test` (see `pytes
 | GET | `/api/ghl/onboarding/` | Install link, agency, sub-accounts. **Never returns tokens** |
 | POST | `/api/ghl/onboarding/sync/` | Re-syncs sub-accounts from GHL |
 | POST | `/api/rebilling/webhooks/retell/` | Retell `call_ended` webhook. Signature-verified, answers 204 |
-| — | `/admin/` | Django admin. rebilling and ghl have **no** admin registrations yet |
+| POST | `/api/rebilling/webhooks/stripe/` | Stripe invoice event webhook (`invoice.paid`, `invoice.payment_failed`). Signature-verified, answers 204 |
+| — | `/admin/` | Django admin. `ClientMapping` is registered; GHL models have no admin registrations yet |
 
 ---
 
@@ -232,7 +233,7 @@ selected value always exists). Drives both the detail request and the rendering 
 
 ---
 
-## 6. Task 4: voice rebilling (Phases 1, 2, 2b and 3 built)
+## 6. Task 4: voice rebilling (Phases 1–5 built; Phase 6 pending)
 
 ### 5.1 The business rule
 
@@ -249,13 +250,13 @@ them. Do not apply Retell's rounding rule to Twilio.
 
 | Model | Purpose | Key fields |
 |---|---|---|
-| `ClientMapping` | One client. Links the GHL sub-account to Retell agents, phone numbers and the Twilio subaccount | `location_id` (unique), `client_name`, `retell_agent_ids` (JSON list), `phone_numbers` (JSON list, digits-only match), `twilio_subaccount_sid`, `billing_mode` (`auto_charge` default, or `send_invoice`), `stripe_customer_id`, `billing_contact_id`, `active` |
+| `ClientMapping` | One client. Links the GHL sub-account to Retell agents, phone numbers and the Twilio subaccount | `location_id` (unique), `client_name`, `retell_agent_ids` (JSON list), `phone_numbers` (JSON list, digits-only match), `twilio_subaccount_sid`, `billing_mode` (`auto_charge` default, or `send_invoice`), `stripe_customer_id`, `billing_email`, `billing_contact_id`, `active` |
 | `RateHistory` | Rates per client from a start date. A change **adds a row** | `voice_rate_cents` (default 25 = Retell AI minute, $0.25), `call_rate_cents` (default 5 = Twilio call minute, $0.05), `start_date`. Unique on `(client, start_date)` |
 | `RetellCall` | One Retell call matched to a client | `call_id` (unique), `client` (FK, **PROTECT**), agent, numbers, direction, `started_at`, `ended_at`, `duration_ms`, `retell_cost_cents` (= `call_cost.combined_cost`, Jerry's cost), `call_status`, `billing_status`, `unbillable_reason` |
 | `UnassignedCall` | Same call fields, no client. Matched nothing. Never dropped | same as `RetellCall` minus `client` |
 | `TwilioUsageDay` | One client, one GMT day, one category | `client` (FK, **PROTECT**), `subaccount_sid`, `usage_date`, `category` (`calls`), `call_count`, `usage_minutes` (Decimal, already rounded by Twilio), `twilio_price_cents` (Jerry's cost), `as_of` (Twilio's freshness stamp). Unique on `(client, usage_date, category)` |
 
-Migrations: `0001_initial`, `0002_call_billing_status`, `0003_twilio_voice_usage`. After any model
+Migrations: `0001_initial`, `0002_call_billing_status`, `0003_twilio_voice_usage`, `0004_bill_and_billline`, `0005_bill_stripe_fields_and_billing_email`. After any model
 change, `makemigrations --check --dry-run` should report "No changes detected".
 
 ### 5.3 Pure functions that carry the rules
@@ -399,7 +400,7 @@ rate splits, unbillable-call exclusion, Twilio no-double-rounding, single-source
 re-run of an already-billed month, two clients billing independently, the integer-cents invariant,
 `SET_NULL` on bill deletion, and the management command (success output and bad-month rejection).
 
-### 5.9 Phase status
+### 5.9 Phase 4 — status and mapping edit UI (built)
 
 | Phase | What | Status |
 |---|---|---|
@@ -407,8 +408,8 @@ re-run of an already-billed month, two clients billing independently, the intege
 | 2 | Retell nightly reconciliation (list + backfill) | Built |
 | 2b | Twilio daily usage pull (`calls` only) | Built. Latest commit `ea95a0c` |
 | 3 | Period calculation and bills, both sources, typed bill lines, integer cents | **Built** (§5.8) |
-| 4 | Admin page: rates, mapping edit UI, unassigned calls, bills, usage split by source | **Mapping edit UI built** (live and preview, admin registration, Django admin for mapping — see below); rate editing, unassigned-call mapping and showing real bills not started |
-| 5 | Charging: GHL invoice schedule with auto-payment, then Stripe, then an invoice-link fallback | Not started |
+| 4 | Admin page: rates, mapping edit UI, unassigned calls, bills, usage split by source | **Mapping edit UI built** (live and preview, admin registration, Django admin for mapping); rate editing, unassigned-call mapping and showing real bills not started |
+| 5 | Charging: Stripe off-session invoice + auto-charge, webhook for payment events | **Built** (§5.10) |
 | 6 | Alerts (failed pulls, unassigned calls, failed charges, overdue bills), then the Branwynn end-to-end test | Not started |
 
 **Backend (Phase 4 mapping UI):** `ClientMappingSerializer` validates Retell agent IDs (non-blank,
@@ -448,6 +449,65 @@ Linting clean; `makemigrations --check --dry-run` clean.
 **`call_rate_cents` and the Twilio usage are now read for billing.** Phase 3's `calculate_bills`
 does this, using `billing_status = billable` rows only. The admin page itself still shows an
 estimate rather than these real bills — see §5, "Money shown in the admin."
+
+### 5.10 Phase 5 — charging (Stripe path, built)
+
+Stripe is the payment processor. Bills are converted to Stripe invoices with automatic off-session
+charging (`collection_method='charge_automatically'`). Idempotency keys prevent double-charging on
+retry. Webhook handlers update bill status to `PAID` or `FAILED`.
+
+**Customer setup:** `customer_id(client)` looks up the Stripe customer by `billing_email` (from
+`ClientMapping`), then saves the found or newly-created customer ID. A client who already pays
+through this Stripe account must not end up with a second cardless customer record. First lookup
+must happen **before** any charge attempt.
+
+**Idempotency:** Every call to Stripe (`Invoice.create`, `InvoiceItem.create`, `finalize_invoice`)
+carries an idempotency key derived from the `Bill.pk`. A re-run of the monthly charge command
+re-reaches the same Stripe objects; only bills still `uncharged` are picked up. Combining both
+guards makes the charge safe against crashes and manual reruns.
+
+**Invoice lifecycle:** `Invoice.create(collection_method='charge_automatically', auto_advance=True)`
+→ `InvoiceItem.create` for each `BillLine` → `finalize_invoice`, which starts the card attempt.
+The `stripe_invoice_id` is saved immediately, so a failure mid-charge still leaves a traceable
+Stripe object.
+
+**Bill status:** `UNCHARGED` (new bill, not yet sent to Stripe) → `CHARGING` (invoice sent, awaiting
+result) → `PAID` (webhook received `invoice.paid`) or `FAILED` (webhook received
+`invoice.payment_failed`). `paid_at` is set by the webhook to Stripe's own timestamp, not the
+server's.
+
+**Settings:**
+- `STRIPE_SECRET_KEY` — the secret key for the API
+- `STRIPE_WEBHOOK_SECRET` — the webhook signing secret, different from the API key
+
+**Endpoint:** `POST /api/rebilling/webhooks/stripe/` with Stripe-Signature verification. Handles
+`invoice.paid` and `invoice.payment_failed` events. Returns 204 on success, 401 on bad signature,
+400 on invalid JSON.
+
+**Management command:** `python manage.py charge_bills [--month YYYY-MM]`. Charges all `uncharged`
+bills for the given month (defaults to this month). Skips clients with `billing_mode != auto_charge`.
+Logs failures per client but continues for the others. Prints the count charged and total cents.
+
+**Module:** `apps/rebilling/stripe_billing.py` (new). Contains `customer_id()`, `setup_link()`,
+`charge_bills()`, `read_event()`, `apply_event()`, and their helpers. Like `apps/ghl/sso.py`, it
+sits beside `services.py` to keep charging separate from ingest.
+
+**Test coverage:** 26 new tests in `apps/rebilling/tests/test_stripe_billing.py`. FakeStripe class
+mocks the SDK. Tests cover customer lookup (cached, created, duplicates avoided), invoice creation
+and finalization, idempotency key derivation, line item amounts (integer cents, type-verified),
+re-running the month safely, skipping non-auto-charge clients, one client's failure not stopping
+others, and webhook signature verification/rejection.
+
+**Risks documented in `CriticalFindings.md` (§2.6, new):**
+- Stripe's **$0.50 minimum charge** — a 30-cent bill will fail at the card.
+- `billing_email` is new and unpopulated by the UI; every client needs one by hand until Phase 4's
+  mapping editor grows the field.
+- The webhook is the **single point of failure** for the record of what has been paid; no
+  reconciliation pass exists. A bill can stay `charging` forever if the webhook endpoint is
+  unregistered or the secret is wrong.
+- `failed` status is not final: Stripe's Smart Retries can later flip a failed invoice to `paid`.
+
+**Status:** 221 backend tests passing (195 + 26 new). Linting clean. `makemigrations --check` clean.
 
 ---
 
@@ -530,6 +590,7 @@ Everything is in `backend/.env`, which is gitignored. `backend/.env.example` doc
 - **Retell:** `RETELL_API_KEY`, `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
 - **Twilio:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_BASE_URL`,
   `TWILIO_REQUEST_TIMEOUT`.
+- **Stripe:** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
 
 `GHL_COMPANY_ID` was **removed entirely**. Do not reintroduce it. `AGENCY_LOCATION_ID` replaced it
 as the way to identify the agency location.
@@ -542,7 +603,7 @@ Run these from `backend/` unless noted. The venv is `backend/.venv`. On Windows,
 `.venv/Scripts/python.exe`.
 
 ```
-pytest                                                    # 154 tests, config.settings.test
+pytest                                                    # 221 tests, config.settings.test
 ruff check . && ruff format .                             # lint / format (line 100, single quotes)
 python manage.py check
 python manage.py makemigrations --check --dry-run         # must say "No changes detected"
@@ -550,6 +611,7 @@ python manage.py migrate
 python manage.py runserver                                # http://localhost:8000
 python manage.py reconcile_retell_calls                   # manual Retell audit
 python manage.py pull_twilio_usage                        # manual Twilio pull (rolling window)
+python manage.py charge_bills [--month YYYY-MM]           # manual Stripe charging (defaults to this month)
 celery -A config worker -l info                           # background worker
 celery -A config beat -l info                             # scheduler
 pip-sync requirements/dev.txt                             # install dependencies
@@ -561,7 +623,8 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 
 **Test settings** (`config/settings/test.py`) set fake values for every secret, including
 `AGENCY_LOCATION_ID='agency-loc'`, `RETELL_API_KEY='retell-test-key'`,
-`TWILIO_ACCOUNT_SID='ACparent'` and `TWILIO_AUTH_TOKEN='twilio-test-token'`.
+`TWILIO_ACCOUNT_SID='ACparent'`, `TWILIO_AUTH_TOKEN='twilio-test-token'`,
+`STRIPE_SECRET_KEY='sk_test_key'`, and `STRIPE_WEBHOOK_SECRET='whsec_test_secret'`.
 
 ---
 
@@ -574,11 +637,10 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 - Shared helpers: `apps/rebilling/tests/test_services.py` (`make_client`, `call_payload`) is reused
   by the other rebilling test modules. `test_reconciliation.py` has `recent_call()`, which builds
   timestamps inside the 48-hour window. The fixed-date payload is deliberately **outside** it.
-- Current count: **176 backend tests, all passing** (up from 154: +12 mapping tests in
-  `test_admin_mapping.py`). **43 frontend tests, all passing** (up from 38: +6 mapping tests, 1 old
-  test replaced). Tests added for the GHL v3 header fix, decoupled sync failures, sub-account
-  storage without tokens, live mapping edit/setup flows, preview in-memory editing, and
-  validation error handling.
+- Current count: **221 backend tests, all passing** (195 Phase 3 + 26 Phase 5 Stripe tests).
+  **43 frontend tests, all passing**. Tests added for GHL v3 header fix, decoupled sync failures,
+  sub-account storage without tokens, live mapping edit/setup flows, preview in-memory editing,
+  validation error handling, billing calculation, and Stripe charging with idempotency.
 
 | File | Covers |
 |---|---|
@@ -588,7 +650,9 @@ From `frontend/`: `npm install`, `npm run dev` (http://localhost:5173), `npm tes
 | `apps/rebilling/tests/test_reconciliation.py` | list and paging, backfill, errors, command |
 | `apps/rebilling/tests/test_tasks.py` | Retell Celery task, beat schedule |
 | `apps/rebilling/tests/test_twilio.py` | Twilio pull, paging, update vs insert, per-client failure, command, Twilio task, schedule |
+| `apps/rebilling/tests/test_billing.py` | bill calculation, rate-in-effect billing, mid-month rate splits, integer cents, command |
 | `apps/rebilling/tests/test_admin_mapping.py` | client mapping serializer validation, set_mapping service, AdminClientMappingView auth and errors |
+| `apps/rebilling/tests/test_stripe_billing.py` | Stripe customer lookup, invoice creation, idempotency, webhook signature verification, event handling |
 | `frontend/src/features/admin/AdminPage.test.tsx` | SSO handshake, live client list, detail fetch, mapping edit/setup flows, validation |
 | `frontend/src/features/admin/AdminPreviewPage.test.tsx` | demo rendering, period filtering, unmapped client setup, in-memory mapping edits |
 
@@ -712,6 +776,13 @@ These cannot be answered from the docs.
 - **The admin page mapping UI is built and tested**, but not verified in a live GHL iframe yet.
   SSO handshake, all backend endpoints, and frontend component rendering are tested; GHL iframe
   embedding and the live mapping save workflow have not been verified inside GHL.
+- **`billing_email` is unpopulated by the UI.** Every client needs one filled in by hand before
+  Phase 5 charging will work. Phase 4's mapping editor (not yet built) should include this field.
+- **The Stripe webhook is a single point of failure.** If it is unregistered or the signing secret
+  is wrong, every charge still succeeds at Stripe while every bill here reads `charging` forever.
+  No reconciliation pass exists; Phase 6 should alert on bills stuck in `charging` for N days.
+- **Stripe has a $0.50 minimum charge.** A bill under 50 cents will fail at the card. No policy
+  has been decided (roll forward, waive, or let it fail).
 
 ---
 
@@ -860,7 +931,87 @@ itself (see §5.8) — it stays two separate commands run in order. No admin/API
 
 ---
 
-## 19. Git history
+## 19. Recent session: Stripe billing (Phase 5 charging)
+
+**Task:** Build Phase 5 of Task 4 — the Stripe billing module — for automatic off-session charging
+of calculated bills. Replaces the earlier GHL vs Stripe research phase with a Stripe implementation:
+customer lookup, invoice creation with idempotency, webhook handlers, and tests.
+
+**Why Stripe:** Research determined that GHL does not process payments (it is a control plane over a
+connected provider); choosing Stripe means choosing the payment rail directly. Phase 4 remains
+unchanged; it will work with either.
+
+**Models** (`apps/rebilling/models.py`, migration `0005`):
+- `ClientMapping` gains `billing_email` (new field, required for Stripe customer lookup) and
+  `stripe_customer_id` (cached after first lookup).
+- `Bill` gains `status` (choices: `uncharged`, `charging`, `paid`, `failed`), `stripe_invoice_id`,
+  and `paid_at` (Stripe's own timestamp from webhook, not server time).
+
+**Module** (`apps/rebilling/stripe_billing.py`, new):
+- `customer_id(client)` — looks up or creates a Stripe customer by `billing_email`. A client who
+  already pays through this account is found and reused (no duplicate cardless customers).
+  Cached on the first lookup.
+- `setup_link(client)` — returns a Stripe Checkout Session URL (`mode='setup'`) for clients
+  needing to attach a card before auto-charge works.
+- `charge_bills(month=None)` — the main function. Picks up `uncharged` bills for the month,
+  skips non-auto-charge clients, charges each via Stripe, and returns a result dict with counts.
+- `_charge_one(bill)` — internal. Creates a Stripe invoice (`collection_method='charge_automatically'`,
+  `auto_advance=True`), saves the invoice ID immediately (for traceability on failure), adds
+  line items from `BillLine` rows (amounts in integer cents), finalizes it (triggers card attempt),
+  and sets bill status to `charging`.
+- `read_event(payload, signature)` — verifies webhook signature using `stripe.Webhook.construct_event`.
+- `apply_event(event)` — processes `invoice.paid` and `invoice.payment_failed` events, updating
+  bill status and `paid_at`.
+
+**Idempotency:** Every Stripe call carries an idempotency key derived from `Bill.pk`
+(`bill-{pk}-invoice`, `-{line_type}`, `-finalize`). A re-run of the charge command re-reaches the
+same Stripe objects instead of creating duplicates. Combined with a DB filter for `uncharged` bills
+only, double-charging is impossible even after a crash.
+
+**Webhook** (`POST /api/rebilling/webhooks/stripe/`, new):
+- Reads raw request body before parsing (signature covers bytes, not parsed JSON).
+- Verifies `Stripe-Signature` header. Returns 401 on failure, 400 on invalid JSON.
+- Calls `apply_event()` on valid events. Returns 204 (success or event type ignored).
+
+**Management command** (`python manage.py charge_bills [--month YYYY-MM]`, new):
+- Charges all `uncharged` bills for a month (defaults to this month).
+- Skips clients with `billing_mode != auto_charge` (respects "send invoice" mode).
+- Logs per-client failures but continues for others (one failure doesn't stop the run).
+- Prints count of charged bills and total cents.
+
+**Settings:**
+- `STRIPE_SECRET_KEY` — API secret for this account.
+- `STRIPE_WEBHOOK_SECRET` — webhook signing secret (different from the API key).
+
+**Tests** (26 new, in `apps/rebilling/tests/test_stripe_billing.py`):
+- Customer lookup: cached on second call, created when not found, duplicates avoided (found by
+  email first).
+- Invoice creation and finalization: lines added with integer cent amounts (type checked), invoice
+  is finalized which starts the card attempt.
+- Idempotency: keys are derived correctly, re-running the month charges nothing twice.
+- Skipping: non-auto-charge clients are skipped and counted, other clients still charged.
+- Failure isolation: one client's failure doesn't stop the others.
+- Webhook: signature verification (401 on wrong secret), event routing (paid/failed handled, others
+  ignored), state updates (bill status and `paid_at` set correctly).
+- No Stripe SDK calls reach the network; a `FakeStripe` class with record-and-return methods
+  mocks the SDK, and webhook signatures are built by hand.
+
+**Risks documented in `CriticalFindings.md` §2.6 (new):**
+- **$0.50 minimum charge** — a bill under 50 cents fails at the card. No policy yet (roll forward,
+  waive, or fail).
+- **`billing_email` is new and unpopulated** — no UI fills it in yet; every client needs one by hand.
+- **Webhook is the single point of failure** — no reconciliation against Stripe. A bill can stay
+  `charging` forever if the endpoint is unregistered or the secret is wrong.
+- **`failed` is not final** — Stripe's Smart Retries can flip a failed invoice to `paid` later.
+
+**Not built:** automatic scheduling in Celery Beat (would be 4 lines; say the word).
+
+**Status:** 221 backend tests passing (195 + 26 new), lint clean, `makemigrations --check` clean,
+`manage.py check` clean. Not committed (per standing rule).
+
+---
+
+## 20. Git history
 
 | Commit | Message (abridged) |
 |---|---|
@@ -877,15 +1028,18 @@ itself (see §5.8) — it stays two separate commands run in order. No admin/API
 | `3e383bb` | feat: add refresh clients button and location-created webhook |
 | `4b21240` | feat(rebilling): integrate client mapping editor for live and preview routes |
 
-The working tree has **uncommitted changes** for **Task 4 Phase 3 calculation engine** (§18):
-- Backend: `models.py` (+Bill, +BillLine, +bill FKs with `SET_NULL` on RetellCall/TwilioUsageDay), `services.py`
-  (+calculate_bills and helpers), `migrations/0004_...py` (new), `management/commands/calculate_bills.py` (new),
-  `tests/test_billing.py` (new, 19 tests)
-- Documentation: `handover.md` (this session's edits)
+The working tree has **uncommitted changes** for **Task 4 Phase 5 Stripe charging** (§19):
+- Backend: `models.py` (+billing_email, +stripe_customer_id on ClientMapping; +status/stripe_invoice_id/paid_at on Bill),
+  `exceptions.py` (+StripeBillingError), `stripe_billing.py` (new module), `views.py` (StripeWebhookView),
+  `urls.py` (+webhook endpoint), `settings/base.py` (+STRIPE_SECRET_KEY/STRIPE_WEBHOOK_SECRET),
+  `settings/test.py` (test values for both), `migrations/0005_...py` (new), `management/commands/charge_bills.py` (new),
+  `tests/test_stripe_billing.py` (new, 26 tests), `requirements/base.in` (+stripe), and all three `.txt` recompiled
+- Dependencies: `stripe==16.0.1`
+- Documentation: `CLAUDE.md` and `plan.md` + `CriticalFindings.md` (local, gitignored)
 
 ---
 
-## 20. Memory and collaboration
+## 21. Memory and collaboration
 
 - Claude's persistent memory for this project is indexed by `MEMORY.md` and currently holds one
   entry: **avoid over-engineering**. Build exactly what is asked, with no speculative extras.
@@ -896,15 +1050,15 @@ The working tree has **uncommitted changes** for **Task 4 Phase 3 calculation en
 
 ---
 
-## 21. How to start a new session on this project
+## 22. How to start a new session on this project
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **195 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **43 passed**
+   **221 passed** (backend). From `frontend/`, run `npm test -- --run` and expect **43 passed**
    (frontend). Also run `ruff check .` and `manage.py makemigrations --check --dry-run`.
 4. Check `git status` and `git log --oneline | head` before changing anything.
-5. **Note:** Task 4 Phase 3 (calculation engine, §18) is built. Phase 4's mapping edit UI
-   (§17) is committed (4b21240). The rest of Phase 4 (rate editing, unassigned-call mapping,
-   in the admin page) and Phases 5–6 are not started. Don't start them, or Tasks 2 and 3, without
-   an explicit request. Ask first if the request is ambiguous. Never make live API calls.
+5. **Note:** Task 4 Phases 1, 2, 2b, 3, 4 (mapping edit UI), and 5 (Stripe charging) are built.
+   Phase 4's rate editing, unassigned-call mapping, and bills display in the admin page remain.
+   Phase 6 (alerts) is not started. Tasks 2 and 3 are not started. Don't start any of these
+   without an explicit request. Ask first if the request is ambiguous. Never make live API calls.
