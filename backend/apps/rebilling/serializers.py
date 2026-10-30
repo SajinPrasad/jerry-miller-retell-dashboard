@@ -1,7 +1,6 @@
-"""Input validation for the one thing an agency admin can write: a client's mapping.
+"""Input validation for the two things an agency admin can write: a client's mapping and rates.
 
-Everything else behind `apps/rebilling/views.py` is a read computed in `services.py`, so this is
-the only serializer in the app.
+Everything else behind `apps/rebilling/views.py` is a read computed in `services.py`.
 """
 
 import re
@@ -56,6 +55,21 @@ class ClientMappingSerializer(serializers.Serializer):
                 raise serializers.ValidationError(f'"{number}" is not a usable phone number.')
             cleaned.append(number)
         return _deduplicate(cleaned)
+
+
+class ClientRatesSerializer(serializers.Serializer):
+    """What `PUT /admin/clients/<location_id>/rates/` accepts: both per-minute rates, in cents.
+
+    Both are required. They share one `RateHistory` row, so a request carrying only one would
+    have to invent the other - and inventing it silently is how a client ends up billed at a
+    rate nobody chose.
+
+    Cents, never dollars: every amount in this app is an integer number of cents from the
+    webhook to the Stripe invoice, and this is no place to start introducing a float.
+    """
+
+    voice_rate_cents = serializers.IntegerField(min_value=0)
+    call_rate_cents = serializers.IntegerField(min_value=0)
 
 
 def _deduplicate(values: list[str]) -> list[str]:

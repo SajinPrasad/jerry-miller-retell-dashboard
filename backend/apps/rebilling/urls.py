@@ -24,6 +24,11 @@ urlpatterns = [
         name='admin-client-detail',
     ),
     path(
+        'admin/clients/<str:location_id>/rates/',
+        views.AdminClientRatesView.as_view(),
+        name='admin-client-rates',
+    ),
+    path(
         'admin/clients/<str:location_id>/mapping/',
         views.AdminClientMappingView.as_view(),
         name='admin-client-mapping',

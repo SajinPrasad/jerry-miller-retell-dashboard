@@ -15,10 +15,13 @@
  */
 
 import type {
+  BillSummary,
+  ClientDetail,
   ClientDetailResult,
   ClientSummary,
   ClientsResponse,
   MappingFields,
+  RateFields,
   RecentCall,
   RetellAgent,
   SsoSession,
@@ -52,6 +55,10 @@ interface Spec {
   billing_failure_reason?: string
   voice_rate_cents: number
   call_rate_cents: number
+  /** How a finished month's bill ended up, so the preview shows a settled month as settled
+   * rather than as an estimate. Absent means this client has never been billed. */
+  bill_status?: BillSummary['status']
+  bill_failure_reason?: string
   /** Headline figures for the current month; other months scale off these. */
   ai_minutes: number
   retell_cost_cents: number
@@ -74,6 +81,7 @@ const SPECS: Spec[] = [
     owner_name: 'Dana Reyes',
     billing_email: 'dana@coolbreeze.test',
     stripe_customer_id: 'cus_demoCoolBreeze',
+    bill_status: 'paid',
     voice_rate_cents: 25,
     call_rate_cents: 5,
     ai_minutes: 198.4,
@@ -116,6 +124,8 @@ const SPECS: Spec[] = [
     owner_name: 'Marcus Hale',
     billing_email: 'marcus@polarpeak.test',
     stripe_customer_id: 'cus_demoPolarPeak',
+    bill_status: 'failed',
+    bill_failure_reason: 'card_declined',
     voice_rate_cents: 28,
     call_rate_cents: 6,
     ai_minutes: 95.43,
@@ -153,6 +163,24 @@ export function savePreviewMapping(locationId: string, mapping: MappingFields): 
 
 export function resetPreviewMappings(): void {
   previewMappings.clear()
+}
+
+// The same, for rates. Held here rather than in React state for the same reason, and never
+// sent anywhere - the standalone preview never calls the rates endpoint either.
+const previewRates = new Map<string, RateFields>()
+
+/** Stands in for `saveRates` in the preview, answering with the detail it would have returned. */
+export function savePreviewRates(
+  locationId: string,
+  rates: RateFields,
+  month: string,
+): ClientDetail {
+  previewRates.set(locationId, rates)
+  return demoDetail(locationId, month) as ClientDetail
+}
+
+export function resetPreviewRates(): void {
+  previewRates.clear()
 }
 
 /** `spec` with any preview edit to its mapping applied. Everything else - rates, call volume -
@@ -194,6 +222,9 @@ export function demoTwilioSubaccounts(): TwilioSubaccount[] {
     { sid: 'ACdemosummitair00000000000000003', friendly_name: 'Summit Air Solutions' },
   ]
 }
+
+/** The backend's own defaults, which is what its detail response hands the page. */
+const DEFAULT_RATES: RateFields = { voice_rate_cents: 25, call_rate_cents: 5 }
 
 const EMPTY_USAGE: UsageSummary = {
   ai_minutes: '0.00',
@@ -255,6 +286,8 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       billing_failure_reason: '',
       rates: null,
       rate_history: [],
+      default_rates: DEFAULT_RATES,
+      bill: null,
       usage: EMPTY_USAGE,
       twilio_days: [],
       recent_calls: [],
@@ -287,6 +320,8 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
         ? [{ ...spec.previous_rate, start_date: `${shiftBack(month)}-01` }]
         : []),
     ],
+    default_rates: DEFAULT_RATES,
+    bill: billFor(spec, month, usage),
     usage,
     twilio_days: twilioDays(spec, month),
     recent_calls: recentCalls(spec, month),
@@ -307,18 +342,40 @@ function summary(spec: Spec, month: string): ClientSummary {
   }
 }
 
-function rate(spec: Spec) {
-  return { voice_rate_cents: spec.voice_rate_cents, call_rate_cents: spec.call_rate_cents }
+function rate(spec: Spec): RateFields {
+  return (
+    previewRates.get(spec.location_id) ?? {
+      voice_rate_cents: spec.voice_rate_cents,
+      call_rate_cents: spec.call_rate_cents,
+    }
+  )
+}
+
+/**
+ * The sample bill for a finished month, or none at all.
+ *
+ * Only a month that has ended has one: the current month is still being used, which is exactly
+ * the state the page's own estimate is for. The amount is what the estimate said, because on
+ * the real backend that is where a bill comes from.
+ */
+function billFor(spec: Spec, month: string, usage: UsageSummary): BillSummary | null {
+  if (!spec.bill_status || month >= currentMonth()) return null
+  return {
+    status: spec.bill_status,
+    total_cents: usage.estimated_bill_cents ?? 0,
+    failure_reason: spec.bill_failure_reason ?? '',
+  }
 }
 
 function usageFor(spec: Spec, month: string): UsageSummary {
   const f = scale(spec.location_id, month)
+  const rates = rate(spec)
   const aiMinutes = spec.ai_minutes * f
   const callMinutes = spec.call_minutes * f
   const aiCost = Math.round(spec.retell_cost_cents * f)
   const callCost = Math.round(spec.twilio_cost_cents * f)
   const estimated = Math.round(
-    aiMinutes * spec.voice_rate_cents + callMinutes * spec.call_rate_cents,
+    aiMinutes * rates.voice_rate_cents + callMinutes * rates.call_rate_cents,
   )
   const days = twilioDayCount(spec, month)
 

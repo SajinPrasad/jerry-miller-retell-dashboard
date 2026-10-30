@@ -40,6 +40,9 @@ export default function AdminPreviewPage() {
         openDetail={openDetail}
         preview
         onMappingSaved={() => bumpPreview((tick) => tick + 1)}
+        // The sample detail is recomputed on every render, so a preview save only needs the
+        // page to render again - `demoData` already holds what was saved.
+        onRatesSaved={() => bumpPreview((tick) => tick + 1)}
       />
     </Shell>
   )

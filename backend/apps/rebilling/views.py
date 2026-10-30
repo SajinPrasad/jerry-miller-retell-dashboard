@@ -16,7 +16,7 @@ from apps.ghl.services import GHLOAuthService
 
 from .exceptions import RetellError, TwilioError
 from .models import ClientMapping
-from .serializers import ClientMappingSerializer
+from .serializers import ClientMappingSerializer, ClientRatesSerializer
 from .services import (
     RetellReconciliationService,
     TwilioUsageService,
@@ -24,6 +24,7 @@ from .services import (
     client_rows,
     month_window,
     set_mapping,
+    set_rates,
     store_call,
     sync_billing_emails,
 )
@@ -239,6 +240,45 @@ class AdminTwilioSubaccountsView(APIView):
                 {'detail': 'Twilio request failed.'}, status=status.HTTP_502_BAD_GATEWAY
             )
         return Response({'subaccounts': subaccounts})
+
+
+class AdminClientRatesView(APIView):
+    """PUT /api/rebilling/admin/clients/<location_id>/rates/: set a client's per-minute rates.
+
+    Agency admins only, like the mapping write beside it: a sub-account reads its rates on its
+    own page and cannot change what it is charged.
+
+    The new rates start **today**, as a new `RateHistory` row - they do not reach back over a
+    period that has already been billed, and they do not reach back over a period being viewed
+    either. Reading a past month straight after saving therefore still shows that month's own
+    rate, which is the honest answer and the reason this returns the whole refreshed detail
+    rather than just what it wrote: the page then shows the server's figures for the period on
+    screen instead of guessing which of them the save moved.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def put(self, request, location_id):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can edit client rates.')
+
+        try:
+            start, end = month_window(request.query_params.get('month'))
+        except ValueError as exc:
+            raise ValidationError({'month': str(exc)}) from exc
+
+        mapping = ClientMapping.objects.filter(location_id=location_id).first()
+        if mapping is None:
+            # A rate belongs to a client mapping; there is nothing to hang one on yet.
+            raise NotFound('This client has not been mapped for billing yet.')
+
+        serializer = ClientRatesSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        set_rates(mapping, **serializer.validated_data)
+        return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
 
 
 class AdminClientMappingView(APIView):

@@ -1,5 +1,13 @@
 import { useState } from 'react'
-import type { ClientDetail as Detail, MappingResult, RecentCall } from '../../types/admin'
+import { saveRates } from '../../api/admin'
+import type {
+  BillSummary,
+  ClientDetail as Detail,
+  MappingResult,
+  RateFields,
+  RecentCall,
+} from '../../types/admin'
+import { savePreviewRates } from './demoData'
 import {
   DASH,
   centsFromInput,
@@ -20,20 +28,46 @@ interface Props {
   canEdit: boolean
   preview: boolean
   onMappingSaved: (result: MappingResult) => void
+  /** The client's whole refreshed detail, as the rates endpoint answered it. */
+  onRatesSaved: (detail: Detail) => void
 }
 
-export default function ClientDetail({ detail, canEdit, preview, onMappingSaved }: Props) {
-  const { usage, rates } = detail
-  const storedVoice = rates?.voice_rate_cents ?? 0
-  const storedCall = rates?.call_rate_cents ?? 0
+/** What the headline tile is called once a bill exists, in the bill's own vocabulary. */
+const BILL_LABELS: Record<BillSummary['status'], string> = {
+  uncharged: 'Uncharged',
+  charging: 'Charging',
+  paid: 'Paid',
+  failed: 'Failed',
+}
 
-  // What-if rates, held here and nowhere else: nothing is saved, and the next client or period
-  // starts from the stored rates again (the page remounts this on either change).
+export default function ClientDetail({
+  detail,
+  canEdit,
+  preview,
+  onMappingSaved,
+  onRatesSaved,
+}: Props) {
+  const { usage, rates, bill } = detail
+  // A client nobody has set a rate for starts from the defaults rather than from $0.00, which
+  // is both what saving would otherwise write and not a rate anyone chose.
+  const storedVoice = rates?.voice_rate_cents ?? detail.default_rates.voice_rate_cents
+  const storedCall = rates?.call_rate_cents ?? detail.default_rates.call_rate_cents
+
+  // The typed rates. The page remounts per client and per period, so a rate typed here cannot
+  // follow the viewer into another one.
   const [voiceInput, setVoiceInput] = useState(centsToInput(storedVoice))
   const [callInput, setCallInput] = useState(centsToInput(storedCall))
+  // What the last save on this page wrote. A saved rate starts *today*, so on a past month
+  // `detail.rates` deliberately does not move - without this the page would go on calling a
+  // rate it has just saved unsaved.
+  const [saved, setSaved] = useState<RateFields | null>(null)
+  const [saving, setSaving] = useState(false)
+  const [rateError, setRateError] = useState<string | null>(null)
+
   const voiceRate = centsFromInput(voiceInput)
   const callRate = centsFromInput(callInput)
-  const adjusted = voiceRate !== storedVoice || callRate !== storedCall
+  const baseline = saved ?? { voice_rate_cents: storedVoice, call_rate_cents: storedCall }
+  const adjusted = voiceRate !== baseline.voice_rate_cents || callRate !== baseline.call_rate_cents
 
   const cost = usage.ai_cost_cents + usage.call_cost_cents
   // Until a rate is changed, the server's own figure stands. Recomputing it from minutes that
@@ -41,10 +75,31 @@ export default function ClientDetail({ detail, canEdit, preview, onMappingSaved 
   const estimated = adjusted
     ? Math.round(Number(usage.ai_minutes) * voiceRate + Number(usage.call_minutes) * callRate)
     : usage.estimated_bill_cents
+  // Once the month has been billed, the bill *is* the figure. It was worked out from the rate
+  // in effect on each call's own day, so nothing typed here can move it.
+  const headline = bill ? bill.total_cents : estimated
 
-  function reset() {
-    setVoiceInput(centsToInput(storedVoice))
-    setCallInput(centsToInput(storedCall))
+  /** Put the client on the system defaults. Saving is still a separate, deliberate click. */
+  function resetToDefaults() {
+    setVoiceInput(centsToInput(detail.default_rates.voice_rate_cents))
+    setCallInput(centsToInput(detail.default_rates.call_rate_cents))
+  }
+
+  async function handleSaveRates() {
+    setSaving(true)
+    setRateError(null)
+    const fields: RateFields = { voice_rate_cents: voiceRate, call_rate_cents: callRate }
+    try {
+      const refreshed = preview
+        ? savePreviewRates(detail.location_id, fields, detail.month)
+        : await saveRates(detail.location_id, fields, detail.month)
+      setSaved(fields)
+      onRatesSaved(refreshed)
+    } catch {
+      setRateError('Could not save the rates. Try again.')
+    } finally {
+      setSaving(false)
+    }
   }
 
   return (
@@ -66,18 +121,24 @@ export default function ClientDetail({ detail, canEdit, preview, onMappingSaved 
                 : DASH
             }
           />
-          <Tile label="Estimated" value={formatCents(estimated)} accent />
+          <Tile
+            label={bill ? BILL_LABELS[bill.status] : 'Estimated'}
+            value={formatCents(headline)}
+            accent
+          />
           <Tile label="Cost" value={formatCents(cost)} />
           <Tile
             label="Margin"
-            value={formatCents(marginCents(estimated, usage.ai_cost_cents, usage.call_cost_cents))}
+            value={formatCents(marginCents(headline, usage.ai_cost_cents, usage.call_cost_cents))}
           />
         </div>
         <p className="muted small">
-          {adjusted ? (
+          {bill ? (
+            <BillNote bill={bill} />
+          ) : adjusted ? (
             <>
-              At the adjusted rates below, which are not saved. The billing run applies the rate in
-              effect on each call&apos;s own day.
+              At the adjusted rates below, which are not saved yet. The billing run applies the
+              rate in effect on each call&apos;s own day.
             </>
           ) : (
             <>
@@ -86,36 +147,71 @@ export default function ClientDetail({ detail, canEdit, preview, onMappingSaved 
             </>
           )}
         </p>
+        {bill?.failure_reason && (
+          <div className="banner error" role="alert">
+            {bill.failure_reason}
+          </div>
+        )}
       </section>
 
       <section className="card">
         <h2>Rates</h2>
-        <div className="rate-editor">
-          <RateField
-            label="AI minute"
-            value={voiceInput}
-            onChange={setVoiceInput}
-            describedBy="rate-note"
-          />
-          <RateField
-            label="Call minute"
-            value={callInput}
-            onChange={setCallInput}
-            describedBy="rate-note"
-          />
-          {adjusted && (
-            <button type="button" className="button ghost" onClick={reset}>
-              Reset
-            </button>
-          )}
-        </div>
+        {canEdit ? (
+          <>
+            <div className="rate-editor">
+              <RateField
+                label="AI minute"
+                value={voiceInput}
+                onChange={setVoiceInput}
+                describedBy="rate-note"
+              />
+              <RateField
+                label="Call minute"
+                value={callInput}
+                onChange={setCallInput}
+                describedBy="rate-note"
+              />
+              <button
+                type="button"
+                className="button"
+                onClick={handleSaveRates}
+                disabled={saving}
+              >
+                {saving ? 'Saving…' : 'Save rates'}
+              </button>
+              <button type="button" className="button ghost" onClick={resetToDefaults}>
+                Reset to defaults
+              </button>
+            </div>
+            {rateError && (
+              <div className="banner error" role="alert">
+                {rateError}
+              </div>
+            )}
+          </>
+        ) : (
+          <dl className="facts">
+            <dt>AI minute</dt>
+            <dd>{rates ? formatRate(rates.voice_rate_cents) : <span className="muted">Not set</span>}</dd>
+            <dt>Call minute</dt>
+            <dd>{rates ? formatRate(rates.call_rate_cents) : <span className="muted">Not set</span>}</dd>
+          </dl>
+        )}
         <p className="muted small" id="rate-note">
           {rates ? (
             <>In effect since {formatDate(rates.start_date)}. </>
           ) : (
             <>No rate has been set for this client yet. </>
           )}
-          Changing a rate here only re-estimates this page; nothing is saved.
+          {canEdit &&
+            (adjusted ? (
+              <>Changing a rate only re-estimates this page until it is saved.</>
+            ) : (
+              <>
+                A saved rate starts today. Months that have already ended keep the rate that was
+                in effect then.
+              </>
+            ))}
         </p>
 
         {detail.rate_history.length > 1 && (
@@ -325,6 +421,26 @@ function RateField({
         />
       </span>
     </label>
+  )
+}
+
+/**
+ * What the headline figure means once the month has been billed.
+ *
+ * The amount is settled by then, so the note's job is to say where the money got to - and to
+ * explain why editing a rate below leaves the figure where it is.
+ */
+function BillNote({ bill }: { bill: BillSummary }) {
+  return (
+    <>
+      {bill.status === 'paid' && <>Billed and paid in full. </>}
+      {bill.status === 'charging' && (
+        <>Billed and on a Stripe invoice. Waiting for Stripe to confirm the payment. </>
+      )}
+      {bill.status === 'failed' && <>Billed, but the last charge attempt failed. </>}
+      {bill.status === 'uncharged' && <>Billed. The charge has not been attempted yet. </>}
+      At the rate in effect on each call&apos;s own day, not at the rate below.
+    </>
   )
 }
 

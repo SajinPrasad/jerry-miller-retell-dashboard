@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { getClientDetail, getClients, openSession, syncClients } from '../../api/admin'
 import { ApiError } from '../../api/client'
 import { requestSessionBlob } from '../../lib/ghlSession'
-import type { ClientDetailResult, ClientsResponse, SsoSession } from '../../types/admin'
+import type {
+  ClientDetail as Detail,
+  ClientDetailResult,
+  ClientsResponse,
+  SsoSession,
+} from '../../types/admin'
 import './admin.css'
 import ClientBrowser, { Shell } from './ClientBrowser'
 import { currentMonth } from './format'
@@ -139,6 +144,16 @@ export default function AdminPage() {
       .catch(() => setFailed(true))
   }
 
+  // Rates were just saved on the open client's page. The endpoint answered with the whole
+  // refreshed detail for the period on screen, so that is what goes up - but the list behind it
+  // carries each client's rate and estimate too, and those are now a save behind.
+  function handleRatesSaved(fresh: Detail): void {
+    setDetail(fresh)
+    getClients(month)
+      .then(setClients)
+      .catch(() => setFailed(true))
+  }
+
   if (session.kind === 'loading') {
     return (
       <Shell>
@@ -209,6 +224,7 @@ export default function AdminPage() {
         syncing={syncing}
         preview={false}
         onMappingSaved={handleMappingSaved}
+        onRatesSaved={handleRatesSaved}
       />
     </Shell>
   )

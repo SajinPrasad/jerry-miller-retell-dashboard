@@ -1,7 +1,14 @@
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ClientDetail, ClientSummary, ClientsResponse, SsoSession } from '../../types/admin'
+import type {
+  BillSummary,
+  ClientDetail,
+  ClientSummary,
+  ClientsResponse,
+  RateFields,
+  SsoSession,
+} from '../../types/admin'
 import AdminPage from './AdminPage'
 import { currentMonth, formatMonth, shiftMonth } from './format'
 
@@ -71,6 +78,9 @@ const detail: ClientDetail = {
   billing_failure_reason: '',
   rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
+  default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
+  // Nothing billed for a month still in progress, so the page shows its own estimate.
+  bill: null,
   usage: mapped.usage!,
   twilio_days: [],
   recent_calls: [
@@ -161,9 +171,11 @@ function mockApi(
     session?: SsoSession
     perMonth?: Record<string, ClientSummary>
     synced?: ClientSummary[]
+    /** The bill the detail endpoint reports for the month being read. */
+    bill?: BillSummary | null
   } = {},
 ) {
-  const { session = agencySession, perMonth = {} } = options
+  const { session = agencySession, perMonth = {}, bill = null } = options
 
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
@@ -182,7 +194,7 @@ function mockApi(
     if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) return json(twilioSubaccounts)
 
     if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
-      return json({ ...detail, month, usage: (perMonth[month] ?? mapped).usage })
+      return json({ ...detail, month, bill, usage: (perMonth[month] ?? mapped).usage })
     }
 
     if (url.startsWith('/api/rebilling/admin/clients/sync/')) {
@@ -523,6 +535,8 @@ describe('AdminPage', () => {
             billing_failure_reason: '',
             rates: null,
             rate_history: [],
+            default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
+            bill: null,
             usage: {
               ...mapped.usage!,
               ai_minutes: '0.00',
@@ -900,7 +914,7 @@ describe('AdminPage', () => {
     expect(screen.getByText(/not saved/)).toBeInTheDocument()
   })
 
-  it('puts the client back on its own rate', async () => {
+  it('puts the client back on the system defaults, ready to save', async () => {
     parentAnswers()
     mockApi()
     const user = userEvent.setup()
@@ -913,10 +927,247 @@ describe('AdminPage', () => {
     await user.type(callRate, '0.20')
     await waitFor(() => expect(tile('Estimated').getByText('$70.00')).toBeInTheDocument())
 
-    await user.click(screen.getByRole('button', { name: 'Reset' }))
+    await user.click(screen.getByRole('button', { name: 'Reset to defaults' }))
 
-    expect(tile('Estimated').getByText('$55.00')).toBeInTheDocument()
+    // The backend's own defaults, which it sends with the client - the page has no copy.
+    expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.25')
     expect(screen.getByLabelText('Call minute rate')).toHaveValue('0.05')
+    expect(tile('Estimated').getByText('$55.00')).toBeInTheDocument()
+  })
+
+  // --- saving a rate -----------------------------------------------------------------------
+
+  /**
+   * The admin API with the rates endpoint live.
+   *
+   * A PUT answers with the client's whole refreshed detail, as the real endpoint does, and is
+   * remembered - so a later detail read answers with the saved rates too. That is what makes
+   * these tests prove the page ends up showing what the server holds rather than its own
+   * optimism about it.
+   */
+  function mockRatesApi(options: { putStatus?: number } = {}) {
+    const { putStatus = 200 } = options
+    const saved: { body: RateFields | null } = { body: null }
+    let current: ClientDetail = detail
+
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        const method = init?.method ?? 'GET'
+        const month = new URL(url, 'http://test').searchParams.get('month') ?? THIS_MONTH
+        const json = (body: unknown, status = 200) =>
+          Promise.resolve(
+            new Response(JSON.stringify(body), {
+              status,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          )
+
+        if (url.startsWith('/api/ghl/sso/session/')) return json(agencySession)
+
+        if (method === 'PUT' && url.includes('/rates/')) {
+          if (putStatus !== 200) return json({}, putStatus)
+          saved.body = JSON.parse(init!.body as string)
+          current = atRates(saved.body!, month)
+          return json(current)
+        }
+
+        if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json({ ...current, month })
+
+        if (url.startsWith('/api/rebilling/admin/clients/')) {
+          const body: ClientsResponse = { scope: 'agency', month, clients: [mapped, unmapped] }
+          return json(body)
+        }
+        return Promise.resolve(new Response('', { status: 404 }))
+      })
+
+    return { fetchMock, saved }
+  }
+
+  /** What the backend answers after a save: a new rate from today, and the estimate worked out
+   * again from it. */
+  function atRates(rates: RateFields, month: string): ClientDetail {
+    const today = new Date().toISOString().slice(0, 10)
+    return {
+      ...detail,
+      month,
+      rates: { ...rates, start_date: today },
+      rate_history: [{ ...rates, start_date: today }, ...detail.rate_history],
+      usage: {
+        ...detail.usage,
+        estimated_bill_cents: Math.round(
+          Number(detail.usage.ai_minutes) * rates.voice_rate_cents +
+            Number(detail.usage.call_minutes) * rates.call_rate_cents,
+        ),
+      },
+    }
+  }
+
+  it('saves a changed rate as whole cents', async () => {
+    parentAnswers()
+    const { saved } = mockRatesApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.50')
+    await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+    // Cents, never dollars: the same integers the bill and the Stripe invoice are made of.
+    await waitFor(() => expect(saved.body).toEqual({ voice_rate_cents: 50, call_rate_cents: 5 }))
+  })
+
+  it('shows the server figures at the saved rate, and stops calling it unsaved', async () => {
+    parentAnswers()
+    mockRatesApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.50')
+    expect(screen.getByText(/not saved/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+    // 200 AI minutes at 50c plus 100 call minutes at 5c, as the backend worked it out.
+    await waitFor(() => expect(tile('Estimated').getByText('$105.00')).toBeInTheDocument())
+    expect(screen.queryByText(/not saved/)).not.toBeInTheDocument()
+    expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.50')
+  })
+
+  it('saves the defaults after a reset, which become the rates the client is on', async () => {
+    parentAnswers()
+    const { saved } = mockRatesApi()
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.90')
+    await user.click(screen.getByRole('button', { name: 'Reset to defaults' }))
+    await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+    await waitFor(() => expect(saved.body).toEqual({ voice_rate_cents: 25, call_rate_cents: 5 }))
+    expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.25')
+  })
+
+  it('keeps the typed rate on screen and says so when the save fails', async () => {
+    parentAnswers()
+    mockRatesApi({ putStatus: 500 })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.50')
+    await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+    expect(await screen.findByText('Could not save the rates. Try again.')).toBeInTheDocument()
+    // Nothing is thrown away: the rate is still there to try again with.
+    expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.50')
+  })
+
+  it('shows a sub-account its rates without letting it change them', async () => {
+    parentAnswers()
+    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+
+    render(<AdminPage />)
+    await screen.findByText('Mapping')
+
+    // Read-only: a client sees what it is charged, and nothing to change it with.
+    expect(screen.getByText('$0.25')).toBeInTheDocument()
+    expect(screen.queryByLabelText('AI minute rate')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Save rates' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Reset to defaults' })).not.toBeInTheDocument()
+  })
+
+  // --- a month that has already been billed -------------------------------------------------
+
+  it('reports a paid bill instead of still calling the month an estimate', async () => {
+    parentAnswers()
+    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('Paid').getByText('$0.47')).toBeInTheDocument()
+    expect(screen.queryByText('Estimated', { selector: '.tile-label' })).not.toBeInTheDocument()
+    expect(screen.getByText(/Billed and paid in full/)).toBeInTheDocument()
+  })
+
+  it('says a bill is still waiting on Stripe', async () => {
+    parentAnswers()
+    mockApi({ bill: { status: 'charging', total_cents: 5500, failure_reason: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('Charging').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByText(/Waiting for Stripe to confirm/)).toBeInTheDocument()
+  })
+
+  it('shows why a charge failed, in Stripe own words', async () => {
+    parentAnswers()
+    mockApi({
+      bill: { status: 'failed', total_cents: 5500, failure_reason: 'authentication_required' },
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('Failed').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('authentication_required')
+  })
+
+  it('shows why a bill that never reached Stripe could not be charged', async () => {
+    parentAnswers()
+    mockApi({
+      bill: {
+        status: 'uncharged',
+        total_cents: 5500,
+        failure_reason: 'No Stripe customer found for billing email: dana@coolbreeze.test',
+      },
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    // `uncharged` with a reason is the state nobody can act on without being told about it.
+    expect(tile('Uncharged').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveTextContent('No Stripe customer found')
+  })
+
+  it('leaves a billed month alone when a rate is typed', async () => {
+    parentAnswers()
+    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const aiRate = screen.getByLabelText('AI minute rate')
+    await user.clear(aiRate)
+    await user.type(aiRate, '0.50')
+
+    // The bill was worked out from the rate in effect on each call's own day. Nothing typed
+    // now can move what the client was charged.
+    await waitFor(() => expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.50'))
+    expect(tile('Paid').getByText('$0.47')).toBeInTheDocument()
   })
 
   it('starts a new period from the rate the client is actually on', async () => {

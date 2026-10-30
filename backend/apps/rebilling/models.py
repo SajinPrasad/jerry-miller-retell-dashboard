@@ -33,6 +33,12 @@ BILLING_STATUSES = [(BILLABLE, 'Billable'), (UNBILLABLE, 'Unbillable')]
 # definition, which is what keeps Retell's minutes (they run over a SIP trunk) out of it.
 CALLS = 'calls'
 
+# What a client is charged per minute until someone sets a rate for them. Named rather than
+# written into the field defaults alone because the admin page's "Reset to defaults" writes
+# these same two numbers back, and the page must not carry its own copy of them.
+DEFAULT_VOICE_RATE_CENTS = 25
+DEFAULT_CALL_RATE_CENTS = 5
+
 
 def billable_minutes(duration_ms: int | None) -> Decimal:
     """Minutes we bill for a call, under the configured rounding rule."""
@@ -101,9 +107,9 @@ class RateHistory(models.Model):
     client = models.ForeignKey(ClientMapping, on_delete=models.CASCADE, related_name='rates')
     # The Retell AI minute. Named before there was a second kind of voice minute; kept as-is
     # because a rename costs a migration and a code sweep and buys no behaviour.
-    voice_rate_cents = models.PositiveIntegerField(default=25)
+    voice_rate_cents = models.PositiveIntegerField(default=DEFAULT_VOICE_RATE_CENTS)
     # The Twilio regular-call minute.
-    call_rate_cents = models.PositiveIntegerField(default=5)
+    call_rate_cents = models.PositiveIntegerField(default=DEFAULT_CALL_RATE_CENTS)
     start_date = models.DateField()
 
     class Meta:

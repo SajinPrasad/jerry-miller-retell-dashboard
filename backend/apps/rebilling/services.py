@@ -27,6 +27,8 @@ from .exceptions import RetellError, TwilioError
 from .models import (
     BILLABLE,
     CALLS,
+    DEFAULT_CALL_RATE_CENTS,
+    DEFAULT_VOICE_RATE_CENTS,
     RETELL_LINE,
     TWILIO_LINE,
     UNBILLABLE,
@@ -553,6 +555,30 @@ def set_mapping(location_id: str, default_client_name: str, fields: dict) -> Cli
     return mapping
 
 
+def set_rates(mapping: ClientMapping, voice_rate_cents: int, call_rate_cents: int) -> RateHistory:
+    """Put a client on new per-minute rates from today, leaving every earlier period alone.
+
+    A rate change adds a row rather than editing one, which is the whole point of
+    `RateHistory`: usage already recorded still bills at the rate that was in effect on its own
+    day, and a month that has been billed cannot be changed by editing a rate afterwards.
+
+    Saving twice in one day **updates today's row** instead of failing on the
+    `(client, start_date)` unique constraint. Correcting a rate minutes after setting it is one
+    decision, not two, and no usage can have been billed in between - the billing run is
+    monthly.
+    """
+    today = timezone.now().date()
+    rate, _ = RateHistory.objects.update_or_create(
+        client=mapping,
+        start_date=today,
+        defaults={
+            'voice_rate_cents': voice_rate_cents,
+            'call_rate_cents': call_rate_cents,
+        },
+    )
+    return rate
+
+
 # --------------------------------------------------------------------------------------------
 # Reads for the embedded admin page.
 #
@@ -674,6 +700,29 @@ def _billing_link(mapping: ClientMapping) -> dict:
     }
 
 
+def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
+    """The bill for the period being read, once the monthly run has calculated one.
+
+    `None` until then, which is what keeps the page's own estimate on screen for a month still
+    in progress. Once a bill exists it is the figure that matters: it was worked out from the
+    rate in effect on each call's own day, so it is what the client is actually charged, and no
+    later rate change can move it.
+
+    `failure_reason` is carried whatever the status. A charge that never reached Stripe - no
+    matched customer, no card on file - records its reason while leaving the bill `uncharged`,
+    so reading it only on `failed` would hide the one state nobody can act on without being
+    told.
+    """
+    bill = mapping.bills.filter(billing_period=f'{start.year:04d}-{start.month:02d}').first()
+    if bill is None:
+        return None
+    return {
+        'status': bill.status,
+        'total_cents': bill.total_cents,
+        'failure_reason': bill.failure_reason,
+    }
+
+
 def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
     """One client: how they are mapped, what they are charged, and what they used."""
     return {
@@ -688,6 +737,13 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         **_billing_link(mapping),
         'rates': _rate_row(current_rate(mapping, end)),
         'rate_history': [_rate_row(rate) for rate in mapping.rates.all()],
+        # What "Reset to defaults" on the page writes back, so the page never holds its own
+        # copy of two numbers the model already owns.
+        'default_rates': {
+            'voice_rate_cents': DEFAULT_VOICE_RATE_CENTS,
+            'call_rate_cents': DEFAULT_CALL_RATE_CENTS,
+        },
+        'bill': _bill_row(mapping, start),
         'usage': usage_summary(mapping, start, end),
         'twilio_days': [
             {

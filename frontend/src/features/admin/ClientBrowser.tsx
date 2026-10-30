@@ -1,4 +1,9 @@
-import type { ClientDetailResult, ClientsResponse, MappingResult } from '../../types/admin'
+import type {
+  ClientDetail as Detail,
+  ClientDetailResult,
+  ClientsResponse,
+  MappingResult,
+} from '../../types/admin'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
 import MappingEditor from './MappingEditor'
@@ -42,6 +47,8 @@ interface Props {
    * updates the bundled sample data. */
   preview: boolean
   onMappingSaved: (result: MappingResult) => void
+  /** The client's whole refreshed detail, as the rates endpoint answered it. */
+  onRatesSaved: (detail: Detail) => void
 }
 
 /**
@@ -61,6 +68,7 @@ export default function ClientBrowser({
   syncing,
   preview,
   onMappingSaved,
+  onRatesSaved,
 }: Props) {
   const isSubAccount = shown?.scope === 'location'
   // Agency admins set up and edit mapping; a sub-account's own page shows its usage, not settings.
@@ -103,6 +111,7 @@ export default function ClientBrowser({
                 canEdit={canEdit}
                 preview={preview}
                 onMappingSaved={onMappingSaved}
+                onRatesSaved={onRatesSaved}
               />
             )
           ) : (

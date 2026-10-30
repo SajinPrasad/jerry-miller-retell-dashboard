@@ -15,7 +15,12 @@ from apps.ghl.tests.test_services import BASE, mock_installed, mock_location_tok
 from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency, seal
 from apps.rebilling.models import (
     BILLABLE,
+    CHARGING,
+    FAILED,
+    PAID,
     UNBILLABLE,
+    UNCHARGED,
+    Bill,
     RateHistory,
     RetellCall,
     TwilioUsageDay,
@@ -384,6 +389,122 @@ def test_the_rate_in_effect_is_the_one_for_the_month_being_viewed(client):
     RateHistory.objects.create(client=mapping, start_date=date(2026, 9, 1), voice_rate_cents=99)
 
     assert get_detail(client, 'loc1', month='2026-03').json()['rates']['voice_rate_cents'] == 20
+
+
+# --- the bill for the month being viewed -------------------------------------------------
+#
+# The page shows its own estimate only until the monthly run has produced a bill. After that the
+# bill is the answer: it was worked out from the rate in effect on each call's own day, and no
+# later rate change can move it.
+
+
+def test_detail_carries_no_bill_for_a_month_that_has_not_been_billed(client):
+    """A month still in progress. The page falls back to its estimate, which is still sent."""
+    make_agency()
+    mapping = make_client('loc1')
+    RateHistory.objects.create(client=mapping, start_date=date(2026, 1, 1))
+    add_call(mapping, 'c1', duration_ms=60_000)
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['bill'] is None
+    assert body['usage']['estimated_bill_cents'] == 25
+
+
+def test_detail_reports_a_paid_bill_rather_than_leaving_the_month_an_estimate(client):
+    make_agency()
+    mapping = make_client('loc1')
+    Bill.objects.create(
+        client=mapping, billing_period=MONTH, total_cents=47, status=PAID, paid_at=AFTER_WINDOW
+    )
+
+    assert get_detail(client, 'loc1').json()['bill'] == {
+        'status': 'paid',
+        'total_cents': 47,
+        'failure_reason': '',
+    }
+
+
+def test_detail_reports_a_bill_still_waiting_on_stripe(client):
+    """`charging` is a real state, not a moment: only the webhook moves a bill off it."""
+    make_agency()
+    mapping = make_client('loc1')
+    Bill.objects.create(
+        client=mapping,
+        billing_period=MONTH,
+        total_cents=650,
+        status=CHARGING,
+        stripe_invoice_id='in_1',
+        charged_at=IN_WINDOW,
+    )
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['bill']['status'] == 'charging'
+    assert body['bill']['total_cents'] == 650
+
+
+def test_detail_reports_why_a_charge_failed(client):
+    """Stripe's own code is the difference between "send a new card" and "confirm this one"."""
+    make_agency()
+    mapping = make_client('loc1')
+    Bill.objects.create(
+        client=mapping,
+        billing_period=MONTH,
+        total_cents=650,
+        status=FAILED,
+        failure_reason='authentication_required',
+    )
+
+    assert get_detail(client, 'loc1').json()['bill'] == {
+        'status': 'failed',
+        'total_cents': 650,
+        'failure_reason': 'authentication_required',
+    }
+
+
+def test_detail_carries_the_reason_a_bill_that_never_reached_stripe_recorded(client):
+    """A charge that failed before Stripe saw it leaves the bill `uncharged`, not `failed`.
+
+    Reading `failure_reason` only on `failed` would hide exactly the state nobody can act on
+    without being told - no matched customer, no card - so it is carried whatever the status.
+    """
+    make_agency()
+    mapping = make_client('loc1', billing_email='owner@coolbreeze.test')
+    Bill.objects.create(
+        client=mapping,
+        billing_period=MONTH,
+        total_cents=650,
+        status=UNCHARGED,
+        failure_reason='No Stripe customer found for billing email: owner@coolbreeze.test',
+    )
+
+    bill = get_detail(client, 'loc1').json()['bill']
+
+    assert bill['status'] == 'uncharged'
+    assert 'No Stripe customer found' in bill['failure_reason']
+
+
+def test_detail_shows_the_bill_for_the_month_being_viewed_and_no_other(client):
+    make_agency()
+    mapping = make_client('loc1')
+    Bill.objects.create(client=mapping, billing_period='2026-02', total_cents=100, status=PAID)
+    Bill.objects.create(client=mapping, billing_period=MONTH, total_cents=200, status=UNCHARGED)
+
+    assert get_detail(client, 'loc1', month='2026-02').json()['bill']['total_cents'] == 100
+    assert get_detail(client, 'loc1', month=MONTH).json()['bill']['total_cents'] == 200
+    assert get_detail(client, 'loc1', month='2026-04').json()['bill'] is None
+
+
+def test_detail_carries_the_defaults_the_reset_action_writes_back(client):
+    """The page must not hold its own copy of two numbers the model already owns."""
+    make_agency()
+    make_client('loc1')
+
+    assert get_detail(client, 'loc1').json()['default_rates'] == {
+        'voice_rate_cents': 25,
+        'call_rate_cents': 5,
+    }
 
 
 # --- the "Refresh clients" sync action ---------------------------------------------------

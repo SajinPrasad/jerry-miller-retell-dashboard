@@ -47,8 +47,8 @@ Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL inst
 
 The embedded admin interface Jerry opens from GHL's left nav: onboarded clients, their rates and
 their voice usage. An agency admin can also set up or edit a client's mapping (Retell agents,
-phone numbers, Twilio subaccount) here; a sub-account's own page stays read-only. Editing rates is
-the rest of Phase 4 and is not built.
+phone numbers, Twilio subaccount) and save their rates here; a sub-account's own page stays
+read-only.
 
 - **How GHL identifies the viewer.** The page runs in a GHL iframe, posts
   `{message: 'REQUEST_USER_DATA'}` to `window.parent`, and gets `REQUEST_USER_DATA_RESPONSE` with
@@ -78,11 +78,11 @@ the rest of Phase 4 and is not built.
   /api/rebilling/admin/clients/sync/`, same `?month=` as the list. Re-runs Task 1's
   `sync_locations` against GHL, then returns the same shape `GET /api/rebilling/admin/clients/`
   does, so `AdminPage.tsx` swaps the table in place - no reload, just the state update.
-- **Mapping is the one thing an agency admin can write.** `PUT
+- **Mapping is one of the two things an agency admin can write.** `PUT
   /api/rebilling/admin/clients/<location_id>/mapping/` (agency scope only, 403 for a location
   session even on its own client) takes `twilio_subaccount_sid`, `retell_agent_ids`,
   `phone_numbers` - never `active`, `billing_mode`, rates or `billing_email`, which have their
-  own rules or come from GoHighLevel.
+  own rules or come from GoHighLevel. Rates are the other, and have their own endpoint below.
   `ClientMappingSerializer` (`apps/rebilling/serializers.py`) validates a Twilio SID's shape
   (`AC` + 32 hex) and a phone number's digit count, and de-duplicates both lists; `set_mapping()`
   (`services.py`) creates the row on first save (`client_name` from Task 1's sync, never
@@ -124,9 +124,17 @@ the rest of Phase 4 and is not built.
   frontend (`ClientBrowser.tsx`) renders that as a plain "not set up yet" card instead of an
   error banner. `ClientDetail`'s full response carries `mapped: true` so the two shapes are a
   discriminated union (`ClientDetailResult` in `types/admin.ts`) rather than guessed apart.
-- **Money shown is an estimate**, `minutes x the current rate`, labelled as such in the UI. Phase 3
-  applies the rate in effect on each call's day and owns `Bill`/`BillLine`. Don't let the admin
-  reads in `services.py` grow into Phase 3.
+- **Money shown is an estimate only until the month has been billed.** `client_detail` carries
+  `bill` - `{status, total_cents, failure_reason}` for the period being read, or `null` when the
+  monthly run has not produced one. With no bill the headline tile is `Estimated`,
+  `minutes x the current rate`, labelled as such. With one it is the bill's own status
+  (`Uncharged`/`Charging`/`Paid`/`Failed`) against the amount the client was actually charged,
+  and the margin is worked out from that figure rather than from the estimate. A rate typed on
+  the page cannot move a billed month, and the note under the tile says why: the bill applied
+  the rate in effect on each call's own day. **`failure_reason` is shown whatever the status**,
+  not only on `failed`: a charge that never reached Stripe (no matched customer, no card)
+  records its reason and leaves the bill `uncharged`, which is precisely the state nobody can
+  act on without being told.
 - **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
   (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
   Loading states are skeletons shaped like the content (`Skeleton.tsx`), not text.
@@ -143,12 +151,26 @@ the rest of Phase 4 and is not built.
   the backend's full sentence on hover. `call_id` and `agent_id` are not shown. Times are the
   stored UTC ones, read off the ISO string rather than through `Date`, because the billing window
   and the Twilio days are UTC too and a re-stamped call could appear under a day in another month.
-- **What-if rates** (`ClientDetail.tsx`): the client's rates are editable on the page, in React
-  state alone - nothing is sent, nothing is saved, and `ClientDetail` is remounted per client and
-  per period so a typed rate cannot follow the viewer into another one. While the rates are the
-  stored ones the server's own `estimated_bill_cents` is shown; only once a rate differs is the
-  estimate recomputed in the browser, so the headline figure cannot drift a cent from the backend
-  on its own. Writing a rate back is still Phase 4's editing UI, and is not built.
+- **Rates are edited and saved on the page** (`ClientDetail.tsx` + `PUT
+  /api/rebilling/admin/clients/<location_id>/rates/`, agency scope only, 403 for a location
+  session even on its own client, which sees the two rates as read-only text instead). The
+  endpoint takes `voice_rate_cents` and `call_rate_cents` - **both required**, because they
+  share one `RateHistory` row and a half request would have to invent the other half - and
+  answers with the client's **whole refreshed detail** for `?month=`, which the page puts
+  straight on screen. `set_rates()` writes a `RateHistory` row starting **today**, so a month
+  that has already ended keeps the rate that was in effect then; saving twice in one day
+  `update_or_create`s today's row rather than failing on `(client, start_date)`.
+  - **"Reset to defaults"** fills the fields with `default_rates`, which the detail response
+    carries (`DEFAULT_VOICE_RATE_CENTS` / `DEFAULT_CALL_RATE_CENTS` in `models.py`, 25c and 5c)
+    so the page holds no copy of its own. It does not save by itself - the admin still clicks
+    Save, which is what makes the defaults the client's active rates.
+  - **A typed rate re-estimates the page until it is saved.** While the fields match the stored
+    rates the server's own `estimated_bill_cents` is shown; only once one differs is the
+    estimate recomputed in the browser, so the headline cannot drift a cent from the backend on
+    its own. `ClientDetail` is remounted per client and per period, so a typed rate cannot
+    follow the viewer into another one. After a save the component remembers what it wrote,
+    because a rate saved today does not move `detail.rates` on a month that has already ended -
+    without that the page would go on calling a rate it has just saved unsaved.
 - **The standalone preview is its own route, `/admin/preview`, separate from the live `/admin`.**
   `AdminPreviewPage.tsx` renders **bundled sample data** (`demoData.ts`) behind an amber
   "Standalone preview" banner and **never calls the admin API or attempts the GHL handshake at
@@ -171,7 +193,7 @@ the rest of Phase 4 and is not built.
 
 ## Voice rebilling (Task 4, Phases 1, 2, 2b, 3 and 5 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe. Phase 4's writing half (rates, unassigned calls, bills table) and Phase 6 (alerts) are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 
@@ -247,7 +269,7 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   taken is logged and ignored. Being paid clears `failure_reason`. Note the SDK hands
   `event['data']['object']` back as a `stripe.Invoice`, not a dict, so `.get()` raises rather
   than returning `None`.
-- **Not built yet:** no alerts beyond a log line. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates still come from the shell.
+- **Not built yet:** no alerts beyond a log line. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 
 ## Structure

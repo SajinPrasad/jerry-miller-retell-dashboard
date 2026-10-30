@@ -1,8 +1,10 @@
 import type {
+  ClientDetail,
   ClientDetailResult,
   ClientsResponse,
   MappingFields,
   MappingResult,
+  RateFields,
   RetellAgent,
   SsoSession,
   TwilioSubaccount,
@@ -40,6 +42,24 @@ export function saveMapping(locationId: string, mapping: MappingFields): Promise
     method: 'PUT',
     body: JSON.stringify(mapping),
   })
+}
+
+/**
+ * Put a client on new per-minute rates, from today. Agency admins only.
+ *
+ * Answers with the client's whole refreshed detail for `month`, so the page shows the server's
+ * own figures rather than guessing which of them the save moved - a rate saved today does not
+ * reach back over a month that has already ended.
+ */
+export function saveRates(
+  locationId: string,
+  rates: RateFields,
+  month?: string,
+): Promise<ClientDetail> {
+  return apiFetch<ClientDetail>(
+    `/rebilling/admin/clients/${encodeURIComponent(locationId)}/rates/${monthQuery(month)}`,
+    { method: 'PUT', body: JSON.stringify(rates) },
+  )
 }
 
 /** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */

@@ -8,9 +8,13 @@ export interface SsoSession {
   scope: 'agency' | 'location'
 }
 
-export interface Rates {
+/** The two per-minute rates on their own: what the rates editor saves, with no date yet. */
+export interface RateFields {
   voice_rate_cents: number
   call_rate_cents: number
+}
+
+export interface Rates extends RateFields {
   start_date: string
 }
 
@@ -96,6 +100,21 @@ export interface MappingResult extends MappingFields {
   client_name: string
 }
 
+/**
+ * The bill for the month being viewed, once the monthly run has calculated one.
+ *
+ * It replaces the page's own estimate from that point on: it was worked out from the rate in
+ * effect on each call's own day, so it is what the client is actually charged, and no later
+ * rate change can move it.
+ */
+export interface BillSummary {
+  status: 'uncharged' | 'charging' | 'paid' | 'failed'
+  total_cents: number
+  /** Why the last attempt failed. Carried whatever the status - a charge that never reached
+   * Stripe records its reason while leaving the bill `uncharged`. */
+  failure_reason: string
+}
+
 export interface ClientDetail {
   month: string
   location_id: string
@@ -115,6 +134,11 @@ export interface ClientDetail {
   twilio_subaccount_sid: string
   rates: Rates | null
   rate_history: Rates[]
+  /** What the rates editor's "Reset to defaults" writes back, so the page holds no copy of
+   * its own of two numbers the backend owns. */
+  default_rates: RateFields
+  /** Null until this month has been billed, which is what keeps the estimate on screen. */
+  bill: BillSummary | null
   usage: UsageSummary
   twilio_days: TwilioDay[]
   recent_calls: RecentCall[]
