@@ -18,7 +18,8 @@ interface Props {
 /**
  * The one thing an agency admin can write on a client's page: their Retell agents, their backup
  * phone numbers, and their Twilio subaccount. Rates and billing mode have their own rules and
- * are not edited here.
+ * are not edited here, and neither is the Stripe customer - that is matched automatically from
+ * the sub-account owner's email, and `ClientDetail` shows the result read-only.
  *
  * The agent and the subaccount are chosen from what Retell and Twilio actually have, not typed:
  * an id that came out of a picker cannot be a typo, and a mapping nobody can see is a client

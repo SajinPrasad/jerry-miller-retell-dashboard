@@ -83,8 +83,8 @@ export interface TwilioSubaccount {
   friendly_name: string
 }
 
-/** What an agency admin can set on a client's mapping, and nothing else - rates and billing
- * mode have their own rules and are not edited here. */
+/** What an agency admin can set on a client's mapping, and nothing else - rates, billing mode
+ * and the billing email have their own rules and are not edited here. */
 export interface MappingFields {
   twilio_subaccount_sid: string
   retell_agent_ids: string[]
@@ -103,6 +103,13 @@ export interface ClientDetail {
   mapped: true
   active: boolean
   billing_mode: string
+  /** Who GoHighLevel says owns the sub-account, and whether Stripe has been matched to them.
+   * All read-only: the owner comes from GHL and the customer is matched by their email. */
+  owner_name: string
+  billing_email: string
+  stripe_customer_id: string
+  /** Why the last bill could not be charged, when no customer was matched. */
+  billing_failure_reason: string
   retell_agent_ids: string[]
   phone_numbers: string[]
   twilio_subaccount_sid: string

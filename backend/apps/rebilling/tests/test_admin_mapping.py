@@ -88,6 +88,22 @@ def test_a_blank_twilio_sid_clears_it(client):
     assert ClientMapping.objects.get(location_id='loc1').twilio_subaccount_sid == ''
 
 
+def test_the_stripe_customer_cannot_be_set_by_hand(client):
+    """It is matched from the sub-account owner's email, so there is nothing to type here.
+
+    An id sent anyway is ignored rather than honoured: a hand-set customer would survive the
+    owner's email changing and go on charging the previous payer.
+    """
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_client('loc1')
+
+    response = put_mapping(client, 'loc1', {'stripe_customer_id': 'cus_someoneElse'})
+
+    assert response.status_code == 200
+    assert ClientMapping.objects.get(location_id='loc1').stripe_customer_id == ''
+
+
 def test_agent_ids_and_phone_numbers_are_deduplicated(client):
     make_agency()
     make_location('loc1', 'Cool Breeze HVAC')

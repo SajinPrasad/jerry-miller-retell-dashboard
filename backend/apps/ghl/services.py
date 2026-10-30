@@ -107,13 +107,15 @@ class GHLOAuthService:
         installed.pop(settings.AGENCY_LOCATION_ID, None)
 
         for location_id, name in installed.items():
+            # Read for every sub-account, not only the ones being minted a token: an owner who
+            # changes their email has to reach billing on the next sync, not on the next
+            # reinstall.
+            owner = self._owner_details(agency_token, location_id)
             existing = GHLOAuthToken.objects.filter(
                 is_agency=False, location_id=location_id
             ).first()
             if existing and existing.is_active and not existing.needs_refresh:
-                if existing.name != name:
-                    existing.name = name
-                    existing.save(update_fields=['name'])
+                self._refresh_profile(existing, name, owner)
                 continue
             try:
                 data = self._mint_location_token(agency_token, agency.company_id, location_id)
@@ -136,6 +138,7 @@ class GHLOAuthService:
                     'company_id': agency.company_id,
                     'name': name,
                     'is_active': True,
+                    **owner,
                     **token_fields,
                 },
             )
@@ -165,6 +168,43 @@ class GHLOAuthService:
             token=agency_token,
             data={'companyId': company_id, 'locationId': location_id},
         )
+
+    def _owner_details(self, agency_token: str, location_id: str) -> dict:
+        """Who owns one sub-account, as GoHighLevel holds them.
+
+        This is where a client's billing email comes from. It mirrors GHL rather than caching a
+        copy: an email GHL no longer has is cleared here too, because a stale one would quietly
+        charge whichever Stripe customer it still matches.
+
+        A sub-account whose details cannot be read returns nothing at all, which leaves whatever
+        was stored before untouched - a failed read must not be mistaken for "GHL has no email".
+        The empty case surfaces later as a bill saying why it could not be charged, which is
+        louder than failing the whole sync here.
+
+        Needs `locations.readonly`, which `GHL_SCOPES` already carries.
+        """
+        try:
+            body = self._request('GET', f'/locations/{location_id}', token=agency_token)
+        except GHLError as exc:
+            logger.warning('ghl: could not read details for location %s: %s', location_id, exc)
+            return {}
+
+        location = body.get('location') or {}
+        return {
+            'owner_first_name': location.get('firstName') or '',
+            'owner_last_name': location.get('lastName') or '',
+            'owner_email': location.get('email') or '',
+        }
+
+    @staticmethod
+    def _refresh_profile(row: GHLOAuthToken, name: str, owner: dict) -> None:
+        """Keep a sub-account's name and owner in step with GHL without touching its token."""
+        fields = {'name': name, **owner}
+        changed = [field for field, value in fields.items() if getattr(row, field) != value]
+        if changed:
+            for field in changed:
+                setattr(row, field, fields[field])
+            row.save(update_fields=changed)
 
     def _installed_locations(self, agency_token: str, company_id: str) -> dict[str, str]:
         """Return {location_id: name} for every sub-account under the agency."""

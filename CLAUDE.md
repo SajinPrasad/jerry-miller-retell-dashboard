@@ -81,7 +81,8 @@ the rest of Phase 4 and is not built.
 - **Mapping is the one thing an agency admin can write.** `PUT
   /api/rebilling/admin/clients/<location_id>/mapping/` (agency scope only, 403 for a location
   session even on its own client) takes `twilio_subaccount_sid`, `retell_agent_ids`,
-  `phone_numbers` - never `active`, `billing_mode` or rates, which have their own rules.
+  `phone_numbers` - never `active`, `billing_mode`, rates or `billing_email`, which have their
+  own rules or come from GoHighLevel.
   `ClientMappingSerializer` (`apps/rebilling/serializers.py`) validates a Twilio SID's shape
   (`AC` + 32 hex) and a phone number's digit count, and de-duplicates both lists; `set_mapping()`
   (`services.py`) creates the row on first save (`client_name` from Task 1's sync, never
@@ -183,27 +184,69 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
 - **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
 - **Charging (Phase 5, built on `feat/stripe-billing`)** lives in its own module,
   `apps/rebilling/stripe_billing.py`, and uses the **official `stripe` SDK** - not a hand-rolled
-  `httpx` client like the two ingest paths, because this is money movement. `charge_bills(month)`
-  takes each `uncharged` `Bill` for a period and puts it on a Stripe invoice: look the customer up
-  by `ClientMapping.billing_email` (**new field**) before ever creating one, create the invoice
-  with `collection_method='charge_automatically'` and `auto_advance=True`, one `InvoiceItem` per
-  `BillLine` whose `amount` **is** `bill_cents` (no conversion), then `finalize_invoice`, which is
-  what makes Stripe attempt the card. `Bill` gains `status` (`uncharged`/`charging`/`paid`/
-  `failed`), `stripe_invoice_id` and `paid_at`. Every write carries an idempotency key derived from
-  the bill (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`), and only `uncharged` bills are
-  picked up - two independent reasons a re-run cannot charge twice. A client whose `billing_mode`
-  is not `auto_charge` is skipped, never charged. `setup_link()` returns a Stripe Checkout session
-  in `mode='setup'` for a client with no card; nothing calls it from a UI yet. Command:
+  `httpx` client like the two ingest paths, because this is money movement. **Stripe Invoices are
+  the primary and only collection rail**; the GHL invoice rail and its 72-hour fallback live on
+  `feat/ghl-billing-with-stripe-fallback` and are deliberately not on this branch. The Stripe
+  account is the same one GoHighLevel is connected to, which is what makes the customer records
+  and saved cards already there the ones we charge - and also why several of the rules below
+  exist. `charge_bills(month)` takes each `uncharged` `Bill` for a period and puts it on a Stripe
+  invoice: one `InvoiceItem` per `BillLine` whose `amount` **is** `bill_cents` (no conversion),
+  then `finalize_invoice`, which is what makes Stripe attempt the card. `Bill` carries `status`
+  (`uncharged`/`charging`/`paid`/`failed`), `stripe_invoice_id`, `charged_at`, `paid_at` and
+  `failure_reason`. Every write carries an idempotency key derived from the bill
+  (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`), and only `uncharged` bills are picked up
+  - two independent reasons a re-run cannot charge twice. A client whose `billing_mode` is not
+  `auto_charge` is skipped, never charged. `setup_link()` returns a Stripe Checkout session in
+  `mode='setup'` for a client with no card; nothing calls it from a UI yet. Command:
   `manage.py charge_bills [--month YYYY-MM]` - deliberately **not** on the Celery schedule.
   Settings: `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` (two different secrets).
+  - **Who pays comes from GoHighLevel, and the Stripe customer is matched to them.** Nobody
+    picks it and nobody types it. `sync_locations` reads each sub-account's owner
+    (`GET /locations/{id}`, `locations.readonly`) onto `GHLOAuthToken.owner_first_name` /
+    `owner_last_name` / `owner_email`; `sync_billing_emails()` copies that email onto
+    `ClientMapping.billing_email` right after every sync; `customer_id()` looks Stripe up by it
+    once and remembers the id. **A changed email clears the cached `stripe_customer_id`** -
+    `customer_id()` returns a cached id without checking anything, so keeping it would go on
+    charging the previous payer's card.
+  - **An email matching no Stripe customer is never given a blank one.** A customer created here
+    would have no card, turning "we do not know who pays" into a charge that fails at the card
+    for a reason nobody could act on. The bill records
+    `No Stripe customer found for billing email: <address>` in `failure_reason`, and
+    `ClientDetail`'s **Billing contact** card shows it against the client. A failed *read* of a
+    sub-account's details leaves the stored owner alone - only GHL genuinely dropping the email
+    clears it, because a stale address would quietly match and charge whoever still has it.
+  - **A card is checked for before an invoice is raised.** `_assert_chargeable()` reads the
+    customer and requires `invoice_settings.default_payment_method` or the legacy
+    `default_source` - the same order Stripe itself collects in. Without the check a cardless
+    customer finalises fine and then fails at the card, which reads exactly like a decline;
+    GHL can attach a card without making it the invoice default, so this is not a rare case.
+    Nothing is chosen or written - it only asks whether a card exists.
+  - **The draft does not advance by itself.** The invoice is created `auto_advance=False` and
+    finalised explicitly with `auto_advance=True` once every line is on it. Created with
+    `auto_advance=True` instead, a crash between the create and the last line would leave Stripe
+    to finalise a part-built invoice an hour later and undercharge the client for the month.
+    `pending_invoice_items_behavior='exclude'` is sent for the same reason the account is shared:
+    a pending invoice item sitting on the customer must never ride along on a voice invoice.
+  - **A bill under `MINIMUM_CHARGE_CENTS` (50) is never sent.** Stripe will not charge a card for
+    less, so attempting it produces a failure that reads like a decline, that no retry can clear
+    and that nobody can act on. It is counted in `too_small` and left `uncharged` for a human.
+- **`failure_reason` is the difference between "send a new card" and "ask them to confirm this
+  one".** `authentication_required` (SCA) and `card_declined` both arrive as the same
+  `invoice.payment_failed`, and only Stripe's own code separates them; it lives on the payment
+  intent, so the webhook reads it there, once, on the failure path only. A charge that never
+  reached Stripe records why on the bill too, rather than only in the log.
 - **Stripe webhook** `POST /api/rebilling/webhooks/stripe/`: `invoice.paid` and
   `invoice.payment_failed` only, signature verified over the raw body with
   `stripe.Webhook.construct_event` before anything parses it; 401 bad signature, 400 unreadable
   body, 204 empty otherwise. `paid_at` comes from the event's own timestamp, not `now()`, because
   a webhook can be retried hours later. **The webhook is the only thing that moves a bill off
   `charging`** - if it is misconfigured, charges succeed at Stripe while every bill here still
-  reads `charging`. Note the SDK hands `event['data']['object']` back as a `stripe.Invoice`, not a
-  dict, so `.get()` raises rather than returning `None`.
+  reads `charging`; `charged_at` is the clock that makes that visible, and alerting on it is
+  Phase 6. **A `payment_failed` never un-pays a `paid` bill**: webhooks are not ordered, and
+  Stripe's own retries can collect one that already failed, so a late failure for money already
+  taken is logged and ignored. Being paid clears `failure_reason`. Note the SDK hands
+  `event['data']['object']` back as a `stripe.Invoice`, not a dict, so `.get()` raises rather
+  than returning `None`.
 - **Not built yet:** no alerts beyond a log line. Nothing reads `TwilioUsageDay` or `call_rate_cents` yet — Phase 3 does that. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates still come from the shell.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 

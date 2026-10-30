@@ -50,8 +50,19 @@ def make_location(location_id='loc1', **overrides):
     return GHLOAuthToken.objects.create(**fields)
 
 
+def mock_location_details(email='owner@coolbreeze.test', first='Dana', last='Reyes'):
+    """GHL's own details for a sub-account: where a client's billing email comes from."""
+    return respx.get(url__regex=rf'{BASE}/locations/[^/]+$').mock(
+        return_value=httpx.Response(
+            200, json={'location': {'firstName': first, 'lastName': last, 'email': email}}
+        )
+    )
+
+
 def mock_installed(*locations):
     items = [{'_id': location_id, 'name': name} for location_id, name in locations]
+    # A sync reads the owner of every sub-account it lists, so the two always go together.
+    mock_location_details()
     return respx.get(f'{BASE}/oauth/installed-locations').mock(
         return_value=httpx.Response(200, json={'items': items})
     )
@@ -217,6 +228,7 @@ def test_sync_follows_pagination(service):
             httpx.Response(200, json={'items': [{'_id': 'loc2', 'name': 'B'}]}),
         ]
     )
+    mock_location_details()
     mock_location_token()
 
     service.sync_locations(agency)
@@ -280,3 +292,81 @@ def test_fresh_location_token_is_reused(service):
     route = mock_location_token()
     assert service.get_location_token('loc1') == 'loc1-access'
     assert not route.called
+
+
+# --- the sub-account's owner, which is where a client's billing email comes from -------------
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_sync_stores_each_sub_accounts_owner(service):
+    agency = make_agency()
+    mock_installed(('loc1', 'Cool Breeze HVAC'))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    loc1 = GHLOAuthToken.objects.get(location_id='loc1')
+    assert loc1.owner_first_name == 'Dana'
+    assert loc1.owner_last_name == 'Reyes'
+    assert loc1.owner_email == 'owner@coolbreeze.test'
+    assert loc1.owner_name == 'Dana Reyes'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_sync_refreshes_the_owner_of_a_sub_account_it_does_not_remint(service):
+    """A fresh token short-circuits the mint, but the owner still has to be re-read.
+
+    Otherwise an owner who changed their email would keep being billed at the old one until
+    their token happened to expire.
+    """
+    agency = make_agency()
+    make_location('loc1', name='Cool Breeze HVAC', owner_email='old@coolbreeze.test')
+    mock_installed(('loc1', 'Cool Breeze HVAC'))
+    minted = mock_location_token()
+
+    service.sync_locations(agency)
+
+    assert not minted.called
+    assert GHLOAuthToken.objects.get(location_id='loc1').owner_email == 'owner@coolbreeze.test'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_sub_account_whose_details_cannot_be_read_keeps_the_owner_it_had(service):
+    """A failed read must not be mistaken for "GHL holds no email" and wipe a good address."""
+    agency = make_agency()
+    make_location('loc1', name='Cool Breeze HVAC', owner_email='known@coolbreeze.test')
+    respx.get(f'{BASE}/oauth/installed-locations').mock(
+        return_value=httpx.Response(
+            200, json={'items': [{'_id': 'loc1', 'name': 'Cool Breeze HVAC'}]}
+        )
+    )
+    respx.get(url__regex=rf'{BASE}/locations/[^/]+$').mock(return_value=httpx.Response(500))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    assert GHLOAuthToken.objects.get(location_id='loc1').owner_email == 'known@coolbreeze.test'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_an_email_ghl_no_longer_holds_is_cleared_rather_than_kept(service):
+    """A stale address would quietly match, and charge, whichever Stripe customer still has it."""
+    agency = make_agency()
+    make_location('loc1', name='Cool Breeze HVAC', owner_email='old@coolbreeze.test')
+    respx.get(f'{BASE}/oauth/installed-locations').mock(
+        return_value=httpx.Response(
+            200, json={'items': [{'_id': 'loc1', 'name': 'Cool Breeze HVAC'}]}
+        )
+    )
+    respx.get(url__regex=rf'{BASE}/locations/[^/]+$').mock(
+        return_value=httpx.Response(200, json={'location': {'email': ''}})
+    )
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    assert GHLOAuthToken.objects.get(location_id='loc1').owner_email == ''

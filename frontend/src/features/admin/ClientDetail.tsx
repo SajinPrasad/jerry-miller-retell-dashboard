@@ -187,6 +187,8 @@ export default function ClientDetail({ detail, canEdit, preview, onMappingSaved 
         </p>
       </section>
 
+      <BillingContact detail={detail} />
+
       {detail.twilio_days.length > 0 && (
         <section className="card">
           <h2>Twilio calls by day</h2>
@@ -332,5 +334,51 @@ function Tile({ label, value, accent }: { label: string; value: string; accent?:
       <span className="tile-label">{label}</span>
       <span className="tile-value">{value}</span>
     </div>
+  )
+}
+
+/**
+ * Who GoHighLevel says pays, and whether Stripe has been matched to them.
+ *
+ * Nothing here is editable. The owner is read from the sub-account on every sync, and the
+ * Stripe customer is matched by their email the first time a bill is charged - so the only
+ * thing this page can usefully do is show the result, and say what went wrong when there isn't
+ * one. That message is the whole of what an admin can act on: it names the address that matched
+ * nothing, which is fixed in GoHighLevel or in Stripe, never here.
+ */
+function BillingContact({ detail }: { detail: Detail }) {
+  const { owner_name, billing_email, stripe_customer_id, billing_failure_reason } = detail
+
+  return (
+    <section className="card">
+      <h2>Billing contact</h2>
+      <dl className="facts">
+        <dt>Sub-account owner</dt>
+        <dd>{owner_name || <span className="muted">Not set in GoHighLevel</span>}</dd>
+        <dt>Billing email</dt>
+        <dd>
+          {billing_email || (
+            <span className="muted">No email on the sub-account owner in GoHighLevel</span>
+          )}
+        </dd>
+        <dt>Stripe customer</dt>
+        <dd>
+          {stripe_customer_id ? (
+            <code>{stripe_customer_id}</code>
+          ) : (
+            <span className="muted">Matched on the first charge</span>
+          )}
+        </dd>
+      </dl>
+      {!stripe_customer_id && billing_failure_reason && (
+        <div className="banner error" role="alert">
+          {billing_failure_reason}
+        </div>
+      )}
+      <p className="muted small">
+        Taken from GoHighLevel and matched in Stripe automatically. Change it on the sub-account,
+        not here.
+      </p>
+    </section>
   )
 }

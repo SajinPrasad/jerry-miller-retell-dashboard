@@ -19,6 +19,13 @@ class GHLOAuthToken(models.Model):
     company_id = models.CharField(max_length=255)
     location_id = models.CharField(max_length=255, blank=True, default='')
     name = models.CharField(max_length=255, blank=True, default='')
+    # The sub-account's owner as GoHighLevel holds them, re-read on every sync. The email is the
+    # one source for who pays: it is copied onto `ClientMapping.billing_email` and is what the
+    # client's Stripe customer is found by, so nobody types it anywhere and there is no second
+    # copy to drift.
+    owner_first_name = models.CharField(max_length=255, blank=True, default='')
+    owner_last_name = models.CharField(max_length=255, blank=True, default='')
+    owner_email = models.EmailField(blank=True, default='')
     is_agency = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     access_token = EncryptedTextField()
@@ -31,6 +38,10 @@ class GHLOAuthToken(models.Model):
 
     def __str__(self):
         return f'GHLOAuthToken({self.location_id or self.company_id}, {self.name!r})'
+
+    @property
+    def owner_name(self) -> str:
+        return f'{self.owner_first_name} {self.owner_last_name}'.strip()
 
     @property
     def needs_refresh(self) -> bool:

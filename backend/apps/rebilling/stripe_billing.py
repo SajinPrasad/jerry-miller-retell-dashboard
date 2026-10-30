@@ -21,6 +21,7 @@ from datetime import UTC, datetime
 
 import stripe
 from django.conf import settings
+from django.utils import timezone
 
 from .exceptions import StripeBillingError
 from .models import (
@@ -53,6 +54,14 @@ LINE_DESCRIPTIONS = {
 INVOICE_PAID = 'invoice.paid'
 INVOICE_PAYMENT_FAILED = 'invoice.payment_failed'
 
+# Stripe will not charge a card for less than this. A bill under it is left uncharged rather
+# than sent: finalising one produces a failure that reads like a decline, that no retry can ever
+# clear, and that nobody can act on. Stripe's figure for USD, which is the only currency here.
+MINIMUM_CHARGE_CENTS = 50
+
+# What a failed charge is recorded as when Stripe's own code for it cannot be read.
+FALLBACK_FAILURE_REASON = 'payment_failed'
+
 
 def _configure() -> None:
     """Point the SDK at the account the bills are charged through.
@@ -64,32 +73,58 @@ def _configure() -> None:
 
 
 def customer_id(client: ClientMapping) -> str:
-    """The client's Stripe customer id, found by email the first time and remembered after.
+    """The Stripe customer this client's bills are charged to, matched by their owner's email.
 
-    Looked up before being created: a client who already pays Jerry through this Stripe account
-    must not end up with a second customer record, because the card is on the first one.
+    Nobody picks this and nobody types it. The address comes from the sub-account's owner in
+    GoHighLevel, and the customer it matches on Jerry's Stripe account - the same account
+    GoHighLevel is connected to, so the card is already on it - is remembered the first time, so
+    later charges cost no lookup.
+
+    **A customer that matches nothing is never created.** A customer created here would have no
+    card on it, which turns "we do not know who pays" into a charge that fails at the card for a
+    reason nobody reading it could act on. Refusing instead puts the address that matched
+    nothing on the bill, where the admin page shows it against the client.
     """
     if client.stripe_customer_id:
         return client.stripe_customer_id
 
     if not client.billing_email:
-        raise StripeBillingError(f'{client.location_id} has no billing email to bill.')
+        raise StripeBillingError(
+            f'{client.location_id} has no billing email from GoHighLevel to match a customer by.'
+        )
 
     _configure()
     found = stripe.Customer.list(email=client.billing_email, limit=1)
-    customer = found.data[0] if found.data else _create_customer(client)
+    if not found.data:
+        raise StripeBillingError(
+            f'No Stripe customer found for billing email: {client.billing_email}'
+        )
 
-    client.stripe_customer_id = customer.id
+    client.stripe_customer_id = found.data[0].id
     client.save(update_fields=['stripe_customer_id'])
-    return customer.id
+    return client.stripe_customer_id
 
 
-def _create_customer(client: ClientMapping):
-    return stripe.Customer.create(
-        email=client.billing_email,
-        name=client.client_name,
-        # So a customer opened in the Stripe dashboard can be traced back to a sub-account.
-        metadata={'location_id': client.location_id},
+def _assert_chargeable(customer: str) -> None:
+    """Refuse to raise an invoice for a customer Stripe has no card to charge.
+
+    `charge_automatically` collects against the customer's default payment method, falling back
+    to the legacy `default_source`. With neither set, the invoice still finalises and the
+    payment then fails at once - and that failure reads exactly like a decline, when the real
+    answer is that no card was ever attached. GHL can attach a card without making it the
+    invoice default, so this is not a rare case on a shared account.
+
+    Nothing is chosen or written here. The card Stripe would pick is still the card Stripe
+    picks; this only asks whether one exists, before a doomed invoice is created.
+    """
+    _configure()
+    record = stripe.Customer.retrieve(customer)
+    invoice_settings = getattr(record, 'invoice_settings', None)
+    default_method = getattr(invoice_settings, 'default_payment_method', None)
+    if default_method or getattr(record, 'default_source', None):
+        return
+    raise StripeBillingError(
+        f'Stripe customer {customer} has no default payment method, so nothing can be charged.'
     )
 
 
@@ -115,26 +150,51 @@ def charge_bills(month: str | None = None) -> dict:
     A client whose `billing_mode` is not `auto_charge` is skipped rather than charged: that
     field is how someone says "do not take this one's card", and it has to mean it. One client's
     failure is logged and counted, never allowed to end the run for the others.
+
+    A bill under Stripe's minimum is counted in `too_small` and left `uncharged`: there is
+    nothing to retry and nothing to fix - see `MINIMUM_CHARGE_CENTS`.
     """
     start, _ = month_window(month)
     period = f'{start.year:04d}-{start.month:02d}'
 
-    result = {'period': period, 'charged': 0, 'skipped': 0, 'failed': 0, 'total_cents': 0}
+    result = {
+        'period': period,
+        'charged': 0,
+        'skipped': 0,
+        'too_small': 0,
+        'failed': 0,
+        'total_cents': 0,
+    }
     bills = Bill.objects.filter(billing_period=period, status=UNCHARGED).select_related('client')
 
     for bill in bills:
         if bill.client.billing_mode != AUTO_CHARGE:
             result['skipped'] += 1
             continue
+        if bill.total_cents < MINIMUM_CHARGE_CENTS:
+            logger.info(
+                'billing: %s owes %s cents for %s, under the %s-cent Stripe minimum; '
+                'left uncharged',
+                bill.client.location_id,
+                bill.total_cents,
+                period,
+                MINIMUM_CHARGE_CENTS,
+            )
+            result['too_small'] += 1
+            continue
         try:
             _charge_one(bill)
-        except (StripeBillingError, stripe.StripeError):
+        except (StripeBillingError, stripe.StripeError) as exc:
             logger.warning(
                 'billing: could not charge %s for %s',
                 bill.client.location_id,
                 period,
                 exc_info=True,
             )
+            # On the bill, not only in the log: "why was this one not charged" is a question
+            # the admin page and Phase 6's alerting both have to answer later.
+            bill.failure_reason = str(exc)[:255]
+            bill.save(update_fields=['failure_reason'])
             result['failed'] += 1
             continue
         result['charged'] += 1
@@ -151,13 +211,23 @@ def _charge_one(bill: Bill) -> None:
     orphan nobody can find.
     """
     customer = customer_id(bill.client)
+    _assert_chargeable(customer)
     key = f'bill-{bill.pk}'
 
     invoice = stripe.Invoice.create(
         customer=customer,
         collection_method='charge_automatically',
-        # Stripe collects and, on a failure, runs its own retry schedule.
-        auto_advance=True,
+        # A draft Stripe will not advance on its own. The lines go on next, and only the
+        # explicit finalise below starts collection. With `auto_advance=True` here instead, a
+        # crash between this call and the last line would leave Stripe to finalise a part-built
+        # invoice an hour later by itself - charging the client for some of the month's usage
+        # while the bill here still read `uncharged`.
+        auto_advance=False,
+        # This bill's lines and nothing else. The account is shared with Jerry's other billing,
+        # so a pending invoice item left on the customer must never ride along on a voice
+        # invoice. Stripe's default is already `exclude`; saying it means a change to that
+        # default cannot quietly put someone else's charge on ours.
+        pending_invoice_items_behavior='exclude',
         description=f'Voice usage, {bill.billing_period}',
         metadata={'bill_id': str(bill.pk), 'location_id': bill.client.location_id},
         idempotency_key=f'{key}-invoice',
@@ -176,11 +246,18 @@ def _charge_one(bill: Bill) -> None:
             idempotency_key=f'{key}-{line.line_type}',
         )
 
-    # Finalising a `charge_automatically` invoice is what makes Stripe attempt the card.
-    stripe.Invoice.finalize_invoice(invoice.id, idempotency_key=f'{key}-finalize')
+    # Finalising a `charge_automatically` invoice is what makes Stripe attempt the card, and
+    # `auto_advance` is what hands the retry schedule to Stripe from this point on.
+    stripe.Invoice.finalize_invoice(
+        invoice.id, auto_advance=True, idempotency_key=f'{key}-finalize'
+    )
 
     bill.status = CHARGING
-    bill.save(update_fields=['status'])
+    # The card has now been attempted. Only the webhook moves this bill on from here, so this
+    # stamp is what makes a webhook that never arrives visible as a bill stuck in `charging`.
+    bill.charged_at = timezone.now()
+    bill.failure_reason = ''
+    bill.save(update_fields=['status', 'charged_at', 'failure_reason'])
     logger.info(
         'billing: charging %s for %s on %s',
         bill.client.location_id,
@@ -220,11 +297,49 @@ def apply_event(event) -> bool:
         bill.status = PAID
         # Stripe's own timestamp, not ours: a webhook can be retried hours after the payment.
         bill.paid_at = datetime.fromtimestamp(event['created'], tz=UTC)
+        # Stripe's own retries can collect a bill that already failed once, so a paid bill must
+        # not keep the reason the earlier attempt failed.
+        bill.failure_reason = ''
+    elif bill.status == PAID:
+        # Webhooks are not ordered, and a failed attempt Stripe later collected can still be
+        # redelivered afterwards. Money already taken is never un-taken on an older event.
+        logger.info(
+            'billing: %s arrived for already-paid bill %s, ignored', kind, bill.billing_period
+        )
+        return False
     else:
         bill.status = FAILED
+        bill.failure_reason = _failure_reason(event)
         logger.warning(
-            'billing: charge failed for %s, bill %s', bill.client.location_id, bill.billing_period
+            'billing: charge failed for %s, bill %s (%s)',
+            bill.client.location_id,
+            bill.billing_period,
+            bill.failure_reason,
         )
 
-    bill.save(update_fields=['status', 'paid_at'])
+    bill.save(update_fields=['status', 'paid_at', 'failure_reason'])
     return True
+
+
+def _failure_reason(event) -> str:
+    """Stripe's own code for why the card was not charged.
+
+    `authentication_required` - the card needs its holder present to re-authorise it - and
+    `card_declined` both arrive as the same `invoice.payment_failed`, and only this code tells
+    them apart. One needs the client to confirm a payment, the other needs a new card entirely.
+    The code lives on the payment intent rather than on the invoice, so this reads it: one
+    call, only ever on the failure path, and the bill is still marked failed if it cannot be
+    read.
+    """
+    intent_id = getattr(event['data']['object'], 'payment_intent', None)
+    if not intent_id:
+        return FALLBACK_FAILURE_REASON
+    try:
+        _configure()
+        intent = stripe.PaymentIntent.retrieve(intent_id)
+    except stripe.StripeError:
+        logger.warning('billing: could not read payment intent %s', intent_id, exc_info=True)
+        return FALLBACK_FAILURE_REASON
+
+    error = getattr(intent, 'last_payment_error', None)
+    return (getattr(error, 'code', None) or FALLBACK_FAILURE_REASON)[:255]

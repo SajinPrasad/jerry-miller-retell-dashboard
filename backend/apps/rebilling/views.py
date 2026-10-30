@@ -25,6 +25,7 @@ from .services import (
     month_window,
     set_mapping,
     store_call,
+    sync_billing_emails,
 )
 from .stripe_billing import apply_event, read_event
 
@@ -146,6 +147,9 @@ class AdminClientsSyncView(APIView):
             logger.exception('rebilling: admin client sync failed')
             return Response({'detail': 'GHL request failed.'}, status=status.HTTP_502_BAD_GATEWAY)
 
+        # The owner's email travels with the sub-account, so who pays is refreshed in the same
+        # step that refreshed the clients themselves.
+        sync_billing_emails()
         return _clients_response(context, request)
 
 

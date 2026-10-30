@@ -18,8 +18,10 @@ class ClientMappingSerializer(serializers.Serializer):
     """What `PUT /admin/clients/<location_id>/mapping/` accepts.
 
     Only the three fields the admin page edits: the Twilio subaccount, the Retell agent IDs, and
-    the backup phone numbers. Rates have their own history and their own change rules, and
-    `active`/`billing_mode` are not asked for here, so neither is touched by this serializer.
+    the backup phone numbers. Rates have their own history and their own change rules,
+    `active`/`billing_mode` are not asked for here, and `billing_email` comes from the
+    sub-account's GoHighLevel owner rather than from anyone typing it - so none of them is
+    touched by this serializer.
     """
 
     twilio_subaccount_sid = serializers.CharField(required=False, allow_blank=True, max_length=64)

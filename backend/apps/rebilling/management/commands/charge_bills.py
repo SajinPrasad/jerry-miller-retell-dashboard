@@ -17,5 +17,7 @@ class Command(BaseCommand):
 
         self.stdout.write(
             'Charging {period}: {charged} bill(s) sent to Stripe, {skipped} skipped, '
-            '{failed} failed, {total_cents}¢ charging.'.format(**result)
+            '{too_small} under the minimum, {failed} failed, {total_cents}¢ charging.'.format(
+                **result
+            )
         )

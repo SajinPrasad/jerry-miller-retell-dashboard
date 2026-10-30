@@ -1,7 +1,8 @@
 """The two lists behind the mapping editor's pickers: Retell agents, Twilio subaccounts.
 
 Nothing is stored. Both endpoints read the live provider account so an agency admin picks a
-real agent or subaccount instead of pasting an id into a text box.
+real agent or subaccount instead of pasting an id into a text box. The Stripe customer is not
+among them: it is matched automatically from the sub-account owner's email, never picked.
 """
 
 import httpx

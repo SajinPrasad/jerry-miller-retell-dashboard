@@ -65,6 +65,10 @@ const detail: ClientDetail = {
   retell_agent_ids: ['agent_1'],
   phone_numbers: ['+15551234567'],
   twilio_subaccount_sid: 'ACchild',
+  owner_name: 'Dana Reyes',
+  billing_email: 'dana@coolbreeze.test',
+  stripe_customer_id: 'cus_coolbreeze',
+  billing_failure_reason: '',
   rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
   usage: mapped.usage!,
@@ -513,6 +517,10 @@ describe('AdminPage', () => {
             retell_agent_ids: (saved.body?.retell_agent_ids as string[] | undefined) ?? [],
             phone_numbers: [],
             twilio_subaccount_sid: '',
+            owner_name: 'Rowan Blake',
+            billing_email: 'rowan@polarpeak.test',
+            stripe_customer_id: '',
+            billing_failure_reason: '',
             rates: null,
             rate_history: [],
             usage: {
@@ -630,6 +638,22 @@ describe('AdminPage', () => {
         phone_numbers: ['+15551234567'],
       }),
     )
+  })
+
+  it('shows who pays and the Stripe customer matched to them, with nothing to edit', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    // Read from the sub-account's GoHighLevel owner, matched in Stripe by their email.
+    expect(await screen.findByText('Dana Reyes')).toBeInTheDocument()
+    expect(screen.getByText('dana@coolbreeze.test')).toBeInTheDocument()
+    expect(screen.getByText('cus_coolbreeze')).toBeInTheDocument()
+    // No picker and no text box: changing who pays means changing it in GoHighLevel.
+    expect(screen.queryByRole('button', { name: /Stripe customer/i })).not.toBeInTheDocument()
   })
 
   it('picks a Twilio subaccount by name and saves its SID', async () => {

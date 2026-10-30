@@ -495,6 +495,38 @@ def _as_of(value: str | None) -> datetime | None:
 # --------------------------------------------------------------------------------------------
 
 
+def billing_email_for(location_id: str) -> str:
+    """The sub-account owner's email, as the last GHL sync stored it."""
+    row = GHLOAuthToken.objects.filter(is_agency=False, location_id=location_id).first()
+    return row.owner_email if row else ''
+
+
+def sync_billing_emails() -> int:
+    """Copy each sub-account owner's email from GoHighLevel onto its client mapping.
+
+    Run straight after a sub-account sync, so the address a client is billed at is always the
+    one GHL holds today. Nobody types it, so there is nowhere for it to drift.
+
+    **A changed email clears the cached Stripe customer.** The id was found by looking the old
+    address up; keeping it would go on charging the previous payer's card forever, since
+    `customer_id()` returns a cached id without checking anything. Clearing it forces one fresh
+    lookup against the new address.
+    """
+    owners = dict(
+        GHLOAuthToken.objects.filter(is_agency=False).values_list('location_id', 'owner_email')
+    )
+    changed = 0
+    for mapping in ClientMapping.objects.filter(location_id__in=owners):
+        email = owners[mapping.location_id]
+        if mapping.billing_email == email:
+            continue
+        mapping.billing_email = email
+        mapping.stripe_customer_id = ''
+        mapping.save(update_fields=['billing_email', 'stripe_customer_id'])
+        changed += 1
+    return changed
+
+
 def set_mapping(location_id: str, default_client_name: str, fields: dict) -> ClientMapping:
     """Create or update a client's mapping from what an agency admin edited.
 
@@ -502,9 +534,16 @@ def set_mapping(location_id: str, default_client_name: str, fields: dict) -> Cli
     `retell_agent_ids`, `phone_numbers`. A key left out is left alone rather than cleared, so
     editing one field never has to resend the other two. `client_name` is only ever set here on
     first creation, from the sub-account's own GHL name - renaming a client is not part of this.
+
+    `billing_email` is not among them and never typed: it is seeded from the sub-account's GHL
+    owner the moment the mapping is created, and kept in step by `sync_billing_emails()`.
     """
     mapping, _ = ClientMapping.objects.get_or_create(
-        location_id=location_id, defaults={'client_name': default_client_name}
+        location_id=location_id,
+        defaults={
+            'client_name': default_client_name,
+            'billing_email': billing_email_for(location_id),
+        },
     )
     changed = [field for field in fields if getattr(mapping, field, None) != fields[field]]
     for field in changed:
@@ -617,6 +656,24 @@ def _client_row(
     }
 
 
+def _billing_link(mapping: ClientMapping) -> dict:
+    """Who GoHighLevel says pays, and whether Stripe has been matched to them yet.
+
+    All of it is read, never edited: the owner comes from GHL and the Stripe customer is found
+    by their email on the first charge. When no customer could be matched, the reason the last
+    bill recorded is shown instead of an id - that message is the whole of what an admin can act
+    on, and it is the only thing distinguishing "not charged yet" from "cannot be charged".
+    """
+    owner = GHLOAuthToken.objects.filter(is_agency=False, location_id=mapping.location_id).first()
+    latest = mapping.bills.first()
+    return {
+        'owner_name': owner.owner_name if owner else '',
+        'billing_email': mapping.billing_email,
+        'stripe_customer_id': mapping.stripe_customer_id,
+        'billing_failure_reason': latest.failure_reason if latest else '',
+    }
+
+
 def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
     """One client: how they are mapped, what they are charged, and what they used."""
     return {
@@ -628,6 +685,7 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         'retell_agent_ids': mapping.retell_agent_ids or [],
         'phone_numbers': mapping.phone_numbers or [],
         'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
+        **_billing_link(mapping),
         'rates': _rate_row(current_rate(mapping, end)),
         'rate_history': [_rate_row(rate) for rate in mapping.rates.all()],
         'usage': usage_summary(mapping, start, end),

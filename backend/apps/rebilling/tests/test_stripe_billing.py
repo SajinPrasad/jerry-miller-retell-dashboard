@@ -1,7 +1,9 @@
 """Phase 5: putting a calculated bill on a Stripe invoice and hearing back about it.
 
-Every Stripe call is faked. Nothing here reaches the network, and the webhook signature is built
-by hand rather than with the SDK, so the test signs independently of the code that verifies.
+Every Stripe call is faked, and `never_reach_stripe` makes that a rule rather than a habit:
+an unmocked call fails the test by name instead of quietly going out to Stripe. The webhook
+signature is built by hand rather than with the SDK, so the test signs independently of the
+code that verifies.
 """
 
 import hashlib
@@ -18,6 +20,10 @@ import stripe
 from django.conf import settings
 from django.core.management import call_command
 from rest_framework.test import APIClient
+
+# The seam every Stripe request funnels through, whichever resource was asked for. Private, but
+# it is the only place a guard can sit below all of them - see `never_reach_stripe`.
+from stripe._http_client import HTTPClient
 
 from apps.rebilling import stripe_billing
 from apps.rebilling.exceptions import StripeBillingError
@@ -45,6 +51,37 @@ URL = '/api/rebilling/webhooks/stripe/'
 # --- fakes ------------------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def never_reach_stripe(monkeypatch):
+    """Fail loudly if anything in this module tries to actually call Stripe.
+
+    `FakeStripe` only stands in for the methods it was told about, so a Stripe call newly added
+    to the code reaches the network instead - which is how a test run ends up authenticating
+    against the real Stripe with a test key. This shuts that door at the HTTP layer, below every
+    resource, so an unmocked call fails by name instead of arriving as an auth error.
+    """
+
+    def blocked(self, method, url, *args, **kwargs):
+        raise AssertionError(f'test tried to reach Stripe: {method.upper()} {url}')
+
+    monkeypatch.setattr(HTTPClient, 'request_with_retries', blocked)
+    monkeypatch.setattr(HTTPClient, 'request_stream_with_retries', blocked)
+
+
+# A customer Stripe would charge: a card is set as the invoice default.
+CHARGEABLE = SimpleNamespace(
+    invoice_settings=SimpleNamespace(default_payment_method='pm_card1'), default_source=None
+)
+# A customer with no card at all - the shape that finalises fine and then fails at the card.
+CARDLESS = SimpleNamespace(
+    invoice_settings=SimpleNamespace(default_payment_method=None), default_source=None
+)
+# The older way a card is held. Stripe still collects against it, so this must pass too.
+LEGACY_SOURCE = SimpleNamespace(
+    invoice_settings=SimpleNamespace(default_payment_method=None), default_source='card_1'
+)
+
+
 class FakeStripe:
     """Stands in for the SDK's class methods, recording what each was called with."""
 
@@ -55,19 +92,30 @@ class FakeStripe:
         # A method name whose next call raises, and customers whose invoice Stripe refuses.
         self.fail_on = None
         self.fail_customers = set()
+        # What `Customer.retrieve` answers, per id. Anything unlisted is chargeable.
+        self.customer_records = {}
+        # What the payment intent behind a failed invoice says went wrong.
+        self.payment_error = SimpleNamespace(code='card_declined')
 
     def _record(self, name, kwargs):
-        if self.fail_on == name or kwargs.get('customer') in self.fail_customers:
+        target = kwargs.get('customer') or kwargs.get('customer_id')
+        if self.fail_on == name or target in self.fail_customers:
             raise stripe.APIConnectionError('Stripe is unreachable.')
         self.calls.append((name, kwargs))
 
     def customer_list(self, **kwargs):
         self._record('Customer.list', kwargs)
-        return SimpleNamespace(data=list(self.customers))
+        page = SimpleNamespace(data=list(self.customers))
+        page.auto_paging_iter = lambda: iter(self.customers)
+        return page
 
-    def customer_create(self, **kwargs):
-        self._record('Customer.create', kwargs)
-        return SimpleNamespace(id='cus_new')
+    def customer_retrieve(self, customer_id, **kwargs):
+        self._record('Customer.retrieve', {'customer_id': customer_id, **kwargs})
+        return self.customer_records.get(customer_id, CHARGEABLE)
+
+    def payment_intent_retrieve(self, intent_id, **kwargs):
+        self._record('PaymentIntent.retrieve', {'intent_id': intent_id, **kwargs})
+        return SimpleNamespace(last_payment_error=self.payment_error)
 
     def invoice_create(self, **kwargs):
         self._record('Invoice.create', kwargs)
@@ -97,7 +145,8 @@ class FakeStripe:
 def fake(monkeypatch):
     faked = FakeStripe()
     monkeypatch.setattr(stripe.Customer, 'list', faked.customer_list)
-    monkeypatch.setattr(stripe.Customer, 'create', faked.customer_create)
+    monkeypatch.setattr(stripe.Customer, 'retrieve', faked.customer_retrieve)
+    monkeypatch.setattr(stripe.PaymentIntent, 'retrieve', faked.payment_intent_retrieve)
     monkeypatch.setattr(stripe.Invoice, 'create', faked.invoice_create)
     monkeypatch.setattr(stripe.InvoiceItem, 'create', faked.invoice_item_create)
     monkeypatch.setattr(stripe.Invoice, 'finalize_invoice', faked.invoice_finalize)
@@ -145,38 +194,62 @@ def test_a_known_customer_is_never_looked_up_again(fake):
     assert fake.calls == []
 
 
-def test_an_existing_customer_is_found_by_email_rather_than_duplicated(fake):
-    fake.customers = [SimpleNamespace(id='cus_existing')]
+def test_a_customer_is_found_by_the_owners_email_and_remembered(fake):
+    """The link is made from GoHighLevel's data. Nobody picks it and nobody types it."""
+    fake.customers = [SimpleNamespace(id='cus_found')]
     client = make_billable_client()
 
-    assert stripe_billing.customer_id(client) == 'cus_existing'
+    assert stripe_billing.customer_id(client) == 'cus_found'
     assert fake.of('Customer.list') == [{'email': 'ops@coolbreeze.test', 'limit': 1}]
-    assert fake.of('Customer.create') == []
     client.refresh_from_db()
-    assert client.stripe_customer_id == 'cus_existing'
+    # Remembered, so a later charge costs no lookup.
+    assert client.stripe_customer_id == 'cus_found'
 
 
-def test_a_customer_is_created_when_the_email_matches_nothing(fake):
+def test_an_email_matching_no_customer_is_never_given_a_blank_one(fake):
+    """A customer created here would have no card on it.
+
+    That turns "we do not know who pays" into a charge that fails at the card for a reason
+    nobody reading it could act on. The address that matched nothing is reported instead.
+    """
     client = make_billable_client()
 
-    assert stripe_billing.customer_id(client) == 'cus_new'
-    assert fake.of('Customer.create') == [
-        {
-            'email': 'ops@coolbreeze.test',
-            'name': 'Cool Breeze HVAC',
-            'metadata': {'location_id': 'loc1'},
-        }
-    ]
-    client.refresh_from_db()
-    assert client.stripe_customer_id == 'cus_new'
-
-
-def test_a_client_with_no_billing_email_cannot_be_billed(fake):
-    client = make_client('loc1')
-
-    with pytest.raises(StripeBillingError):
+    with pytest.raises(
+        StripeBillingError,
+        match='No Stripe customer found for billing email: ops@coolbreeze.test',
+    ):
         stripe_billing.customer_id(client)
+
+    # Only the lookup happened. `Customer.create` is not even stood in for, so a call to it
+    # would hit `never_reach_stripe` and fail this test by name.
+    assert fake.names() == ['Customer.list']
+    client.refresh_from_db()
+    assert client.stripe_customer_id == ''
+
+
+def test_a_client_with_no_billing_email_from_ghl_cannot_be_billed(fake):
+    """No email means GoHighLevel has no owner for the sub-account, or the sync has not run."""
+    client = make_client('loc1')
+    make_bill(client)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['failed'] == 1
     assert fake.calls == []
+    assert 'no billing email' in Bill.objects.get(client=client).failure_reason
+
+
+def test_an_unmatched_email_puts_stripes_reason_on_the_bill(fake):
+    """What the admin page shows against the client, and the only thing anyone can act on."""
+    bill = make_bill(make_billable_client())
+
+    stripe_billing.charge_bills(MONTH)
+
+    bill.refresh_from_db()
+    assert bill.status == UNCHARGED
+    assert bill.failure_reason == (
+        'No Stripe customer found for billing email: ops@coolbreeze.test'
+    )
 
 
 def test_setup_link_returns_a_hosted_page_that_takes_no_payment(fake):
@@ -208,19 +281,24 @@ def test_an_uncharged_bill_becomes_a_finalised_stripe_invoice(fake):
         'period': MONTH,
         'charged': 1,
         'skipped': 0,
+        'too_small': 0,
         'failed': 0,
         'total_cents': 650,
     }
     invoice = fake.of('Invoice.create')[0]
     assert invoice['customer'] == 'cus_known'
     assert invoice['collection_method'] == 'charge_automatically'
-    assert invoice['auto_advance'] is True
+    # A draft Stripe will not advance by itself until the lines are on it.
+    assert invoice['auto_advance'] is False
+    assert invoice['pending_invoice_items_behavior'] == 'exclude'
     assert invoice['metadata'] == {'bill_id': str(bill.pk), 'location_id': 'loc1'}
 
     bill.refresh_from_db()
     assert bill.status == CHARGING
     assert bill.stripe_invoice_id == 'in_test1'
     assert bill.paid_at is None
+    # The clock a bill stuck in `charging` is measured against.
+    assert bill.charged_at is not None
 
 
 def test_each_bill_line_becomes_an_invoice_item_in_the_same_integer_cents(fake):
@@ -245,12 +323,16 @@ def test_the_invoice_is_finalised_which_is_what_charges_the_card(fake):
 
     # The lines have to be on the invoice before it is finalised, or they are not billed.
     assert fake.names() == [
+        'Customer.retrieve',
         'Invoice.create',
         'InvoiceItem.create',
         'InvoiceItem.create',
         'Invoice.finalize_invoice',
     ]
-    assert fake.of('Invoice.finalize_invoice')[0]['invoice_id'] == 'in_test1'
+    finalise = fake.of('Invoice.finalize_invoice')[0]
+    assert finalise['invoice_id'] == 'in_test1'
+    # Collection, and the retry schedule with it, is handed to Stripe only at this point.
+    assert finalise['auto_advance'] is True
 
 
 def test_every_write_carries_an_idempotency_key_derived_from_the_bill(fake):
@@ -259,7 +341,7 @@ def test_every_write_carries_an_idempotency_key_derived_from_the_bill(fake):
 
     stripe_billing.charge_bills(MONTH)
 
-    keys = [kwargs['idempotency_key'] for _, kwargs in fake.calls]
+    keys = [kwargs['idempotency_key'] for _, kwargs in fake.calls if 'idempotency_key' in kwargs]
     assert keys == [
         f'bill-{bill.pk}-invoice',
         f'bill-{bill.pk}-retell',
@@ -321,8 +403,8 @@ def test_one_clients_failure_does_not_cost_the_others_their_charge(fake):
     assert bill_two.status == CHARGING
 
 
-def test_a_client_without_an_email_fails_only_its_own_bill(fake):
-    make_bill(make_client('loc1'))
+def test_a_client_stripe_cannot_match_fails_only_its_own_bill(fake):
+    make_bill(make_billable_client('loc1'))
     make_bill(make_billable_client('loc2', stripe_customer_id='cus_2'))
 
     result = stripe_billing.charge_bills(MONTH)
@@ -343,6 +425,8 @@ def test_the_invoice_id_survives_a_failure_after_the_invoice_exists(fake):
     # Still uncharged, but traceable to the Stripe object that was already created.
     assert bill.status == UNCHARGED
     assert bill.stripe_invoice_id == 'in_test1'
+    # And why it stopped, on the bill rather than only in the log.
+    assert bill.failure_reason
 
 
 def test_the_command_reports_what_it_charged(fake):
@@ -354,6 +438,7 @@ def test_the_command_reports_what_it_charged(fake):
 
     assert '1 bill(s) sent to Stripe' in out.getvalue()
     assert '650¢' in out.getvalue()
+    assert '0 under the minimum' in out.getvalue()
 
 
 def test_the_command_rejects_a_month_it_cannot_read(fake):
@@ -380,14 +465,12 @@ def api():
     return APIClient()
 
 
-def event_body(kind='invoice.paid', invoice_id='in_test1', created=1772323200):
+def event_body(kind='invoice.paid', invoice_id='in_test1', created=1772323200, intent=None):
+    invoice = {'id': invoice_id, 'object': 'invoice'}
+    if intent:
+        invoice['payment_intent'] = intent
     return json.dumps(
-        {
-            'id': 'evt_test1',
-            'type': kind,
-            'created': created,
-            'data': {'object': {'id': invoice_id, 'object': 'invoice'}},
-        }
+        {'id': 'evt_test1', 'type': kind, 'created': created, 'data': {'object': invoice}}
     ).encode()
 
 
@@ -493,3 +576,152 @@ def test_no_client_mapping_is_created_by_any_of_this(api):
     post(api, event_body())
 
     assert ClientMapping.objects.count() == 1
+
+
+# --- Stripe's minimum charge --------------------------------------------------------------------
+
+
+def test_a_bill_under_stripes_minimum_is_left_alone_rather_than_attempted(fake):
+    """Stripe will not charge a card for under 50c.
+
+    Sending one anyway produces a failure that reads like a decline, that no retry can clear,
+    and that nobody can act on - so the bill is left `uncharged` and counted instead.
+    """
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client, retell_cents=30, twilio_cents=0)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['too_small'] == 1
+    assert result['charged'] == 0
+    assert fake.calls == []
+    bill.refresh_from_db()
+    assert bill.status == UNCHARGED
+    assert bill.stripe_invoice_id == ''
+
+
+def test_a_bill_exactly_at_the_minimum_is_charged(fake):
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client, retell_cents=50, twilio_cents=0)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['charged'] == 1
+    assert result['too_small'] == 0
+    bill.refresh_from_db()
+    assert bill.status == CHARGING
+
+
+def test_a_bill_too_small_to_charge_does_not_stop_the_others(fake):
+    make_bill(
+        make_billable_client('loc1', stripe_customer_id='cus_1'), retell_cents=10, twilio_cents=0
+    )
+    make_bill(make_billable_client('loc2', stripe_customer_id='cus_2'))
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['too_small'] == 1
+    assert result['charged'] == 1
+
+
+# --- there has to be a card before an invoice is raised -------------------------------------
+
+
+def test_a_customer_with_no_card_is_refused_before_an_invoice_exists(fake):
+    """A cardless customer finalises fine and then fails at the card.
+
+    That failure arrives looking exactly like a decline, when the real answer is that no card
+    was ever attached - and GHL can attach one without making it the invoice default. Checking
+    first keeps the reason honest and keeps a doomed invoice out of Jerry's Stripe account.
+    """
+    client = make_billable_client(stripe_customer_id='cus_nocard')
+    bill = make_bill(client)
+    fake.customer_records = {'cus_nocard': CARDLESS}
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['failed'] == 1
+    assert fake.of('Invoice.create') == []
+    bill.refresh_from_db()
+    assert bill.status == UNCHARGED
+    assert bill.stripe_invoice_id == ''
+    assert 'no default payment method' in bill.failure_reason
+
+
+def test_a_card_held_the_older_way_still_counts_as_chargeable(fake):
+    """Stripe falls back to `default_source`, so this check has to as well."""
+    client = make_billable_client(stripe_customer_id='cus_legacy')
+    make_bill(client)
+    fake.customer_records = {'cus_legacy': LEGACY_SOURCE}
+
+    assert stripe_billing.charge_bills(MONTH)['charged'] == 1
+
+
+# --- what the webhook may and may not do ------------------------------------------------------
+
+
+def test_a_late_failure_never_un_pays_a_collected_bill(api):
+    """Stripe's own retries can collect a bill that already failed, and events are not ordered.
+
+    A `payment_failed` that arrives after the money is in must not flip the bill back.
+    """
+    bill = charging_bill()
+    post(api, event_body('invoice.paid'))
+
+    response = post(api, event_body('invoice.payment_failed'))
+
+    assert response.status_code == 204
+    bill.refresh_from_db()
+    assert bill.status == PAID
+    assert bill.paid_at is not None
+
+
+def test_a_failure_records_stripes_own_reason(api, fake):
+    """`authentication_required` and `card_declined` arrive as the same event.
+
+    Only the code separates "ask the client to confirm this card" from "get a new card".
+    """
+    bill = charging_bill()
+    fake.payment_error = SimpleNamespace(code='authentication_required')
+
+    post(api, event_body('invoice.payment_failed', intent='pi_test1'))
+
+    bill.refresh_from_db()
+    assert bill.status == FAILED
+    assert bill.failure_reason == 'authentication_required'
+
+
+def test_a_failure_whose_reason_cannot_be_read_is_still_recorded(api):
+    bill = charging_bill()
+
+    post(api, event_body('invoice.payment_failed'))
+
+    bill.refresh_from_db()
+    assert bill.status == FAILED
+    assert bill.failure_reason == 'payment_failed'
+
+
+def test_being_paid_clears_the_reason_an_earlier_attempt_failed(api, fake):
+    bill = charging_bill()
+    post(api, event_body('invoice.payment_failed', intent='pi_test1'))
+
+    post(api, event_body('invoice.paid'))
+
+    bill.refresh_from_db()
+    assert bill.status == PAID
+    assert bill.failure_reason == ''
+
+
+# --- the guard under all of it ------------------------------------------------------------------
+
+
+def test_an_unmocked_stripe_call_fails_the_test_rather_than_going_out():
+    """What stops a newly added Stripe call from quietly reaching the real API in a test run.
+
+    Without this, an unmocked call authenticates against Stripe with the test key and fails
+    somewhere far from the cause - which is exactly how it behaved before the guard.
+    """
+    stripe_billing._configure()
+
+    with pytest.raises(AssertionError, match='tried to reach Stripe'):
+        stripe.Customer.retrieve('cus_unmocked')

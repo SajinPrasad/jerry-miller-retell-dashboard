@@ -262,8 +262,19 @@ class Bill(models.Model):
     # The Stripe invoice this bill was charged on. Set once the invoice exists, which is also
     # what the webhook looks the bill up by.
     stripe_invoice_id = models.CharField(max_length=255, blank=True, default='')
+    # When the Stripe invoice was finalised, which is the moment the card was first attempted.
+    # The webhook is the only thing that moves a bill off `charging`, so this is the clock that
+    # makes a missing webhook visible: a bill still `charging` long after this was set was
+    # either never answered or never collected.
+    charged_at = models.DateTimeField(null=True, blank=True)
     # When Stripe told us it was paid. Empty until then, including while `charging`.
     paid_at = models.DateTimeField(null=True, blank=True)
+    # Why the last attempt failed, as Stripe's own error code: `card_declined`,
+    # `authentication_required` (the card needs the client there to re-authorise it), and so on.
+    # The code is what separates "send them a new card" from "ask them to confirm this one",
+    # which a bare `failed` cannot. Cleared when a bill is paid, because Stripe's own retries
+    # can collect one that has already failed once.
+    failure_reason = models.CharField(max_length=255, blank=True, default='')
 
     class Meta:
         db_table = 'rebilling_bill'

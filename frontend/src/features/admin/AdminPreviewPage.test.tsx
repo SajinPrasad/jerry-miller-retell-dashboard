@@ -93,6 +93,22 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('says why a sample client could not be matched in Stripe', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Branwynn Destinations' }))
+
+    // The owner is known; Stripe has nobody at that address. That message is the whole of what
+    // an admin can act on, and it names the address to fix.
+    expect(await screen.findByText('Imogen Vale')).toBeInTheDocument()
+    expect(
+      screen.getByText(/No Stripe customer found for billing email: imogen@branwynn.test/),
+    ).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('searches the sample agent list without calling Retell', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()

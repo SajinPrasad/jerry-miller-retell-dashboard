@@ -44,6 +44,12 @@ interface Spec {
   agents: string[]
   numbers: string[]
   twilio_sid: string
+  /** Read-only on the real page too: taken from the GHL sub-account owner, matched in Stripe. */
+  owner_name: string
+  billing_email: string
+  stripe_customer_id: string
+  /** Set only on the sample client Stripe could not match, so the preview shows that state. */
+  billing_failure_reason?: string
   voice_rate_cents: number
   call_rate_cents: number
   /** Headline figures for the current month; other months scale off these. */
@@ -65,6 +71,9 @@ const SPECS: Spec[] = [
     agents: ['agent_cool_breeze'],
     numbers: ['+12137771234'],
     twilio_sid: 'ACdemocoolbreeze0000000000000001',
+    owner_name: 'Dana Reyes',
+    billing_email: 'dana@coolbreeze.test',
+    stripe_customer_id: 'cus_demoCoolBreeze',
     voice_rate_cents: 25,
     call_rate_cents: 5,
     ai_minutes: 198.4,
@@ -82,6 +91,11 @@ const SPECS: Spec[] = [
     agents: ['agent_branwynn'],
     numbers: ['+19545550111', '+18005550199'],
     twilio_sid: '',
+    owner_name: 'Imogen Vale',
+    billing_email: 'imogen@branwynn.test',
+    stripe_customer_id: '',
+    billing_failure_reason:
+      'No Stripe customer found for billing email: imogen@branwynn.test',
     voice_rate_cents: 30,
     call_rate_cents: 5,
     ai_minutes: 156.52,
@@ -99,6 +113,9 @@ const SPECS: Spec[] = [
     agents: ['agent_polar_peak'],
     numbers: ['+16025550144'],
     twilio_sid: 'ACdemopolarpeak00000000000000002',
+    owner_name: 'Marcus Hale',
+    billing_email: 'marcus@polarpeak.test',
+    stripe_customer_id: 'cus_demoPolarPeak',
     voice_rate_cents: 28,
     call_rate_cents: 6,
     ai_minutes: 95.43,
@@ -232,6 +249,10 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       retell_agent_ids: edit.retell_agent_ids,
       phone_numbers: edit.phone_numbers,
       twilio_subaccount_sid: edit.twilio_subaccount_sid,
+      owner_name: 'Priya Nandakumar',
+      billing_email: 'priya@summitair.test',
+      stripe_customer_id: '',
+      billing_failure_reason: '',
       rates: null,
       rate_history: [],
       usage: EMPTY_USAGE,
@@ -255,6 +276,10 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     retell_agent_ids: spec.agents,
     phone_numbers: spec.numbers,
     twilio_subaccount_sid: spec.twilio_sid,
+    owner_name: spec.owner_name,
+    billing_email: spec.billing_email,
+    stripe_customer_id: spec.stripe_customer_id,
+    billing_failure_reason: spec.billing_failure_reason ?? '',
     rates: { ...rate(spec), start_date: `${month}-15` },
     rate_history: [
       { ...rate(spec), start_date: `${month}-15` },
