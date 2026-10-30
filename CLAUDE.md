@@ -147,8 +147,11 @@ read-only.
   another period's heading.
 - **The call list is written for a reader, not a debugger**: date and time, the customer's number
   (the `from`/`to` that is not the client's own line, chosen by direction), direction, duration,
-  what Retell charged, and a status pill - `Billable`, or a few words like `Not connected`, with
-  the backend's full sentence on hover. `call_id` and `agent_id` are not shown. Times are the
+  what Retell charged, and a status pill - or a few words like `Not connected`, with the
+  backend's full sentence on hover. A billable call's pill follows the month's `bill`:
+  `Billable` while there is none and the billing run has yet to reach the month, `Paid` once the
+  bill is paid, and `Billed` in between - a call already on a bill must not read as a charge
+  still waiting to happen, or as a second one. `call_id` and `agent_id` are not shown. Times are the
   stored UTC ones, read off the ISO string rather than through `Date`, because the billing window
   and the Twilio days are UTC too and a re-stamped call could appear under a day in another month.
 - **Rates are edited and saved on the page** (`ClientDetail.tsx` + `PUT

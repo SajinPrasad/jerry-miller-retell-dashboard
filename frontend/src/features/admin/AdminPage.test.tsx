@@ -456,6 +456,39 @@ describe('AdminPage', () => {
     expect(screen.queryByText('agent_1', { selector: 'td' })).not.toBeInTheDocument()
   })
 
+  it('marks the calls of a paid month paid, not still billable', async () => {
+    parentAnswers()
+    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const row = within(screen.getByText(`${MONTH_ABBREVIATION} 3, 2:45 PM`).closest('tr')!)
+    expect(row.getByText('Paid')).toBeInTheDocument()
+    // The month has been through the billing run; nothing here is waiting to be charged.
+    expect(screen.queryByText('Billable')).not.toBeInTheDocument()
+    // A call that could not be billed is no more billable for the bill having been paid.
+    expect(screen.getByText('Not connected')).toHaveAttribute(
+      'title',
+      'Call status is not_connected, not ended.',
+    )
+  })
+
+  it('marks the calls of a billed month billed while the charge is still in the air', async () => {
+    parentAnswers()
+    mockApi({ bill: { status: 'charging', total_cents: 5500, failure_reason: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    const row = within(screen.getByText(`${MONTH_ABBREVIATION} 3, 2:45 PM`).closest('tr')!)
+    // On a bill already - what Stripe makes of it is the headline tile's business, not the row's.
+    expect(row.getByText('Billed')).toBeInTheDocument()
+    expect(screen.queryByText('Billable')).not.toBeInTheDocument()
+  })
+
   it('names in a few words why a call could not be billed', async () => {
     parentAnswers()
     mockApi()
