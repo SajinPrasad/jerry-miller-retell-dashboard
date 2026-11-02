@@ -7,6 +7,7 @@ import type {
   ClientSummary,
   ClientsResponse,
   RateFields,
+  RecentCall,
   SsoSession,
 } from '../../types/admin'
 import AdminPage from './AdminPage'
@@ -97,6 +98,7 @@ const detail: ClientDetail = {
       call_status: 'ended',
       billing_status: 'billable',
       unbillable_reason: '',
+      bill_status: null,
     },
     {
       call_id: 'call_dropped',
@@ -111,6 +113,7 @@ const detail: ClientDetail = {
       call_status: 'not_connected',
       billing_status: 'unbillable',
       unbillable_reason: 'Call status is not_connected, not ended.',
+      bill_status: null,
     },
   ],
 }
@@ -173,6 +176,8 @@ function mockApi(
     synced?: ClientSummary[]
     /** The bill the detail endpoint reports for the month being read. */
     bill?: BillSummary | null
+    /** The month's calls, when a test needs them on bills of their own. */
+    calls?: RecentCall[]
   } = {},
 ) {
   const { session = agencySession, perMonth = {}, bill = null } = options
@@ -194,7 +199,13 @@ function mockApi(
     if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) return json(twilioSubaccounts)
 
     if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
-      return json({ ...detail, month, bill, usage: (perMonth[month] ?? mapped).usage })
+      return json({
+        ...detail,
+        month,
+        bill,
+        recent_calls: options.calls ?? detail.recent_calls,
+        usage: (perMonth[month] ?? mapped).usage,
+      })
     }
 
     if (url.startsWith('/api/rebilling/admin/clients/sync/')) {
@@ -456,36 +467,61 @@ describe('AdminPage', () => {
     expect(screen.queryByText('agent_1', { selector: 'td' })).not.toBeInTheDocument()
   })
 
-  it('marks the calls of a paid month paid, not still billable', async () => {
+  /** A billable call on day `day` of this month, on a bill of that status or on none. */
+  function callOn(day: number, billStatus: RecentCall['bill_status']): RecentCall {
+    return {
+      ...detail.recent_calls[0],
+      call_id: `call_${day}_${billStatus ?? 'none'}`,
+      started_at: `${THIS_MONTH}-${String(day).padStart(2, '0')}T14:45:00Z`,
+      bill_status: billStatus,
+    }
+  }
+
+  /** The row that call landed on, found the way a reader would: by when it happened. */
+  function callRow(day: number) {
+    return within(screen.getByText(`${MONTH_ABBREVIATION} ${day}, 2:45 PM`).closest('tr')!)
+  }
+
+  it('marks each call from the bill it is on, not from the month it is in', async () => {
     parentAnswers()
-    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    mockApi({
+      bill: { status: 'paid', total_cents: 47, failure_reason: '' },
+      calls: [
+        callOn(28, 'paid'),
+        callOn(29, 'paid'),
+        // Made after the run had already charged the month: on no bill, and billable still.
+        callOn(30, null),
+        detail.recent_calls[1],
+      ],
+    })
     const user = userEvent.setup()
 
     render(<AdminPage />)
     await openClient(user)
 
-    const row = within(screen.getByText(`${MONTH_ABBREVIATION} 3, 2:45 PM`).closest('tr')!)
-    expect(row.getByText('Paid')).toBeInTheDocument()
-    // The month has been through the billing run; nothing here is waiting to be charged.
-    expect(screen.queryByText('Billable')).not.toBeInTheDocument()
-    // A call that could not be billed is no more billable for the bill having been paid.
+    expect(callRow(28).getByText('Paid')).toBeInTheDocument()
+    expect(callRow(29).getByText('Paid')).toBeInTheDocument()
+    expect(callRow(30).getByText('Billable')).toBeInTheDocument()
+    // A call nobody can bill is no more billable for the month having been paid.
     expect(screen.getByText('Not connected')).toHaveAttribute(
       'title',
       'Call status is not_connected, not ended.',
     )
   })
 
-  it('marks the calls of a billed month billed while the charge is still in the air', async () => {
+  it('says a call is billed while the charge for it is still in the air', async () => {
     parentAnswers()
-    mockApi({ bill: { status: 'charging', total_cents: 5500, failure_reason: '' } })
+    mockApi({
+      bill: { status: 'charging', total_cents: 5500, failure_reason: '' },
+      calls: [callOn(28, 'charging')],
+    })
     const user = userEvent.setup()
 
     render(<AdminPage />)
     await openClient(user)
 
-    const row = within(screen.getByText(`${MONTH_ABBREVIATION} 3, 2:45 PM`).closest('tr')!)
     // On a bill already - what Stripe makes of it is the headline tile's business, not the row's.
-    expect(row.getByText('Billed')).toBeInTheDocument()
+    expect(callRow(28).getByText('Billed')).toBeInTheDocument()
     expect(screen.queryByText('Billable')).not.toBeInTheDocument()
   })
 

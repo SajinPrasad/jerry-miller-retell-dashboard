@@ -345,7 +345,7 @@ export default function ClientDetail({
                     <td className="num muted">{formatCents(call.retell_cost_cents)}</td>
                     <td className="num">
                       {call.billing_status === 'billable' ? (
-                        <span className="pill ok">{billableLabel(bill)}</span>
+                        <span className="pill ok">{billableLabel(call)}</span>
                       ) : (
                         <span className="pill warn" title={call.unbillable_reason}>
                           {unbillableLabel(call)}
@@ -380,13 +380,14 @@ function durationMinutes(call: RecentCall): string | null {
 }
 
 /**
- * Where a billable call stands. "Billable" means the billing run has not reached this month yet;
- * once it has, the call is on a bill and saying it could still be billed would read as a charge
- * waiting to happen - or as a second one. A paid bill says so in the bill's own word.
+ * Where a billable call stands, from the bill it is on rather than from the month's. "Billable"
+ * means no bill has taken this call yet; once one has, saying it could still be billed would
+ * read as a charge waiting to happen - or as a second one. The month's own bill cannot answer
+ * this: a call made after that bill was charged is on no bill, and is billable still.
  */
-function billableLabel(bill: BillSummary | null): string {
-  if (!bill) return 'Billable'
-  return bill.status === 'paid' ? 'Paid' : 'Billed'
+function billableLabel(call: RecentCall): string {
+  if (!call.bill_status) return 'Billable'
+  return call.bill_status === 'paid' ? 'Paid' : 'Billed'
 }
 
 /**

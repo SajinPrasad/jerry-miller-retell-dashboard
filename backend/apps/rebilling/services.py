@@ -772,8 +772,14 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
                 'call_status': call.call_status,
                 'billing_status': call.billing_status,
                 'unbillable_reason': call.unbillable_reason,
+                # The status of the bill this call was billed on, or None while it is on none.
+                # Per call, not per month: a call that arrives after the month has been billed
+                # is on no bill of its own, however the month's bill ended up.
+                'bill_status': call.bill.status if call.bill_id else None,
             }
-            for call in _calls_in_window(mapping, start, end)[:RECENT_CALL_LIMIT]
+            for call in _calls_in_window(mapping, start, end).select_related('bill')[
+                :RECENT_CALL_LIMIT
+            ]
         ],
     }
 

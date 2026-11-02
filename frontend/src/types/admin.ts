@@ -73,6 +73,9 @@ export interface RecentCall {
   call_status: string
   billing_status: 'billable' | 'unbillable'
   unbillable_reason: string
+  /** The status of the bill this call is on, or null while it is on none - a call made after
+   * the month was billed is on no bill of its own. */
+  bill_status: BillSummary['status'] | null
 }
 
 /** One agent on Jerry's Retell account, as the mapping editor's picker lists it. */

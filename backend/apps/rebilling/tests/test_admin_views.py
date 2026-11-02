@@ -496,6 +496,59 @@ def test_detail_shows_the_bill_for_the_month_being_viewed_and_no_other(client):
     assert get_detail(client, 'loc1', month='2026-04').json()['bill'] is None
 
 
+def test_each_call_carries_the_status_of_the_bill_it_is_on(client):
+    """A call made after the month was billed is on no bill, whatever the month's bill says.
+
+    The month's bill cannot answer this for every call in it: the run bills what exists when it
+    runs, and a call that arrives afterwards is still waiting for the next one. Calling it paid
+    would claim money that was never collected for it.
+    """
+    make_agency()
+    mapping = make_client('loc1')
+    bill = Bill.objects.create(
+        client=mapping, billing_period=MONTH, total_cents=47, status=PAID, paid_at=AFTER_WINDOW
+    )
+    billed = [
+        add_call(mapping, 'c_28a', started_at=datetime(2026, 3, 28, 9, 0, tzinfo=UTC)),
+        add_call(mapping, 'c_28b', started_at=datetime(2026, 3, 28, 15, 30, tzinfo=UTC)),
+    ]
+    RetellCall.objects.filter(pk__in=[call.pk for call in billed]).update(bill=bill)
+    # Made two days after the run charged the month, so no bill has taken it yet.
+    add_call(mapping, 'c_30', started_at=datetime(2026, 3, 30, 11, 0, tzinfo=UTC))
+    # Nothing can bill this one, so nothing ever will.
+    add_call(mapping, 'c_dropped', duration_ms=None, status=UNBILLABLE)
+
+    body = get_detail(client, 'loc1').json()
+
+    assert {call['call_id']: call['bill_status'] for call in body['recent_calls']} == {
+        'c_28a': 'paid',
+        'c_28b': 'paid',
+        'c_30': None,
+        'c_dropped': None,
+    }
+    assert body['bill']['status'] == 'paid'
+
+
+def test_a_call_follows_its_own_bill_while_the_charge_is_in_the_air(client):
+    """The call reports the bill's state as it stands, not only once it is settled."""
+    make_agency()
+    mapping = make_client('loc1')
+    bill = Bill.objects.create(
+        client=mapping,
+        billing_period=MONTH,
+        total_cents=650,
+        status=CHARGING,
+        stripe_invoice_id='in_1',
+        charged_at=AFTER_WINDOW,
+    )
+    call = add_call(mapping, 'c1')
+    RetellCall.objects.filter(pk=call.pk).update(bill=bill)
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['recent_calls'][0]['bill_status'] == 'charging'
+
+
 def test_detail_carries_the_defaults_the_reset_action_writes_back(client):
     """The page must not hold its own copy of two numbers the model already owns."""
     make_agency()

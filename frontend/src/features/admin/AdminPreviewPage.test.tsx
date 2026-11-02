@@ -145,9 +145,10 @@ describe('AdminPreviewPage', () => {
     // A month that has run its course has a bill, and the bill is what the client was charged.
     expect(await screen.findByText('Paid', { selector: '.tile-label' })).toBeInTheDocument()
     expect(screen.queryByText('Estimated', { selector: '.tile-label' })).not.toBeInTheDocument()
-    // And the calls on that bill say the same thing as the bill.
-    expect(screen.getAllByText('Paid', { selector: '.pill' }).length).toBeGreaterThan(0)
-    expect(screen.queryByText('Billable')).not.toBeInTheDocument()
+    // The calls on that bill say the same thing as the bill - all but the one that came in
+    // after the run had charged it, which is on no bill and billable still.
+    expect(screen.getAllByText('Paid', { selector: '.pill' }).length).toBeGreaterThan(1)
+    expect(screen.getAllByText('Billable')).toHaveLength(1)
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

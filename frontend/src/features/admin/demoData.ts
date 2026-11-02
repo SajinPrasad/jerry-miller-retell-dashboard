@@ -299,6 +299,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
   const spec = withPreviewMapping(found)
 
   const usage = usageFor(spec, month)
+  const bill = billFor(spec, month, usage)
   return {
     month,
     location_id: spec.location_id,
@@ -321,10 +322,10 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
         : []),
     ],
     default_rates: DEFAULT_RATES,
-    bill: billFor(spec, month, usage),
+    bill,
     usage,
     twilio_days: twilioDays(spec, month),
-    recent_calls: recentCalls(spec, month),
+    recent_calls: recentCalls(spec, month, bill),
   }
 }
 
@@ -430,7 +431,7 @@ function twilioDays(spec: Spec, month: string): TwilioDay[] {
   }))
 }
 
-function recentCalls(spec: Spec, month: string): RecentCall[] {
+function recentCalls(spec: Spec, month: string, bill: BillSummary | null): RecentCall[] {
   const f = scale(spec.location_id, month)
   if (f === 0) return []
   const billable = Math.max(Math.round(6 * f), 1)
@@ -451,6 +452,8 @@ function recentCalls(spec: Spec, month: string): RecentCall[] {
       index % 2 === 0
         ? 'Call status is error, not ended.'
         : 'Call status is not_connected, not ended.',
+    // A call nobody can bill is on no bill.
+    bill_status: null,
   }))
 
   const ok: RecentCall[] = Array.from({ length: billable }, (_, index) => {
@@ -470,6 +473,9 @@ function recentCalls(spec: Spec, month: string): RecentCall[] {
       call_status: 'ended',
       billing_status: 'billable',
       unbillable_reason: '',
+      // The last call of a billed month came in after the run had charged it, which is the
+      // state the table has to tell apart: on no bill, and billable still.
+      bill_status: index === billable - 1 ? null : (bill?.status ?? null),
     }
   })
 
