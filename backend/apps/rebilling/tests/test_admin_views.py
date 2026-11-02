@@ -2,10 +2,13 @@
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import httpx
 import pytest
 import respx
+import stripe
+from django.conf import settings
 from django.test import override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -32,6 +35,28 @@ pytestmark = pytest.mark.django_db
 MONTH = '2026-03'
 IN_WINDOW = datetime(2026, 3, 10, 12, 0, tzinfo=UTC)
 AFTER_WINDOW = datetime(2026, 4, 2, 12, 0, tzinfo=UTC)
+
+RETELL_AGENTS_URL = f'{settings.RETELL_API_BASE_URL}/v2/list-agents'
+
+
+@pytest.fixture(autouse=True)
+def default_retell_agents():
+    """`client_detail` now names each mapped agent off Retell, and `make_client()` maps every
+    sample client to `agent1`, so every `get_detail()` call in this file would otherwise ask
+    Retell for a name it mostly does not care about.
+
+    A router of its own, independent of `respx.mock` - the global singleton the two GHL sync
+    tests below activate with their own `@respx.mock`. Left unmocked here (`assert_all_mocked`
+    is on by default), it raises for anything that is not this one URL, which is what lets
+    `Mocker.handler()` fall through to that other router for GHL's. The handful of tests that
+    care what a name resolves to add their own, more specific mock over this one.
+    """
+    router = respx.mock(assert_all_called=False)
+    router.post(RETELL_AGENTS_URL).mock(
+        return_value=httpx.Response(200, json={'items': [], 'has_more': False})
+    )
+    with router:
+        yield router
 
 
 def make_location(location_id, name):
@@ -547,6 +572,130 @@ def test_a_call_follows_its_own_bill_while_the_charge_is_in_the_air(client):
     body = get_detail(client, 'loc1').json()
 
     assert body['recent_calls'][0]['bill_status'] == 'charging'
+
+
+# --- each mapped agent's own name, read off Retell ------------------------------------------
+
+
+def test_each_mapped_agent_carries_its_own_name(client, default_retell_agents):
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent1', 'agent2'])
+    default_retell_agents.post(RETELL_AGENTS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                'items': [
+                    {'agent_id': 'agent1', 'agent_name': 'Cool Breeze front desk'},
+                    {'agent_id': 'agent2', 'agent_name': 'Cool Breeze after hours'},
+                ],
+                'has_more': False,
+            },
+        )
+    )
+
+    body = get_detail(client, 'loc1').json()
+
+    # Same ids, same order as `retell_agent_ids` - editing still works in plain ids.
+    assert body['retell_agent_ids'] == ['agent1', 'agent2']
+    assert body['retell_agents'] == [
+        {'agent_id': 'agent1', 'agent_name': 'Cool Breeze front desk'},
+        {'agent_id': 'agent2', 'agent_name': 'Cool Breeze after hours'},
+    ]
+
+
+def test_an_agent_retell_no_longer_has_falls_back_to_no_name(client, default_retell_agents):
+    """An agent removed from Retell since it was mapped is still a real mapping - it has simply
+    lost the name that went with it, which the page falls back to the bare id for."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent_gone'])
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['retell_agents'] == [{'agent_id': 'agent_gone', 'agent_name': ''}]
+
+
+def test_no_agents_mapped_means_no_name_lookup_at_all(client, default_retell_agents):
+    """Nothing to name, so nothing asked - proven by the call count, not only by the result,
+    since an empty catalog would answer `[]` either way."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=[])
+
+    assert get_detail(client, 'loc1').json()['retell_agents'] == []
+    assert default_retell_agents.calls.call_count == 0
+
+
+def test_a_failed_retell_lookup_leaves_the_mapping_real_but_unnamed(client, default_retell_agents):
+    """Retell being unreachable must not take the whole page down with it."""
+    make_agency()
+    make_client('loc1')
+    default_retell_agents.post(RETELL_AGENTS_URL).mock(return_value=httpx.Response(500))
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body.get('retell_agent_ids') == ['agent1']
+    assert body['retell_agents'] == [{'agent_id': 'agent1', 'agent_name': ''}]
+
+
+# --- the Stripe customer's own name, for the billing contact card ---------------------------
+
+
+def test_detail_reports_the_stripe_customer_by_name(client, monkeypatch, default_retell_agents):
+    make_agency()
+    make_client('loc1', stripe_customer_id='cus_known')
+    monkeypatch.setattr(
+        stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name='Cool Breeze HVAC LLC')
+    )
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['stripe_customer_id'] == 'cus_known'
+    assert body['stripe_customer_name'] == 'Cool Breeze HVAC LLC'
+
+
+def test_a_stripe_customer_with_no_name_on_file_reports_none(
+    client, monkeypatch, default_retell_agents
+):
+    make_agency()
+    make_client('loc1', stripe_customer_id='cus_known')
+    monkeypatch.setattr(stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name=None))
+
+    assert get_detail(client, 'loc1').json()['stripe_customer_name'] == ''
+
+
+def test_no_stripe_customer_means_no_name_lookup_at_all(client, monkeypatch, default_retell_agents):
+    """Nothing matched yet, so nothing to ask Stripe for - proven by never calling it, not only
+    by the empty result, since an unmocked call failing closed would answer the same way."""
+    make_agency()
+    make_client('loc1')
+
+    def unexpected(*args, **kwargs):
+        raise AssertionError('should never ask Stripe for a customer that was never matched')
+
+    monkeypatch.setattr(stripe.Customer, 'retrieve', unexpected)
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['stripe_customer_id'] == ''
+    assert body['stripe_customer_name'] == ''
+
+
+def test_an_unreachable_stripe_leaves_the_page_up_with_no_name(
+    client, monkeypatch, default_retell_agents
+):
+    """A name is not what the charge depends on, so Stripe being down must not take the rest of
+    the client's own page down with it."""
+    make_agency()
+    make_client('loc1', stripe_customer_id='cus_known')
+
+    def unreachable(*args, **kwargs):
+        raise stripe.APIConnectionError('Stripe is unreachable.')
+
+    monkeypatch.setattr(stripe.Customer, 'retrieve', unreachable)
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['stripe_customer_id'] == 'cus_known'
+    assert body['stripe_customer_name'] == ''
 
 
 def test_detail_carries_the_defaults_the_reset_action_writes_back(client):

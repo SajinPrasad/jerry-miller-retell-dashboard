@@ -105,6 +105,23 @@ def customer_id(client: ClientMapping) -> str:
     return client.stripe_customer_id
 
 
+def customer_name(stripe_customer_id: str) -> str:
+    """The Stripe customer's own name, for display - the id means nothing to a reader of the
+    admin page.
+
+    Empty when Stripe has no name on the customer, or when Stripe cannot be reached right now:
+    showing a name is not what the charge depends on, so a Stripe outage must not break the page
+    that already shows what was billed.
+    """
+    _configure()
+    try:
+        record = stripe.Customer.retrieve(stripe_customer_id)
+    except stripe.StripeError:
+        logger.exception('stripe: could not read customer %s', stripe_customer_id)
+        return ''
+    return getattr(record, 'name', None) or ''
+
+
 def _assert_chargeable(customer: str) -> None:
     """Refuse to raise an invoice for a customer Stripe has no card to charge.
 

@@ -51,6 +51,9 @@ interface Spec {
   owner_name: string
   billing_email: string
   stripe_customer_id: string
+  /** The name Stripe holds on the customer - a business name, usually, and no relation to
+   * `owner_name` beyond both naming the same client. Absent wherever `stripe_customer_id` is. */
+  stripe_customer_name?: string
   /** Set only on the sample client Stripe could not match, so the preview shows that state. */
   billing_failure_reason?: string
   voice_rate_cents: number
@@ -81,6 +84,7 @@ const SPECS: Spec[] = [
     owner_name: 'Dana Reyes',
     billing_email: 'dana@coolbreeze.test',
     stripe_customer_id: 'cus_demoCoolBreeze',
+    stripe_customer_name: 'Cool Breeze HVAC LLC',
     bill_status: 'paid',
     voice_rate_cents: 25,
     call_rate_cents: 5,
@@ -124,6 +128,7 @@ const SPECS: Spec[] = [
     owner_name: 'Marcus Hale',
     billing_email: 'marcus@polarpeak.test',
     stripe_customer_id: 'cus_demoPolarPeak',
+    stripe_customer_name: 'Polar Peak Heating & Air Inc.',
     bill_status: 'failed',
     bill_failure_reason: 'card_declined',
     voice_rate_cents: 28,
@@ -212,6 +217,13 @@ export function demoRetellAgents(): RetellAgent[] {
   ]
 }
 
+/** The mapped agent ids, each carrying its own name - the same shape the real backend resolves
+ * them to, so the preview's Mapping card shows a name rather than an id for the same reason. */
+function agentsWithNames(agentIds: string[]): RetellAgent[] {
+  const names = new Map(demoRetellAgents().map((agent) => [agent.agent_id, agent.agent_name]))
+  return agentIds.map((agent_id) => ({ agent_id, agent_name: names.get(agent_id) ?? '' }))
+}
+
 /** The same, for the Twilio picker. The parent account is not among them, as on the real one. */
 export function demoTwilioSubaccounts(): TwilioSubaccount[] {
   return [
@@ -278,11 +290,13 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       active: true,
       billing_mode: 'auto_charge',
       retell_agent_ids: edit.retell_agent_ids,
+      retell_agents: agentsWithNames(edit.retell_agent_ids),
       phone_numbers: edit.phone_numbers,
       twilio_subaccount_sid: edit.twilio_subaccount_sid,
       owner_name: 'Priya Nandakumar',
       billing_email: 'priya@summitair.test',
       stripe_customer_id: '',
+      stripe_customer_name: '',
       billing_failure_reason: '',
       rates: null,
       rate_history: [],
@@ -308,11 +322,13 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     active: true,
     billing_mode: 'auto_charge',
     retell_agent_ids: spec.agents,
+    retell_agents: agentsWithNames(spec.agents),
     phone_numbers: spec.numbers,
     twilio_subaccount_sid: spec.twilio_sid,
     owner_name: spec.owner_name,
     billing_email: spec.billing_email,
     stripe_customer_id: spec.stripe_customer_id,
+    stripe_customer_name: spec.stripe_customer_name ?? '',
     billing_failure_reason: spec.billing_failure_reason ?? '',
     rates: { ...rate(spec), start_date: `${month}-15` },
     rate_history: [

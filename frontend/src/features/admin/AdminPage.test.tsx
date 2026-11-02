@@ -71,11 +71,13 @@ const detail: ClientDetail = {
   active: true,
   billing_mode: 'auto_charge',
   retell_agent_ids: ['agent_1'],
+  retell_agents: [{ agent_id: 'agent_1', agent_name: 'Cool Breeze front desk' }],
   phone_numbers: ['+15551234567'],
   twilio_subaccount_sid: 'ACchild',
   owner_name: 'Dana Reyes',
   billing_email: 'dana@coolbreeze.test',
   stripe_customer_id: 'cus_coolbreeze',
+  stripe_customer_name: 'Cool Breeze HVAC LLC',
   billing_failure_reason: '',
   rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
@@ -178,6 +180,8 @@ function mockApi(
     bill?: BillSummary | null
     /** The month's calls, when a test needs them on bills of their own. */
     calls?: RecentCall[]
+    /** Overrides onto the fixture detail, for a field no other option already covers. */
+    detail?: Partial<ClientDetail>
   } = {},
 ) {
   const { session = agencySession, perMonth = {}, bill = null } = options
@@ -205,6 +209,7 @@ function mockApi(
         bill,
         recent_calls: options.calls ?? detail.recent_calls,
         usage: (perMonth[month] ?? mapped).usage,
+        ...options.detail,
       })
     }
 
@@ -427,7 +432,9 @@ describe('AdminPage', () => {
     render(<AdminPage />)
     await openClient(user)
 
-    expect(screen.getByText('agent_1')).toBeInTheDocument()
+    // The agent's own name, not the raw Retell id behind it.
+    expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
+    expect(screen.queryByText('agent_1')).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: '← All clients' })).toBeInTheDocument()
   })
 
@@ -578,13 +585,21 @@ describe('AdminPage', () => {
         }
 
         if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
+          const savedAgentIds = saved.body?.retell_agent_ids as string[] | undefined
           return json({
             ...detail,
             twilio_subaccount_sid:
               (saved.body?.twilio_subaccount_sid as string | undefined) ??
               detail.twilio_subaccount_sid,
-            retell_agent_ids:
-              (saved.body?.retell_agent_ids as string[] | undefined) ?? detail.retell_agent_ids,
+            retell_agent_ids: savedAgentIds ?? detail.retell_agent_ids,
+            retell_agents: savedAgentIds
+              ? savedAgentIds.map((agent_id) => ({
+                  agent_id,
+                  agent_name: retellAgents.agents.find((a) => a.agent_id === agent_id)
+                    ?.agent_name ?? detail.retell_agents.find((a) => a.agent_id === agent_id)
+                    ?.agent_name ?? '',
+                }))
+              : detail.retell_agents,
           })
         }
         if (url.startsWith('/api/rebilling/admin/clients/loc-new/')) {
@@ -596,11 +611,13 @@ describe('AdminPage', () => {
             active: true,
             billing_mode: 'auto_charge',
             retell_agent_ids: (saved.body?.retell_agent_ids as string[] | undefined) ?? [],
+            retell_agents: [],
             phone_numbers: [],
             twilio_subaccount_sid: '',
             owner_name: 'Rowan Blake',
             billing_email: 'rowan@polarpeak.test',
             stripe_customer_id: '',
+            stripe_customer_name: '',
             billing_failure_reason: '',
             rates: null,
             rate_history: [],
@@ -667,19 +684,26 @@ describe('AdminPage', () => {
     const search = screen.getByLabelText('Search Retell agents')
     await user.type(search, 'after')
 
-    expect(screen.getByText('Cool Breeze after hours')).toBeInTheDocument()
-    expect(screen.queryByText('Polar Peak service calls')).not.toBeInTheDocument()
+    // Scoped to the dropdown: the chip for an already-mapped agent now shows its name too, on a
+    // "Remove ..." button the loose name match would otherwise also catch.
+    const panel = () => document.querySelector('.select-options') as HTMLElement
+    expect(within(panel()).getByRole('button', { name: /Cool Breeze after hours/ })).toBeInTheDocument()
+    expect(
+      within(panel()).queryByRole('button', { name: /Polar Peak service calls/ }),
+    ).not.toBeInTheDocument()
 
     // The id is searchable too: it is what a Retell dashboard shows against a call.
     await user.clear(search)
     await user.type(search, 'agent_9')
-    expect(screen.getByText('Polar Peak service calls')).toBeInTheDocument()
-    expect(screen.queryByText('Cool Breeze front desk')).not.toBeInTheDocument()
+    expect(within(panel()).getByRole('button', { name: /Polar Peak service calls/ })).toBeInTheDocument()
+    expect(
+      within(panel()).queryByRole('button', { name: /Cool Breeze front desk/ }),
+    ).not.toBeInTheDocument()
 
     // Closing and reopening searches the list already in hand rather than asking Retell again.
     await user.keyboard('{Escape}')
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
-    await screen.findByText('Cool Breeze front desk')
+    await within(panel()).findByRole('button', { name: /Cool Breeze front desk/ })
     expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(1)
   })
 
@@ -692,11 +716,15 @@ describe('AdminPage', () => {
     await openClient(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
-    // `agent_1` is already mapped to Cool Breeze, so it cannot be added a second time.
-    const alreadyMapped = await screen.findByRole('button', { name: /Cool Breeze front desk/ })
+    // `agent_1` is already mapped to Cool Breeze, so it cannot be added a second time. Scoped to
+    // the dropdown: the chip for that same agent now shows its name too, on a "Remove ..."
+    // button the loose name match would otherwise also catch.
+    await screen.findByText('Polar Peak service calls')
+    const panel = document.querySelector('.select-options') as HTMLElement
+    const alreadyMapped = within(panel).getByRole('button', { name: /Cool Breeze front desk/ })
     expect(alreadyMapped).toBeDisabled()
     expect(within(alreadyMapped).getByText('Added')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Cool Breeze after hours/ })).toBeEnabled()
+    expect(within(panel).getByRole('button', { name: /Cool Breeze after hours/ })).toBeEnabled()
   })
 
   it('adds a picked agent to the mapping and sends its id to the backend', async () => {
@@ -709,8 +737,9 @@ describe('AdminPage', () => {
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
     await user.click(await screen.findByRole('button', { name: /Cool Breeze after hours/ }))
 
-    // Picked by name, stored as the id, which is what the webhook matches a call on.
-    expect(screen.getByText('agent_2')).toBeInTheDocument()
+    // Shown by the name it was picked by - the id is only what goes to the backend.
+    expect(screen.getByText('Cool Breeze after hours')).toBeInTheDocument()
+    expect(screen.queryByText('agent_2')).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
@@ -734,9 +763,48 @@ describe('AdminPage', () => {
     // Read from the sub-account's GoHighLevel owner, matched in Stripe by their email.
     expect(await screen.findByText('Dana Reyes')).toBeInTheDocument()
     expect(screen.getByText('dana@coolbreeze.test')).toBeInTheDocument()
-    expect(screen.getByText('cus_coolbreeze')).toBeInTheDocument()
+    // The Stripe customer's own name, never the raw id behind it.
+    expect(screen.getByText('Cool Breeze HVAC LLC')).toBeInTheDocument()
+    expect(screen.queryByText('cus_coolbreeze')).not.toBeInTheDocument()
     // No picker and no text box: changing who pays means changing it in GoHighLevel.
     expect(screen.queryByRole('button', { name: /Stripe customer/i })).not.toBeInTheDocument()
+  })
+
+  it('falls back to the sub-account name when GoHighLevel has no owner on file', async () => {
+    parentAnswers()
+    mockApi({ detail: { owner_name: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    // Still a name, never blank and never a reason to show the id instead - the client's own
+    // name, on the billing contact card's "Sub-account" row specifically.
+    const subAccountRow = (await screen.findByText('Sub-account')).nextElementSibling
+    expect(subAccountRow).toHaveTextContent('Cool Breeze HVAC')
+    expect(screen.queryByText('Not set in GoHighLevel')).not.toBeInTheDocument()
+  })
+
+  it('says so when Stripe has no name on file for an otherwise matched customer', async () => {
+    parentAnswers()
+    mockApi({ detail: { stripe_customer_name: '' } })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(await screen.findByText('No name on file in Stripe')).toBeInTheDocument()
+    expect(screen.queryByText('cus_coolbreeze')).not.toBeInTheDocument()
+  })
+
+  it('shows a sub-account its mapped agents by name, same as the agency admin does', async () => {
+    parentAnswers()
+    mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+
+    render(<AdminPage />)
+
+    expect(await screen.findByText('Cool Breeze front desk')).toBeInTheDocument()
+    expect(screen.queryByText('agent_1')).not.toBeInTheDocument()
   })
 
   it('picks a Twilio subaccount by name and saves its SID', async () => {

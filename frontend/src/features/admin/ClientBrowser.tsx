@@ -167,6 +167,7 @@ function SetUpMapping({
         locationId={locationId}
         clientName={clientName}
         initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
+        agentNames={[]}
         preview={preview}
         onSaved={onSaved}
       />

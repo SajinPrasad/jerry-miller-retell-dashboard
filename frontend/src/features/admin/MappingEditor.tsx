@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getRetellAgents, getTwilioSubaccounts, saveMapping } from '../../api/admin'
 import { ApiError } from '../../api/client'
-import type { MappingFields, MappingResult } from '../../types/admin'
+import type { MappingFields, MappingResult, RetellAgent } from '../../types/admin'
 import SearchableSelect, { type Option } from './SearchableSelect'
 import { demoRetellAgents, demoTwilioSubaccounts, savePreviewMapping } from './demoData'
 
@@ -9,6 +9,9 @@ interface Props {
   locationId: string
   clientName: string
   initial: MappingFields
+  /** The names behind `initial.retell_agent_ids`, in the same order - what the chip list reads
+   * before the picker has been opened once to learn any more. */
+  agentNames: RetellAgent[]
   /** The standalone preview never reaches the admin API: saving here only updates the sample
    * data held for this tab, and the pickers read sample agents and subaccounts too. */
   preview: boolean
@@ -26,10 +29,23 @@ interface Props {
  * whose minutes quietly land in `UnassignedCall`. Phone numbers stay typed - they are the backup
  * match for calls an agent id does not cover, and they come off a GHL sub-account, not Retell.
  */
-export default function MappingEditor({ locationId, clientName, initial, preview, onSaved }: Props) {
+export default function MappingEditor({
+  locationId,
+  clientName,
+  initial,
+  agentNames,
+  preview,
+  onSaved,
+}: Props) {
   const [twilioSid, setTwilioSid] = useState(initial.twilio_subaccount_sid)
   const [agentIds, setAgentIds] = useState(initial.retell_agent_ids)
   const [phoneNumbers, setPhoneNumbers] = useState(initial.phone_numbers)
+  // What each agent id on this client is called, for the chip list. Seeded from the page's own
+  // read, and filled in as the picker is used - the picker already knows the name of whatever
+  // it just offered, so asking the backend again for it would be asking for what is on screen.
+  const [agentLabels, setAgentLabels] = useState<Record<string, string>>(() =>
+    Object.fromEntries(agentNames.map((agent) => [agent.agent_id, agent.agent_name])),
+  )
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -90,6 +106,7 @@ export default function MappingEditor({ locationId, clientName, initial, preview
         <span className="tile-label">Retell agents</span>
         <ChipList
           items={agentIds}
+          labels={agentLabels}
           onRemove={(agentId) => setAgentIds(agentIds.filter((item) => item !== agentId))}
           empty="No agents yet."
         />
@@ -100,7 +117,10 @@ export default function MappingEditor({ locationId, clientName, initial, preview
           load={loadAgents}
           chosen={agentIds}
           chosenLabel="Added"
-          onChoose={(option) => setAgentIds([...agentIds, option.value])}
+          onChoose={(option) => {
+            setAgentIds([...agentIds, option.value])
+            setAgentLabels({ ...agentLabels, [option.value]: option.label })
+          }}
         />
       </div>
 
@@ -132,27 +152,42 @@ export default function MappingEditor({ locationId, clientName, initial, preview
   )
 }
 
-/** What is mapped so far, each removable. */
+/**
+ * What is mapped so far, each removable.
+ *
+ * Phone numbers have no name behind them and are left as `<code>` - an id with a known label
+ * (an agent) shows the label instead, falling back to the id for one `labels` has nothing for,
+ * the same way the backend's own fallback does.
+ */
 function ChipList({
   items,
+  labels,
   onRemove,
   empty,
 }: {
   items: string[]
+  labels?: Record<string, string>
   onRemove: (item: string) => void
   empty: string
 }) {
   if (items.length === 0) return <p className="muted small">{empty}</p>
   return (
     <ul className="chip-list">
-      {items.map((item) => (
-        <li key={item} className="chip">
-          <code>{item}</code>
-          <button type="button" aria-label={`Remove ${item}`} onClick={() => onRemove(item)}>
-            ×
-          </button>
-        </li>
-      ))}
+      {items.map((item) => {
+        const label = labels?.[item]
+        return (
+          <li key={item} className="chip">
+            {label ? <span>{label}</span> : <code>{item}</code>}
+            <button
+              type="button"
+              aria-label={`Remove ${label || item}`}
+              onClick={() => onRemove(item)}
+            >
+              ×
+            </button>
+          </li>
+        )
+      })}
     </ul>
   )
 }

@@ -107,6 +107,16 @@ read-only.
   `No Twilio subaccount` row, which is how a client is taken off regular-call billing now that the
   SID is not a text box. **Phone numbers are still typed** - they are the backup match for calls no
   mapped agent covers, and they come off a GHL sub-account, not off Retell.
+  - **A mapped agent is shown by name everywhere, including to a sub-account that cannot open the
+    picker.** `client_detail` carries `retell_agents` - `retell_agent_ids` itself, unchanged,
+    plus the same ids each paired with a name read off `RetellReconciliationService.list_agents()`
+    (`_retell_agents()`, `services.py`), empty for one Retell has no name for right now (removed
+    since, or Retell unreachable - logged, not raised) or when nothing is mapped at all, which
+    skips the call entirely. This *is* a live call on every view of a mapped client's page, unlike
+    the picker's full catalog above - the name is shown unconditionally, not only once a picker is
+    opened, so there is no visit to defer it past. `MappingEditor`'s chip list seeds its labels
+    from `retell_agents` and fills in anything picked afterwards from the option it was chosen
+    from, so it never re-asks the backend for a name it was just given.
 - **An agency admin opening an unmapped client never calls the 404ing detail endpoint.** Both
   `AdminPage.tsx` and `AdminPreviewPage.tsx` skip the detail fetch whenever the clients list has
   already marked the selected row `mapped: false`, and hand `ClientBrowser` a synthesized
@@ -242,6 +252,16 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     `ClientDetail`'s **Billing contact** card shows it against the client. A failed *read* of a
     sub-account's details leaves the stored owner alone - only GHL genuinely dropping the email
     clears it, because a stale address would quietly match and charge whoever still has it.
+  - **The billing contact card shows names, never the ids behind them.** `client_detail` calls
+    `stripe_billing.customer_name()` - `stripe.Customer.retrieve()`, read fresh on every view
+    rather than cached, since nothing else in this app stores it - and sends `stripe_customer_name`
+    alongside `stripe_customer_id`, which the page keeps for its own no-customer-yet check but
+    never shows. Empty when Stripe has no name on the customer or could not be reached just now,
+    which `customer_name()` catches and logs rather than raising: a name is not what the charge
+    depends on, so Stripe being briefly down must not take the whole page down with it. The
+    **Sub-account** row shows the GHL owner's name, same as before, falling back to the client's
+    own name (`client_name`) rather than to "Not set in GoHighLevel" - always a name, never a
+    blank, since there is nothing here for an admin to act on either way.
   - **A card is checked for before an invoice is raised.** `_assert_chargeable()` reads the
     customer and requires `invoice_settings.default_payment_method` or the legacy
     `default_source` - the same order Stripe itself collects in. Without the check a cardless

@@ -130,9 +130,16 @@ export interface ClientDetail {
   owner_name: string
   billing_email: string
   stripe_customer_id: string
+  /** The Stripe customer's own name - empty when Stripe has none on file, or could not be
+   * read just now. Never shown in place of the id; the id is never shown at all. */
+  stripe_customer_name: string
   /** Why the last bill could not be charged, when no customer was matched. */
   billing_failure_reason: string
   retell_agent_ids: string[]
+  /** The same ids as `retell_agent_ids`, in the same order, each carrying the agent's own name
+   * off Retell - empty when Retell has none mapped to the id right now. Separate from
+   * `retell_agent_ids` because editing still works in plain ids. */
+  retell_agents: RetellAgent[]
   phone_numbers: string[]
   twilio_subaccount_sid: string
   rates: Rates | null

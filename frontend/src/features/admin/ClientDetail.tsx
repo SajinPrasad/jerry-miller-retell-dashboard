@@ -247,6 +247,7 @@ export default function ClientDetail({
               retell_agent_ids: detail.retell_agent_ids,
               phone_numbers: detail.phone_numbers,
             }}
+            agentNames={detail.retell_agents}
             preview={preview}
             onSaved={onMappingSaved}
           />
@@ -254,8 +255,8 @@ export default function ClientDetail({
           <dl className="facts">
             <dt>Retell agents</dt>
             <dd>
-              {detail.retell_agent_ids.length > 0 ? (
-                detail.retell_agent_ids.map((id) => <code key={id}>{id}</code>)
+              {detail.retell_agents.length > 0 ? (
+                detail.retell_agents.map((agent) => agent.agent_name || agent.agent_id).join(', ')
               ) : (
                 <span className="muted">None mapped</span>
               )}
@@ -474,28 +475,38 @@ function Tile({ label, value, accent }: { label: string; value: string; accent?:
  * nothing, which is fixed in GoHighLevel or in Stripe, never here.
  */
 function BillingContact({ detail }: { detail: Detail }) {
-  const { owner_name, billing_email, stripe_customer_id, billing_failure_reason } = detail
+  const {
+    owner_name,
+    billing_email,
+    stripe_customer_id,
+    stripe_customer_name,
+    billing_failure_reason,
+    client_name,
+  } = detail
+  // The owner's name from GoHighLevel, or the sub-account's own name when nobody has set one -
+  // either way, a name, never the raw id a reader could do nothing with.
+  const subAccount = owner_name || client_name
 
   return (
     <section className="card">
       <h2>Billing contact</h2>
       <dl className="facts">
-        <dt>Sub-account owner</dt>
-        <dd>{owner_name || <span className="muted">Not set in GoHighLevel</span>}</dd>
+        <dt>Stripe customer</dt>
+        <dd>
+          {stripe_customer_id ? (
+            stripe_customer_name || <span className="muted">No name on file in Stripe</span>
+          ) : (
+            <span className="muted">Matched on the first charge</span>
+          )}
+        </dd>
         <dt>Billing email</dt>
         <dd>
           {billing_email || (
             <span className="muted">No email on the sub-account owner in GoHighLevel</span>
           )}
         </dd>
-        <dt>Stripe customer</dt>
-        <dd>
-          {stripe_customer_id ? (
-            <code>{stripe_customer_id}</code>
-          ) : (
-            <span className="muted">Matched on the first charge</span>
-          )}
-        </dd>
+        <dt>Sub-account</dt>
+        <dd>{subAccount}</dd>
       </dl>
       {!stripe_customer_id && billing_failure_reason && (
         <div className="banner error" role="alert">

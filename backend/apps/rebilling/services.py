@@ -690,12 +690,19 @@ def _billing_link(mapping: ClientMapping) -> dict:
     bill recorded is shown instead of an id - that message is the whole of what an admin can act
     on, and it is the only thing distinguishing "not charged yet" from "cannot be charged".
     """
+    # Imported here, not at module level: `stripe_billing` imports `month_window` from this
+    # module, so importing it back at the top would be circular.
+    from .stripe_billing import customer_name
+
     owner = GHLOAuthToken.objects.filter(is_agency=False, location_id=mapping.location_id).first()
     latest = mapping.bills.first()
     return {
         'owner_name': owner.owner_name if owner else '',
         'billing_email': mapping.billing_email,
         'stripe_customer_id': mapping.stripe_customer_id,
+        'stripe_customer_name': (
+            customer_name(mapping.stripe_customer_id) if mapping.stripe_customer_id else ''
+        ),
         'billing_failure_reason': latest.failure_reason if latest else '',
     }
 
@@ -723,6 +730,33 @@ def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
     }
 
 
+def _retell_agents(mapping: ClientMapping) -> list[dict]:
+    """The mapped agents' own names, for display - a sub-account's read-only page cannot call
+    the agency-only picker endpoint to learn them itself, so this reads them the same way that
+    endpoint does.
+
+    Falls back to the bare id, the same as the picker, whenever Retell has no name for it: an
+    agent removed from Retell since it was mapped, or Retell unreachable right now, is still a
+    real mapping even though its name cannot be read at the moment.
+    """
+    agent_ids = mapping.retell_agent_ids or []
+    if not agent_ids:
+        return []
+
+    names = {}
+    try:
+        names = {
+            agent['agent_id']: agent['agent_name']
+            for agent in RetellReconciliationService().list_agents()
+        }
+    except RetellError:
+        logger.exception('rebilling: Retell agent list failed while naming %s', mapping.location_id)
+
+    return [
+        {'agent_id': agent_id, 'agent_name': names.get(agent_id) or ''} for agent_id in agent_ids
+    ]
+
+
 def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
     """One client: how they are mapped, what they are charged, and what they used."""
     return {
@@ -732,6 +766,7 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
         'retell_agent_ids': mapping.retell_agent_ids or [],
+        'retell_agents': _retell_agents(mapping),
         'phone_numbers': mapping.phone_numbers or [],
         'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
         **_billing_link(mapping),

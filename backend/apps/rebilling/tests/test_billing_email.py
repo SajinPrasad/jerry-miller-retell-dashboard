@@ -7,8 +7,13 @@ when it changes, and never leaving a stale address pointed at a live card.
 """
 
 from datetime import date, timedelta
+from types import SimpleNamespace
 
+import httpx
 import pytest
+import respx
+import stripe
+from django.conf import settings
 from django.utils import timezone
 
 from apps.ghl.models import GHLOAuthToken
@@ -26,6 +31,22 @@ pytestmark = pytest.mark.django_db
 
 MONTH_START = date(2026, 3, 1)
 MONTH_END = date(2026, 3, 31)
+
+RETELL_AGENTS_URL = f'{settings.RETELL_API_BASE_URL}/v2/list-agents'
+
+
+@pytest.fixture(autouse=True)
+def default_retell_agents():
+    """`client_detail` names each mapped agent off Retell now, and `make_client()` maps every
+    sample client to `agent1` - nothing here is about agent names, so a bare empty catalog is
+    enough to keep every `client_detail()` call in this file off the real network.
+    """
+    router = respx.mock(assert_all_called=False)
+    router.post(RETELL_AGENTS_URL).mock(
+        return_value=httpx.Response(200, json={'items': [], 'has_more': False})
+    )
+    with router:
+        yield router
 
 
 def make_sub_account(
@@ -128,10 +149,13 @@ def test_a_mapping_for_a_sub_account_we_have_no_owner_for_is_still_created():
 # --- what the admin page reads ------------------------------------------------------------------
 
 
-def test_the_detail_view_shows_who_pays_and_that_stripe_matched_them():
+def test_the_detail_view_shows_who_pays_and_that_stripe_matched_them(monkeypatch):
     make_sub_account()
     client = make_client(
         'loc1', billing_email='owner@coolbreeze.test', stripe_customer_id='cus_known'
+    )
+    monkeypatch.setattr(
+        stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name='Cool Breeze HVAC LLC')
     )
 
     detail = client_detail(client, MONTH_START, MONTH_END)
@@ -139,6 +163,7 @@ def test_the_detail_view_shows_who_pays_and_that_stripe_matched_them():
     assert detail['owner_name'] == 'Dana Reyes'
     assert detail['billing_email'] == 'owner@coolbreeze.test'
     assert detail['stripe_customer_id'] == 'cus_known'
+    assert detail['stripe_customer_name'] == 'Cool Breeze HVAC LLC'
     assert detail['billing_failure_reason'] == ''
 
 

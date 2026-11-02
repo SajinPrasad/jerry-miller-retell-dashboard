@@ -42,7 +42,9 @@ describe('AdminPreviewPage', () => {
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
 
-    expect(await screen.findByText('agent_polar_peak')).toBeInTheDocument()
+    // The agent's own name, not its raw Retell id.
+    expect(await screen.findByText('Polar Peak Heating & Air — main line')).toBeInTheDocument()
+    expect(screen.queryByText('agent_polar_peak')).not.toBeInTheDocument()
     expect(screen.getByText('Rates')).toBeInTheDocument()
   })
 
@@ -178,8 +180,9 @@ describe('AdminPreviewPage', () => {
     await user.click(await screen.findByRole('button', { name: /Summit Air Solutions — main line/ }))
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
-    // The setup card is gone: it is a mapped client's page now, with the agent it was given.
-    expect(await screen.findByText('agent_summit_air')).toBeInTheDocument()
+    // The setup card is gone: it is a mapped client's page now, with the agent it was given -
+    // by name, not by its raw Retell id.
+    expect(await screen.findByText('Summit Air Solutions — main line')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '← All clients' }))
 
