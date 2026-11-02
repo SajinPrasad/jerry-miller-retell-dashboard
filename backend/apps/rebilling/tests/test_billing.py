@@ -7,6 +7,7 @@ from io import StringIO
 import pytest
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.test import override_settings
 
 from apps.rebilling.models import (
     BILLABLE,
@@ -140,6 +141,7 @@ def test_call_on_a_day_with_no_rate_is_left_out_of_the_bill():
 # --- Twilio line -----------------------------------------------------------------------------
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_twilio_line_bills_at_the_rate_in_effect():
     client = make_client(twilio_subaccount_sid='ACchild')
     RateHistory.objects.create(client=client, start_date=date(2026, 1, 1), call_rate_cents=5)
@@ -154,6 +156,7 @@ def test_twilio_line_bills_at_the_rate_in_effect():
     assert line.bill_cents == 200  # 40 minutes * 5c
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_twilio_minutes_are_never_rounded_again():
     client = make_client(twilio_subaccount_sid='ACchild')
     RateHistory.objects.create(client=client, start_date=date(2026, 1, 1), call_rate_cents=10)
@@ -178,6 +181,7 @@ def test_client_without_a_twilio_subaccount_gets_no_twilio_line():
     assert not bill.lines.filter(line_type=TWILIO_LINE).exists()
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_client_billed_for_only_one_source_gets_only_that_line():
     client = make_client(twilio_subaccount_sid='ACchild')
     RateHistory.objects.create(client=client, start_date=date(2026, 1, 1))
@@ -191,9 +195,56 @@ def test_client_billed_for_only_one_source_gets_only_that_line():
     assert bill.lines.get().line_type == TWILIO_LINE
 
 
+# --- Twilio paused: GoHighLevel rebills those minutes natively ---------------------------------
+
+
+def test_twilio_usage_is_not_billed_while_twilio_billing_is_paused():
+    """The default. GoHighLevel already rebills these minutes, so billing them here too would
+    charge the client for the same calls twice."""
+    client = make_client(twilio_subaccount_sid='ACchild')
+    RateHistory.objects.create(
+        client=client, start_date=date(2026, 1, 1), voice_rate_cents=25, call_rate_cents=5
+    )
+    add_call(client, 'call1', duration_ms=120_000)  # 2 min * 25c = 50c
+    add_twilio_day(client, date(2026, 3, 10), minutes='20.00', cents=80)
+
+    calculate_bills(MONTH)
+
+    bill = Bill.objects.get(client=client, billing_period=MONTH)
+    assert bill.lines.count() == 1
+    assert bill.lines.get().line_type == RETELL_LINE
+    assert bill.total_cents == 50
+
+
+def test_a_client_with_only_twilio_usage_gets_no_bill_while_paused():
+    """Not a zero bill, and not a Twilio one: there is simply nothing for us to charge."""
+    client = make_client(twilio_subaccount_sid='ACchild')
+    RateHistory.objects.create(client=client, start_date=date(2026, 1, 1))
+    add_twilio_day(client, date(2026, 3, 10), minutes='10.00', cents=50)
+
+    result = calculate_bills(MONTH)
+
+    assert result['bills_created'] == 0
+    assert not Bill.objects.exists()
+
+
+def test_a_paused_twilio_day_is_left_unlinked_so_it_can_be_billed_later():
+    client = make_client(twilio_subaccount_sid='ACchild')
+    RateHistory.objects.create(client=client, start_date=date(2026, 1, 1))
+    add_call(client, 'call1', duration_ms=60_000)
+    add_twilio_day(client, date(2026, 3, 10), minutes='10.00', cents=50)
+
+    calculate_bills(MONTH)
+
+    day = TwilioUsageDay.objects.get(client=client)
+    assert day.bill is None
+    assert day.usage_minutes == Decimal('10.00')
+
+
 # --- Both sources, totals, skipping and idempotency -------------------------------------------
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_bill_combines_both_sources_into_one_total():
     client = make_client(twilio_subaccount_sid='ACchild')
     RateHistory.objects.create(
@@ -264,6 +315,7 @@ def test_two_clients_bill_independently():
     assert Bill.objects.get(client=branwynn, billing_period=MONTH).total_cents == 40
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_deleting_a_bill_never_deletes_the_underlying_records():
     client = make_client(twilio_subaccount_sid='ACchild')
     RateHistory.objects.create(client=client, start_date=date(2026, 1, 1))

@@ -96,6 +96,7 @@ export default function ClientBrowser({
                 <SetUpMapping
                   locationId={openDetail.location_id}
                   clientName={openDetail.client_name}
+                  twilioEnabled={openDetail.twilio_billing_enabled}
                   preview={preview}
                   onSaved={onMappingSaved}
                 />
@@ -133,7 +134,12 @@ export default function ClientBrowser({
             estimate.
           </p>
           {shown ? (
-            <ClientsTable clients={shown.clients} onSelect={onSelect} canEdit={canEdit} />
+            <ClientsTable
+              clients={shown.clients}
+              onSelect={onSelect}
+              canEdit={canEdit}
+              twilioEnabled={shown.twilio_billing_enabled}
+            />
           ) : (
             <ClientsTableSkeleton />
           )}
@@ -148,11 +154,13 @@ export default function ClientBrowser({
 function SetUpMapping({
   locationId,
   clientName,
+  twilioEnabled,
   preview,
   onSaved,
 }: {
   locationId: string
   clientName: string
+  twilioEnabled: boolean
   preview: boolean
   onSaved: (result: MappingResult) => void
 }) {
@@ -160,14 +168,16 @@ function SetUpMapping({
     <section className="card">
       <h2>{clientName || 'This client'}</h2>
       <p className="muted small">
-        Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to
-        start tracking usage.
+        {twilioEnabled
+          ? 'Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to start tracking usage.'
+          : 'Not set up for billing yet. Add its Retell agents to start tracking usage.'}
       </p>
       <MappingEditor
         locationId={locationId}
         clientName={clientName}
         initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
         agentNames={[]}
+        twilioEnabled={twilioEnabled}
         preview={preview}
         onSaved={onSaved}
       />

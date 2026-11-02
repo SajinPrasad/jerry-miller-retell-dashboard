@@ -75,24 +75,25 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('picks a sample Twilio subaccount in the preview, and it sticks on reopen', async () => {
+  it('leaves Twilio out of the preview entirely, the way the paused backend does', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+    await screen.findByText('Mapping')
 
-    // The SID Polar Peak is on today. The picker offers the sample subaccounts, not Twilio's.
-    await user.click(await screen.findByRole('button', { name: 'ACdemopolarpeak00000000000000002' }))
-    await user.click(await screen.findByRole('button', { name: /Cool Breeze HVAC/ }))
-    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
-
-    await user.click(screen.getByRole('button', { name: '← All clients' }))
-    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
-
+    // The sample data still carries this client's SID, its phone numbers and its daily Twilio
+    // rows - the preview simply does not show them while rebilling is paused.
     expect(
-      await screen.findByRole('button', { name: 'ACdemocoolbreeze0000000000000001' }),
-    ).toBeInTheDocument()
+      screen.queryByRole('button', { name: 'ACdemopolarpeak00000000000000002' }),
+    ).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Add a phone number')).not.toBeInTheDocument()
+    expect(screen.queryByText('Twilio calls by day')).not.toBeInTheDocument()
+    expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
+    // Still the one thing an admin can map here.
+    expect(screen.getByRole('button', { name: 'Add a Retell agent' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -141,9 +142,9 @@ describe('AdminPreviewPage', () => {
     await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
 
     // Held in the sample data, like a preview mapping edit - and the estimate follows it:
-    // 198.40 AI minutes at 50c plus 124 call minutes at 5c.
+    // 198.40 AI minutes at 50c, and nothing for the 124 call minutes while Twilio is paused.
     expect(await screen.findByLabelText('AI minute rate')).toHaveValue('0.50')
-    expect(tile('Estimated').getByText('$105.40')).toBeInTheDocument()
+    expect(tile('Estimated').getByText('$99.20')).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -153,7 +154,8 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
-    expect(tile('Estimated').getByText('$55.80')).toBeInTheDocument()
+    // 198.40 AI minutes at 25c. The sample Twilio minutes are not billed here.
+    expect(tile('Estimated').getByText('$49.60')).toBeInTheDocument()
 
     await user.selectOptions(monthSelect(), LAST_MONTH)
 

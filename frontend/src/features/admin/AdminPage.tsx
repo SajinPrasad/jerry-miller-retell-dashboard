@@ -204,8 +204,14 @@ export default function AdminPage() {
   const selectedSummary = shown?.clients.find((row) => row.location_id === selected) ?? null
   const openDetail: ClientDetailResult | null = !selected
     ? null
-    : selectedSummary?.mapped === false
-      ? { month, location_id: selected, client_name: selectedSummary.client_name, mapped: false }
+    : shown && selectedSummary?.mapped === false
+      ? {
+          month,
+          location_id: selected,
+          client_name: selectedSummary.client_name,
+          mapped: false,
+          twilio_billing_enabled: shown.twilio_billing_enabled,
+        }
       : detail?.location_id === selected && detail?.month === month
         ? detail
         : null

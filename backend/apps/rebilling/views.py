@@ -105,6 +105,7 @@ def _clients_response(context, request) -> Response:
         {
             'scope': context.scope,
             'month': start.strftime('%Y-%m'),
+            'twilio_billing_enabled': settings.TWILIO_BILLING_ENABLED,
             'clients': client_rows(start, end, location_id=location_id),
         }
     )
@@ -186,6 +187,7 @@ class AdminClientDetailView(APIView):
                         'location_id': location_id,
                         'client_name': location.name if location else '',
                         'mapped': False,
+                        'twilio_billing_enabled': settings.TWILIO_BILLING_ENABLED,
                     }
                 )
             raise NotFound('This client has not been mapped for billing yet.')

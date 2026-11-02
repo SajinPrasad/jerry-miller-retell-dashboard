@@ -8,13 +8,15 @@ interface Props {
    * this table (it is always taken straight to its own page), so this is never false in practice
    * today - it is threaded through anyway so that stays true by construction, not by accident. */
   canEdit: boolean
+  /** False while Twilio rebilling is paused: the status pill then speaks of Retell only. */
+  twilioEnabled: boolean
 }
 
 /**
  * Who is onboarded, and whether they are set up for billing. Nothing more: the figures live in
  * the client's own page, where there is room to show how they were arrived at.
  */
-export default function ClientsTable({ clients, onSelect, canEdit }: Props) {
+export default function ClientsTable({ clients, onSelect, canEdit, twilioEnabled }: Props) {
   if (clients.length === 0) {
     return <p className="muted">No client sub-accounts yet. Connect GoHighLevel and sync them.</p>
   }
@@ -29,7 +31,13 @@ export default function ClientsTable({ clients, onSelect, canEdit }: Props) {
       </thead>
       <tbody>
         {clients.map((client) => (
-          <ClientRow key={client.location_id} client={client} onSelect={onSelect} canEdit={canEdit} />
+          <ClientRow
+            key={client.location_id}
+            client={client}
+            onSelect={onSelect}
+            canEdit={canEdit}
+            twilioEnabled={twilioEnabled}
+          />
         ))}
       </tbody>
     </table>
@@ -40,10 +48,12 @@ function ClientRow({
   client,
   onSelect,
   canEdit,
+  twilioEnabled,
 }: {
   client: ClientSummary
   onSelect: Props['onSelect']
   canEdit: boolean
+  twilioEnabled: boolean
 }) {
   const { usage } = client
 
@@ -82,7 +92,7 @@ function ClientRow({
 
   // One pill, with what it is mapped to on hover. The difference between Retell and Twilio
   // matters when something is missing, not on every row.
-  const detail = mappingDetail(client)
+  const detail = mappingDetail(client, twilioEnabled)
 
   return (
     <tr className="clickable" onClick={() => onSelect(client.location_id)}>
@@ -111,8 +121,12 @@ function ClientRow({
   )
 }
 
-/** What the pill means for this client, for its tooltip. */
-function mappingDetail(client: ClientSummary): string {
+/** What the pill means for this client, for its tooltip. While Twilio rebilling is paused only
+ * the Retell mapping is billed here, so naming Twilio would describe something nobody charges. */
+function mappingDetail(client: ClientSummary, twilioEnabled: boolean): string {
+  if (!twilioEnabled) {
+    return client.retell_connected ? 'Retell AI mapped' : 'No Retell agents mapped'
+  }
   if (client.retell_connected && client.twilio_connected) return 'Retell AI & Twilio mapped'
   if (client.retell_connected) return 'Retell AI mapped only'
   if (client.twilio_connected) return 'Twilio mapped only'

@@ -76,6 +76,13 @@ Example client used throughout the docs: **Cool Breeze HVAC**.
 
 Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 
+**Twilio voice billing is paused** (`TWILIO_BILLING_ENABLED`, default off). GoHighLevel rebills
+regular call minutes natively for these sub-accounts, so billing them here too would charge the
+client twice. The daily pull still runs and `TwilioUsageDay` rows are still stored, so turning the
+setting back on resumes billing without a backfill. While it is off, no bill line, invoice or
+charge can carry Twilio usage, and the admin page hides every Twilio field. **The product is
+Retell AI minutes only.**
+
 ### 1.1 Terms used in the code and this file
 
 | Term | Meaning |
@@ -85,7 +92,7 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 | Agency scope / location scope | What the embedded admin page's viewer may see. Agency sees every client; a sub-account sees only itself. |
 | Mapping (`ClientMapping`) | One client's link to its Retell agents, backup phone numbers and Twilio subaccount. |
 | AI minutes | Minutes of Retell voice-agent calls. Billed at `voice_rate_cents` (default 25¢ a minute). |
-| Call minutes | Twilio regular call minutes (the `calls` category). Billed at `call_rate_cents` (default 5¢ a minute). |
+| Call minutes | Twilio regular call minutes (the `calls` category). Rated at `call_rate_cents` (default 5¢ a minute), but **not billed while `TWILIO_BILLING_ENABLED` is off**. |
 | Billable / unbillable call | A stored Retell call that can / cannot be billed, with a plain-English reason when it cannot. |
 | Estimate | `minutes × current rate`, shown on the page until the month has a bill. Never a bill. |
 | Bill (`Bill`, `BillLine`) | One client's total for one month, with a line per source. Created by `calculate_bills`. |
@@ -509,6 +516,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `TWILIO_AUTH_TOKEN` | none | The **parent** account's auth token. A plain env setting, not encrypted in the database (decided; see plan.md) |
 | `TWILIO_API_BASE_URL` | `https://api.twilio.com` | |
 | `TWILIO_REQUEST_TIMEOUT` | 30 | seconds |
+| `TWILIO_BILLING_ENABLED` | `False` | Whether Twilio call minutes are billed. Off: GHL rebills them natively. The pull still runs; only billing and the UI are paused |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker |
 | `STRIPE_SECRET_KEY` | none | The API key of the Stripe account bills are charged through. See §15 |
 | `STRIPE_WEBHOOK_SECRET` | none | The webhook signing secret. Different from the API key |
@@ -654,7 +662,7 @@ These are enforced in code, or are explicit requirements.
 5. **Integer cents for stored money.** `Decimal` for minutes. Never `float` for money. Twilio's string numbers
    are parsed as `Decimal`.
 6. **Rounding is per source.** `RETELL_ROUNDING` applies to Retell only. Twilio arrives pre-rounded.
-7. **No double-billing.** Bill Twilio `calls` only. Retell lands in the trunking categories.
+7. **No double-billing.** Bill Twilio `calls` only. Retell lands in the trunking categories. On top of that, Twilio billing is **paused** entirely (`TWILIO_BILLING_ENABLED`), because GHL rebills those minutes natively: `calculate_bills` builds no Twilio line, and `charge_bills` refuses to charge a bill calculated before the pause that still carries one, counting it as `twilio_paused` and recording the reason rather than reducing the total (the invoice and the saved bill must not disagree).
 8. **Re-pulls are safe.** Twilio uses `update_or_create`. Retell uses first-write-wins on `call_id`.
 9. **Never charge the same period twice.** `Bill` has `unique_together(client, billing_period)`. Charging
    picks up only `uncharged` bills, and every Stripe call carries an idempotency key derived from the bill.

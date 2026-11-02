@@ -175,6 +175,15 @@ const SPECS: Spec[] = [
 /** The most retries the backend makes before it gives up on a charge. */
 const MAX_RETRIES = 3
 
+/**
+ * Whether the preview shows Twilio at all, matching what the backend sends in production.
+ *
+ * Twilio rebilling is paused: GoHighLevel already rebills those minutes natively, so the preview
+ * shows the same Retell-only page a real client's does. The sample Twilio figures below are
+ * deliberately left in place - this is a pause, and flipping this back to `true` restores them.
+ */
+const TWILIO_BILLING_ENABLED: boolean = false
+
 // Onboarded in GoHighLevel but never mapped for billing. The same in every period.
 const UNMAPPED: ClientSummary = {
   location_id: 'demo_summit_air',
@@ -302,6 +311,7 @@ export function demoClients(month: string): ClientsResponse {
   return {
     scope: 'agency',
     month,
+    twilio_billing_enabled: TWILIO_BILLING_ENABLED,
     clients: [
       ...SPECS.map((spec) => summary(withPreviewMapping(spec), month)),
       unmappedOrSetUp(),
@@ -312,12 +322,21 @@ export function demoClients(month: string): ClientsResponse {
 export function demoDetail(locationId: string, month: string): ClientDetailResult | null {
   if (locationId === UNMAPPED.location_id) {
     const edit = previewMappings.get(locationId)
-    if (!edit) return { month, location_id: locationId, client_name: UNMAPPED.client_name, mapped: false }
+    if (!edit) {
+      return {
+        month,
+        location_id: locationId,
+        client_name: UNMAPPED.client_name,
+        mapped: false,
+        twilio_billing_enabled: TWILIO_BILLING_ENABLED,
+      }
+    }
     return {
       month,
       location_id: locationId,
       client_name: UNMAPPED.client_name,
       mapped: true,
+      twilio_billing_enabled: TWILIO_BILLING_ENABLED,
       active: true,
       billing_mode: 'auto_charge',
       retell_agent_ids: edit.retell_agent_ids,
@@ -350,6 +369,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     location_id: spec.location_id,
     client_name: spec.client_name,
     mapped: true,
+    twilio_billing_enabled: TWILIO_BILLING_ENABLED,
     active: true,
     billing_mode: 'auto_charge',
     retell_agent_ids: spec.agents,
@@ -426,8 +446,11 @@ function usageFor(spec: Spec, month: string): UsageSummary {
   const callMinutes = spec.call_minutes * f
   const aiCost = Math.round(spec.retell_cost_cents * f)
   const callCost = Math.round(spec.twilio_cost_cents * f)
+  // Retell AI minutes only while Twilio rebilling is paused, which is exactly what the real
+  // endpoint's `estimated_bill_cents` leaves out when it sends `twilio_billing_enabled: false`.
   const estimated = Math.round(
-    aiMinutes * rates.voice_rate_cents + callMinutes * rates.call_rate_cents,
+    aiMinutes * rates.voice_rate_cents +
+      (TWILIO_BILLING_ENABLED ? callMinutes * rates.call_rate_cents : 0),
   )
   const days = twilioDayCount(spec, month)
 

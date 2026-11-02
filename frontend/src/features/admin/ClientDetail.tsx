@@ -59,6 +59,10 @@ export default function ClientDetail({
   onRatesSaved,
 }: Props) {
   const { usage, rates, bill } = detail
+  // Twilio rebilling is paused here whenever this is false: GoHighLevel already rebills those
+  // minutes natively. Everything Twilio is hidden rather than removed, and the figures below
+  // count Retell AI only - which is what the server's own estimate counts too.
+  const twilioEnabled = detail.twilio_billing_enabled
   // A client nobody has set a rate for starts from the defaults rather than from $0.00, which
   // is both what saving would otherwise write and not a rate anyone chose.
   const storedVoice = rates?.voice_rate_cents ?? detail.default_rates.voice_rate_cents
@@ -76,15 +80,24 @@ export default function ClientDetail({
   const [rateError, setRateError] = useState<string | null>(null)
 
   const voiceRate = centsFromInput(voiceInput)
-  const callRate = centsFromInput(callInput)
+  // The rates endpoint requires both rates whatever is on screen - they share one `RateHistory`
+  // row. With the call-rate field hidden there is nothing typed to read, so the stored rate
+  // stands in for it and goes back to the server unchanged rather than as a zero nobody chose.
+  const callRate = twilioEnabled ? centsFromInput(callInput) : storedCall
   const baseline = saved ?? { voice_rate_cents: storedVoice, call_rate_cents: storedCall }
   const adjusted = voiceRate !== baseline.voice_rate_cents || callRate !== baseline.call_rate_cents
 
-  const cost = usage.ai_cost_cents + usage.call_cost_cents
+  // What the paused months cost Jerry is Retell alone: Twilio's own charges are GoHighLevel's
+  // to rebill, so counting them here would understate the margin on money he never billed.
+  const callCost = twilioEnabled ? usage.call_cost_cents : 0
+  const cost = usage.ai_cost_cents + callCost
   // Until a rate is changed, the server's own figure stands. Recomputing it from minutes that
   // were rounded for display would let the headline drift a cent from what the backend says.
   const estimated = adjusted
-    ? Math.round(Number(usage.ai_minutes) * voiceRate + Number(usage.call_minutes) * callRate)
+    ? Math.round(
+        Number(usage.ai_minutes) * voiceRate +
+          (twilioEnabled ? Number(usage.call_minutes) * callRate : 0),
+      )
     : usage.estimated_bill_cents
   // Once the month has been billed, the bill *is* the figure. It was worked out from the rate
   // in effect on each call's own day, so nothing typed here can move it.
@@ -93,7 +106,9 @@ export default function ClientDetail({
   /** Put the client on the system defaults. Saving is still a separate, deliberate click. */
   function resetToDefaults() {
     setVoiceInput(centsToInput(detail.default_rates.voice_rate_cents))
-    setCallInput(centsToInput(detail.default_rates.call_rate_cents))
+    // A rate nobody can see is not one anyone is resetting: while Twilio is paused the stored
+    // call rate is left exactly where it is, and the save sends it back unchanged.
+    if (twilioEnabled) setCallInput(centsToInput(detail.default_rates.call_rate_cents))
   }
 
   async function handleSaveRates() {
@@ -124,14 +139,16 @@ export default function ClientDetail({
 
         <div className="tiles">
           <Tile label="AI minutes" value={formatMinutes(usage.ai_minutes)} />
-          <Tile
-            label="Call minutes"
-            value={
-              detail.twilio_subaccount_sid || usage.has_twilio_usage
-                ? formatMinutes(usage.call_minutes)
-                : DASH
-            }
-          />
+          {twilioEnabled && (
+            <Tile
+              label="Call minutes"
+              value={
+                detail.twilio_subaccount_sid || usage.has_twilio_usage
+                  ? formatMinutes(usage.call_minutes)
+                  : DASH
+              }
+            />
+          )}
           <Tile
             label={bill ? BILL_LABELS[bill.status] : 'Estimated'}
             tone={bill ? BILL_TONES[bill.status] : undefined}
@@ -141,7 +158,7 @@ export default function ClientDetail({
           <Tile label="Cost" value={formatCents(cost)} />
           <Tile
             label="Margin"
-            value={formatCents(marginCents(headline, usage.ai_cost_cents, usage.call_cost_cents))}
+            value={formatCents(marginCents(headline, usage.ai_cost_cents, callCost))}
           />
         </div>
         <p className="muted small">
@@ -179,12 +196,14 @@ export default function ClientDetail({
                 onChange={setVoiceInput}
                 describedBy="rate-note"
               />
-              <RateField
-                label="Call minute"
-                value={callInput}
-                onChange={setCallInput}
-                describedBy="rate-note"
-              />
+              {twilioEnabled && (
+                <RateField
+                  label="Call minute"
+                  value={callInput}
+                  onChange={setCallInput}
+                  describedBy="rate-note"
+                />
+              )}
               <button
                 type="button"
                 className="button"
@@ -207,8 +226,14 @@ export default function ClientDetail({
           <dl className="facts">
             <dt>AI minute</dt>
             <dd>{rates ? formatRate(rates.voice_rate_cents) : <span className="muted">Not set</span>}</dd>
-            <dt>Call minute</dt>
-            <dd>{rates ? formatRate(rates.call_rate_cents) : <span className="muted">Not set</span>}</dd>
+            {twilioEnabled && (
+              <>
+                <dt>Call minute</dt>
+                <dd>
+                  {rates ? formatRate(rates.call_rate_cents) : <span className="muted">Not set</span>}
+                </dd>
+              </>
+            )}
           </dl>
         )}
         <p className="muted small" id="rate-note">
@@ -234,7 +259,7 @@ export default function ClientDetail({
               <tr>
                 <th>From</th>
                 <th className="num">AI minute</th>
-                <th className="num">Call minute</th>
+                {twilioEnabled && <th className="num">Call minute</th>}
               </tr>
             </thead>
             <tbody>
@@ -242,7 +267,7 @@ export default function ClientDetail({
                 <tr key={rate.start_date}>
                   <td>{formatDate(rate.start_date)}</td>
                   <td className="num">{formatRate(rate.voice_rate_cents)}</td>
-                  <td className="num">{formatRate(rate.call_rate_cents)}</td>
+                  {twilioEnabled && <td className="num">{formatRate(rate.call_rate_cents)}</td>}
                 </tr>
               ))}
             </tbody>
@@ -262,6 +287,7 @@ export default function ClientDetail({
               phone_numbers: detail.phone_numbers,
             }}
             agentNames={detail.retell_agents}
+            twilioEnabled={twilioEnabled}
             preview={preview}
             onSaved={onMappingSaved}
           />
@@ -275,22 +301,26 @@ export default function ClientDetail({
                 <span className="muted">None mapped</span>
               )}
             </dd>
-            <dt>Phone numbers</dt>
-            <dd>
-              {detail.phone_numbers.length > 0 ? (
-                detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
-              ) : (
-                <span className="muted">None mapped</span>
-              )}
-            </dd>
-            <dt>Twilio subaccount</dt>
-            <dd>
-              {detail.twilio_subaccount_sid ? (
-                <code>{detail.twilio_subaccount_sid}</code>
-              ) : (
-                <span className="muted">Not billed for regular calls</span>
-              )}
-            </dd>
+            {twilioEnabled && (
+              <>
+                <dt>Phone numbers</dt>
+                <dd>
+                  {detail.phone_numbers.length > 0 ? (
+                    detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
+                  ) : (
+                    <span className="muted">None mapped</span>
+                  )}
+                </dd>
+                <dt>Twilio subaccount</dt>
+                <dd>
+                  {detail.twilio_subaccount_sid ? (
+                    <code>{detail.twilio_subaccount_sid}</code>
+                  ) : (
+                    <span className="muted">Not billed for regular calls</span>
+                  )}
+                </dd>
+              </>
+            )}
           </dl>
         )}
         <p className="muted small">
@@ -300,7 +330,7 @@ export default function ClientDetail({
 
       <BillingContact detail={detail} />
 
-      {detail.twilio_days.length > 0 && (
+      {twilioEnabled && detail.twilio_days.length > 0 && (
         <section className="card">
           <h2>Twilio calls by day</h2>
           <p className="muted small">

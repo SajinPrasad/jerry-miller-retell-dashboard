@@ -769,6 +769,9 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         'location_id': mapping.location_id,
         'client_name': mapping.client_name,
         'mapped': True,
+        # What the page hides its Twilio mapping, rates, minutes and daily rows behind, so the
+        # pause has one switch rather than one here and another in the bundle.
+        'twilio_billing_enabled': settings.TWILIO_BILLING_ENABLED,
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
         'retell_agent_ids': mapping.retell_agent_ids or [],
@@ -848,11 +851,13 @@ def usage_summary(mapping: ClientMapping, start: date, end: date) -> dict:
     rate = current_rate(mapping, end)
     estimated = None
     if rate is not None:
-        estimated = int(
-            (
-                ai_minutes * rate.voice_rate_cents + call_minutes * rate.call_rate_cents
-            ).to_integral_value(rounding=ROUND_HALF_UP)
-        )
+        billable = ai_minutes * rate.voice_rate_cents
+        # Only what will actually be billed. With Twilio paused the call minutes are still read
+        # and still reported below, but they are not money this client owes, so an estimate that
+        # counted them would not match the bill the month produces.
+        if settings.TWILIO_BILLING_ENABLED:
+            billable += call_minutes * rate.call_rate_cents
+        estimated = int(billable.to_integral_value(rounding=ROUND_HALF_UP))
 
     return {
         'ai_minutes': _minutes_str(ai_minutes),
@@ -955,7 +960,10 @@ def calculate_bills(month: str | None = None) -> dict:
 def _bill_one_client(client: ClientMapping, period: str, start: date, end: date) -> Bill | None:
     """One client's bill for one period, or None if there is nothing billable from either source."""
     retell = _retell_line(client, start, end)
-    twilio = _twilio_line(client, start, end)
+    # Twilio is paused unless `TWILIO_BILLING_ENABLED` says otherwise: GoHighLevel rebills regular
+    # call minutes natively for these sub-accounts, so billing them here too would charge the
+    # client twice. The line is never built, so no bill, invoice or charge can carry it.
+    twilio = _twilio_line(client, start, end) if settings.TWILIO_BILLING_ENABLED else None
     if retell is None and twilio is None:
         return None
 

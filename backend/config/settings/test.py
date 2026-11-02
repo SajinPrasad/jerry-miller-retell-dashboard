@@ -20,3 +20,7 @@ TWILIO_ACCOUNT_SID = 'ACparent'
 TWILIO_AUTH_TOKEN = 'twilio-test-token'
 STRIPE_SECRET_KEY = 'sk_test_key'
 STRIPE_WEBHOOK_SECRET = 'whsec_test_secret'
+# Pinned rather than read from the environment: the tests assert the paused behaviour by hand,
+# and the ones that cover the Twilio calculation turn it back on with `override_settings`. A
+# developer's own `.env` must not decide which of the two the suite runs.
+TWILIO_BILLING_ENABLED = False

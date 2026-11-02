@@ -19,6 +19,7 @@ import pytest
 import stripe
 from django.conf import settings
 from django.core.management import call_command
+from django.test import override_settings
 
 # The seam every Stripe request funnels through, whichever resource was asked for. Private, but
 # it is the only place a guard can sit below all of them - see `never_reach_stripe`.
@@ -59,8 +60,13 @@ def make_billable_client(location_id='loc1', **overrides):
     return make_client(location_id, **fields)
 
 
-def make_bill(client, period=MONTH, retell_cents=500, twilio_cents=150, status=UNCHARGED):
-    """A bill as Phase 3 leaves it: lines in integer cents, nothing charged yet."""
+def make_bill(client, period=MONTH, retell_cents=500, twilio_cents=0, status=UNCHARGED):
+    """A bill as Phase 3 leaves it: lines in integer cents, nothing charged yet.
+
+    Retell only unless `twilio_cents` is given. Twilio is paused (`TWILIO_BILLING_ENABLED` is
+    off), so a bill calculated now carries no Twilio line at all; the few tests that still need
+    one pass the cents and turn the setting back on.
+    """
     bill = Bill.objects.create(
         client=client,
         billing_period=period,
@@ -74,13 +80,14 @@ def make_bill(client, period=MONTH, retell_cents=500, twilio_cents=150, status=U
         cost_cents=120,
         bill_cents=retell_cents,
     )
-    BillLine.objects.create(
-        bill=bill,
-        line_type=TWILIO_LINE,
-        quantity_minutes=Decimal('30.00'),
-        cost_cents=90,
-        bill_cents=twilio_cents,
-    )
+    if twilio_cents:
+        BillLine.objects.create(
+            bill=bill,
+            line_type=TWILIO_LINE,
+            quantity_minutes=Decimal('30.00'),
+            cost_cents=90,
+            bill_cents=twilio_cents,
+        )
     return bill
 
 
@@ -182,8 +189,9 @@ def test_an_uncharged_bill_becomes_a_finalised_stripe_invoice(fake):
         'charged': 1,
         'skipped': 0,
         'too_small': 0,
+        'twilio_paused': 0,
         'failed': 0,
-        'total_cents': 650,
+        'total_cents': 500,
     }
     invoice = fake.of('Invoice.create')[0]
     assert invoice['customer'] == 'cus_known'
@@ -201,7 +209,9 @@ def test_an_uncharged_bill_becomes_a_finalised_stripe_invoice(fake):
     assert bill.charged_at is not None
 
 
+@override_settings(TWILIO_BILLING_ENABLED=True)
 def test_each_bill_line_becomes_an_invoice_item_in_the_same_integer_cents(fake):
+    """With Twilio billing on, both lines reach the invoice as they always did."""
     client = make_billable_client(stripe_customer_id='cus_known')
     make_bill(client, retell_cents=500, twilio_cents=150)
 
@@ -226,7 +236,6 @@ def test_the_invoice_is_finalised_which_is_what_charges_the_card(fake):
         'Customer.retrieve',
         'Invoice.create',
         'InvoiceItem.create',
-        'InvoiceItem.create',
         'Invoice.finalize_invoice',
     ]
     finalise = fake.of('Invoice.finalize_invoice')[0]
@@ -245,7 +254,6 @@ def test_every_write_carries_an_idempotency_key_derived_from_the_bill(fake):
     assert keys == [
         f'bill-{bill.pk}-invoice',
         f'bill-{bill.pk}-retell',
-        f'bill-{bill.pk}-twilio',
         f'bill-{bill.pk}-finalize',
     ]
 
@@ -337,7 +345,7 @@ def test_the_command_reports_what_it_charged(fake):
     call_command('charge_bills', '--month', MONTH, stdout=out)
 
     assert '1 bill(s) sent to Stripe' in out.getvalue()
-    assert '650¢' in out.getvalue()
+    assert '500¢' in out.getvalue()
     assert '0 under the minimum' in out.getvalue()
 
 
@@ -519,6 +527,39 @@ def test_a_bill_too_small_to_charge_does_not_stop_the_others(fake):
 
     assert result['too_small'] == 1
     assert result['charged'] == 1
+
+
+def test_a_bill_calculated_before_the_pause_is_never_charged_for_its_twilio_minutes(fake):
+    """GoHighLevel bills those minutes natively, so charging this bill takes the money twice.
+
+    The total cannot just be reduced here: the invoice and the saved bill would then disagree
+    about what was owed. It is left `uncharged`, with the reason on it for a person to settle.
+    """
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client, retell_cents=500, twilio_cents=150)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['twilio_paused'] == 1
+    assert result['charged'] == 0
+    assert fake.calls == []
+    bill.refresh_from_db()
+    assert bill.status == UNCHARGED
+    assert bill.stripe_invoice_id == ''
+    assert 'Twilio' in bill.failure_reason
+
+
+@override_settings(TWILIO_BILLING_ENABLED=True)
+def test_the_same_bill_is_charged_once_twilio_billing_is_turned_back_on(fake):
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client, retell_cents=500, twilio_cents=150)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['charged'] == 1
+    assert result['twilio_paused'] == 0
+    bill.refresh_from_db()
+    assert bill.status == CHARGING
 
 
 # --- there has to be a card before an invoice is raised -------------------------------------

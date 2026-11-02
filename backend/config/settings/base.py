@@ -160,6 +160,13 @@ TWILIO_AUTH_TOKEN = env('TWILIO_AUTH_TOKEN', default='')
 TWILIO_API_BASE_URL = env('TWILIO_API_BASE_URL', default='https://api.twilio.com')
 TWILIO_REQUEST_TIMEOUT = env.int('TWILIO_REQUEST_TIMEOUT', default=30)
 
+# Whether Twilio regular call minutes are billed to clients. **Off**: GoHighLevel rebills them
+# natively for these sub-accounts, so billing them here as well would charge the client twice.
+# The daily pull still runs and `TwilioUsageDay` rows are still stored, so the usage is on record
+# and turning this back on resumes billing without a backfill. While it is off, no bill line, no
+# invoice and no charge can carry Twilio usage, and the admin page hides it.
+TWILIO_BILLING_ENABLED = env.bool('TWILIO_BILLING_ENABLED', default=False)
+
 # Charging clients for their voice usage (Task 4, Phase 5). The secret key is the live or test
 # key of the Stripe account the usage bills are charged through; the webhook secret is the
 # signing secret of the endpoint registered against /api/rebilling/webhooks/stripe/. They are

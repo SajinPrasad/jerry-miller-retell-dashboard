@@ -36,8 +36,17 @@ export function getClientDetail(locationId: string, month?: string): Promise<Cli
   )
 }
 
-/** Set up or edit a client's mapping. Agency admins only - the backend refuses a location session. */
-export function saveMapping(locationId: string, mapping: MappingFields): Promise<MappingResult> {
+/**
+ * Set up or edit a client's mapping. Agency admins only - the backend refuses a location session.
+ *
+ * Partial because `set_mapping()` writes only the fields it is sent: while Twilio billing is
+ * paused the editor leaves `twilio_subaccount_sid` and `phone_numbers` out entirely, which
+ * preserves whatever is stored rather than clearing it.
+ */
+export function saveMapping(
+  locationId: string,
+  mapping: Partial<MappingFields>,
+): Promise<MappingResult> {
   return apiFetch<MappingResult>(`/rebilling/admin/clients/${encodeURIComponent(locationId)}/mapping/`, {
     method: 'PUT',
     body: JSON.stringify(mapping),

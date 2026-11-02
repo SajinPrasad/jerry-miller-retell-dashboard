@@ -12,6 +12,9 @@ interface Props {
   /** The names behind `initial.retell_agent_ids`, in the same order - what the chip list reads
    * before the picker has been opened once to learn any more. */
   agentNames: RetellAgent[]
+  /** False while Twilio rebilling is paused: the subaccount picker and the phone numbers are
+   * hidden, and a save leaves both fields out so the stored ones are preserved. */
+  twilioEnabled: boolean
   /** The standalone preview never reaches the admin API: saving here only updates the sample
    * data held for this tab, and the pickers read sample agents and subaccounts too. */
   preview: boolean
@@ -28,12 +31,17 @@ interface Props {
  * an id that came out of a picker cannot be a typo, and a mapping nobody can see is a client
  * whose minutes quietly land in `UnassignedCall`. Phone numbers stay typed - they are the backup
  * match for calls an agent id does not cover, and they come off a GHL sub-account, not Retell.
+ *
+ * While Twilio rebilling is paused (`twilioEnabled` false) only the Retell agents are editable:
+ * the subaccount picker and the phone numbers are hidden rather than removed, and a save leaves
+ * their two fields out of the request so the stored values are left exactly as they are.
  */
 export default function MappingEditor({
   locationId,
   clientName,
   initial,
   agentNames,
+  twilioEnabled,
   preview,
   onSaved,
 }: Props) {
@@ -85,13 +93,20 @@ export default function MappingEditor({
         savePreviewMapping(locationId, fields)
         onSaved({ location_id: locationId, client_name: clientName, ...fields })
       } else {
-        onSaved(await saveMapping(locationId, fields))
+        // Only what is editable right now goes to the backend. `set_mapping()` writes only the
+        // fields it is sent, so omitting the two hidden ones keeps whatever is stored.
+        onSaved(
+          await saveMapping(
+            locationId,
+            twilioEnabled ? fields : { retell_agent_ids: agentIds },
+          ),
+        )
       }
     } catch (err) {
       // The backend's own validation message is not carried by ApiError (it only keeps the
       // status), so a 400 gets one plain sentence naming where to look rather than its wording.
       setError(
-        err instanceof ApiError && err.status === 400
+        err instanceof ApiError && err.status === 400 && twilioEnabled
           ? 'Check the phone numbers below.'
           : 'Could not save. Try again.',
       )
@@ -124,20 +139,24 @@ export default function MappingEditor({
         />
       </div>
 
-      <div className="mapping-field">
-        <span className="tile-label">Twilio subaccount</span>
-        <SearchableSelect
-          triggerLabel={twilioSid || 'Choose a Twilio subaccount'}
-          searchLabel="Search Twilio subaccounts"
-          errorMessage="Could not load the Twilio subaccounts. Close this and try again."
-          load={loadSubaccounts}
-          chosen={[twilioSid]}
-          chosenLabel="Selected"
-          onChoose={(option) => setTwilioSid(option.value)}
-        />
-      </div>
+      {twilioEnabled && (
+        <>
+          <div className="mapping-field">
+            <span className="tile-label">Twilio subaccount</span>
+            <SearchableSelect
+              triggerLabel={twilioSid || 'Choose a Twilio subaccount'}
+              searchLabel="Search Twilio subaccounts"
+              errorMessage="Could not load the Twilio subaccounts. Close this and try again."
+              load={loadSubaccounts}
+              chosen={[twilioSid]}
+              chosenLabel="Selected"
+              onChoose={(option) => setTwilioSid(option.value)}
+            />
+          </div>
 
-      <PhoneNumbers numbers={phoneNumbers} onChange={setPhoneNumbers} />
+          <PhoneNumbers numbers={phoneNumbers} onChange={setPhoneNumbers} />
+        </>
+      )}
 
       {error && (
         <div className="banner error" role="alert">

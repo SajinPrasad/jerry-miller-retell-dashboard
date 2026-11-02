@@ -68,6 +68,9 @@ const detail: ClientDetail = {
   location_id: 'loc1',
   client_name: 'Cool Breeze HVAC',
   mapped: true,
+  // The fixture keeps Twilio on, so every test below that does not say otherwise proves the
+  // Twilio half still works. The pause is covered in its own describe block.
+  twilio_billing_enabled: true,
   active: true,
   billing_mode: 'auto_charge',
   retell_agent_ids: ['agent_1'],
@@ -182,9 +185,11 @@ function mockApi(
     calls?: RecentCall[]
     /** Overrides onto the fixture detail, for a field no other option already covers. */
     detail?: Partial<ClientDetail>
+    /** False once Twilio rebilling is paused, which both endpoints report the same way. */
+    twilio?: boolean
   } = {},
 ) {
-  const { session = agencySession, perMonth = {}, bill = null } = options
+  const { session = agencySession, perMonth = {}, bill = null, twilio = true } = options
 
   return vi.spyOn(globalThis, 'fetch').mockImplementation((input: RequestInfo | URL) => {
     const url = String(input)
@@ -207,6 +212,7 @@ function mockApi(
         ...detail,
         month,
         bill,
+        twilio_billing_enabled: twilio,
         recent_calls: options.calls ?? detail.recent_calls,
         usage: (perMonth[month] ?? mapped).usage,
         ...options.detail,
@@ -217,6 +223,7 @@ function mockApi(
       const body: ClientsResponse = {
         scope: session.scope,
         month,
+        twilio_billing_enabled: twilio,
         clients: [...(options.synced ?? [perMonth[month] ?? mapped, unmapped])],
       }
       return json(body)
@@ -226,6 +233,7 @@ function mockApi(
       const body: ClientsResponse = {
         scope: session.scope,
         month,
+        twilio_billing_enabled: twilio,
         clients: session.scope === 'location' ? [mapped] : [perMonth[month] ?? mapped, unmapped],
       }
       return json(body)
@@ -589,8 +597,8 @@ describe('AdminPage', () => {
    * The admin API with the mapping endpoints live: the two pickers, and a PUT whose body is
    * captured so a test can assert what the page actually sent.
    */
-  function mockMappingApi(options: { putStatus?: number } = {}) {
-    const { putStatus = 200 } = options
+  function mockMappingApi(options: { putStatus?: number; twilio?: boolean } = {}) {
+    const { putStatus = 200, twilio = true } = options
     const saved: { body: Record<string, unknown> | null } = { body: null }
     let isMapped = false
 
@@ -624,6 +632,7 @@ describe('AdminPage', () => {
           const savedAgentIds = saved.body?.retell_agent_ids as string[] | undefined
           return json({
             ...detail,
+            twilio_billing_enabled: twilio,
             twilio_subaccount_sid:
               (saved.body?.twilio_subaccount_sid as string | undefined) ??
               detail.twilio_subaccount_sid,
@@ -644,6 +653,7 @@ describe('AdminPage', () => {
             location_id: 'loc-new',
             client_name: 'Polar Peak Heating',
             mapped: true,
+            twilio_billing_enabled: twilio,
             active: true,
             billing_mode: 'auto_charge',
             retell_agent_ids: (saved.body?.retell_agent_ids as string[] | undefined) ?? [],
@@ -673,6 +683,7 @@ describe('AdminPage', () => {
           return json({
             scope: 'agency',
             month: THIS_MONTH,
+            twilio_billing_enabled: twilio,
             clients: [mapped, { ...unmapped, mapped: isMapped, retell_connected: isMapped }],
           })
         }
@@ -905,7 +916,12 @@ describe('AdminPage', () => {
       }
       if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json(detail)
       if (url.startsWith('/api/rebilling/admin/clients/')) {
-        return json({ scope: 'agency', month: THIS_MONTH, clients: [mapped, unmapped] })
+        return json({
+          scope: 'agency',
+          month: THIS_MONTH,
+          twilio_billing_enabled: true,
+          clients: [mapped, unmapped],
+        })
       }
       return Promise.resolve(new Response('', { status: 404 }))
     })
@@ -1118,10 +1134,12 @@ describe('AdminPage', () => {
    * these tests prove the page ends up showing what the server holds rather than its own
    * optimism about it.
    */
-  function mockRatesApi(options: { putStatus?: number } = {}) {
-    const { putStatus = 200 } = options
+  function mockRatesApi(
+    options: { putStatus?: number; twilio?: boolean; detail?: Partial<ClientDetail> } = {},
+  ) {
+    const { putStatus = 200, twilio = true } = options
     const saved: { body: RateFields | null } = { body: null }
-    let current: ClientDetail = detail
+    let current: ClientDetail = { ...detail, twilio_billing_enabled: twilio, ...options.detail }
 
     const fetchMock = vi
       .spyOn(globalThis, 'fetch')
@@ -1142,14 +1160,19 @@ describe('AdminPage', () => {
         if (method === 'PUT' && url.includes('/rates/')) {
           if (putStatus !== 200) return json({}, putStatus)
           saved.body = JSON.parse(init!.body as string)
-          current = atRates(saved.body!, month)
+          current = atRates(saved.body!, month, twilio)
           return json(current)
         }
 
         if (url.startsWith('/api/rebilling/admin/clients/loc1/')) return json({ ...current, month })
 
         if (url.startsWith('/api/rebilling/admin/clients/')) {
-          const body: ClientsResponse = { scope: 'agency', month, clients: [mapped, unmapped] }
+          const body: ClientsResponse = {
+            scope: 'agency',
+            month,
+            twilio_billing_enabled: twilio,
+            clients: [mapped, unmapped],
+          }
           return json(body)
         }
         return Promise.resolve(new Response('', { status: 404 }))
@@ -1160,18 +1183,20 @@ describe('AdminPage', () => {
 
   /** What the backend answers after a save: a new rate from today, and the estimate worked out
    * again from it. */
-  function atRates(rates: RateFields, month: string): ClientDetail {
+  function atRates(rates: RateFields, month: string, twilio = true): ClientDetail {
     const today = new Date().toISOString().slice(0, 10)
     return {
       ...detail,
       month,
+      twilio_billing_enabled: twilio,
       rates: { ...rates, start_date: today },
       rate_history: [{ ...rates, start_date: today }, ...detail.rate_history],
       usage: {
         ...detail.usage,
+        // Retell AI minutes only once Twilio rebilling is paused, as the real endpoint does.
         estimated_bill_cents: Math.round(
           Number(detail.usage.ai_minutes) * rates.voice_rate_cents +
-            Number(detail.usage.call_minutes) * rates.call_rate_cents,
+            (twilio ? Number(detail.usage.call_minutes) * rates.call_rate_cents : 0),
         ),
       },
     }
@@ -1522,10 +1547,16 @@ describe('AdminPage', () => {
           location_id: 'loc-new',
           client_name: 'Polar Peak Heating',
           mapped: false,
+          twilio_billing_enabled: true,
         })
       }
       if (url.startsWith('/api/rebilling/admin/clients/')) {
-        return json({ scope: 'location', month: THIS_MONTH, clients: [] })
+        return json({
+          scope: 'location',
+          month: THIS_MONTH,
+          twilio_billing_enabled: true,
+          clients: [],
+        })
       }
       return Promise.resolve(new Response('', { status: 404 }))
     })
@@ -1574,5 +1605,253 @@ describe('AdminPage', () => {
     await waitFor(() =>
       expect(screen.getByText('Could not load billing data.', { exact: false })).toBeInTheDocument(),
     )
+  })
+
+  // --- Twilio rebilling paused ------------------------------------------------------------
+
+  /**
+   * GoHighLevel already rebills Twilio for these sub-accounts, so billing it here too would
+   * charge the client twice. The backend reports that with `twilio_billing_enabled: false` and
+   * leaves Twilio out of its own estimate; the page has to leave it out of everything it shows
+   * and everything it sends. This is a pause, not a deletion - the last case here, and every
+   * test above it in this file, runs with the flag on and proves the Twilio half still works.
+   */
+  describe('while Twilio rebilling is paused', () => {
+    /** The usage the backend sends while paused: the estimate is Retell AI minutes only. */
+    const pausedUsage = { ...mapped.usage!, estimated_bill_cents: 5000 }
+    const pausedMonth = { [THIS_MONTH]: { ...mapped, usage: pausedUsage } }
+
+    /** A day of Twilio usage, which is still ingested and still sent - just never shown. */
+    const twilioDay = {
+      usage_date: `${THIS_MONTH}-04`,
+      category: 'calls',
+      call_count: 9,
+      usage_minutes: '31.00',
+      twilio_price_cents: 40,
+      as_of: `${THIS_MONTH}-05T03:30:00Z`,
+    }
+
+    it('drops the call minutes tile and counts Retell cost only', async () => {
+      parentAnswers()
+      mockApi({ twilio: false, perMonth: pausedMonth })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
+      expect(tile('AI minutes').getByText('200.00')).toBeInTheDocument()
+      // 200 AI minutes at 25c, with nothing for the 100 call minutes.
+      expect(tile('Estimated').getByText('$50.00')).toBeInTheDocument()
+      // Twilio's own $4.20 is GoHighLevel's to rebill, so it is neither a cost nor a margin here.
+      expect(tile('Cost').getByText('$18.00')).toBeInTheDocument()
+      expect(tile('Margin').getByText('$32.00')).toBeInTheDocument()
+    })
+
+    it('re-estimates from the AI rate alone, matching what the server would say', async () => {
+      parentAnswers()
+      mockApi({ twilio: false, perMonth: pausedMonth })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
+
+      const aiRate = screen.getByLabelText('AI minute rate')
+      await user.clear(aiRate)
+      await user.type(aiRate, '0.50')
+
+      // 200 AI minutes at 50c and no call-minute term at all.
+      await waitFor(() => expect(tile('Estimated').getByText('$100.00')).toBeInTheDocument())
+      expect(tile('Margin').getByText('$82.00')).toBeInTheDocument()
+    })
+
+    it('hides the Twilio calls by day table, its staleness pill and its as-of note', async () => {
+      parentAnswers()
+      mockApi({
+        twilio: false,
+        perMonth: pausedMonth,
+        detail: { twilio_days: [twilioDay], usage: { ...pausedUsage, twilio_stale: true } },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.queryByText('Twilio calls by day')).not.toBeInTheDocument()
+      expect(screen.queryByText('Stale')).not.toBeInTheDocument()
+      expect(screen.queryByText(/Current through/)).not.toBeInTheDocument()
+      // And nothing anywhere else on the page names it either - the recent calls table is
+      // Retell's own, and the rates and mapping cards have dropped their Twilio rows.
+      expect(screen.queryByText(/Twilio/)).not.toBeInTheDocument()
+      // The Retell half is untouched.
+      expect(screen.getByText('Recent AI calls')).toBeInTheDocument()
+      expect(screen.getByText('(213) 555-7788')).toBeInTheDocument()
+    })
+
+    it('keeps the subaccount picker and the phone numbers out of the mapping editor', async () => {
+      parentAnswers()
+      const user = userEvent.setup()
+      const { saved } = mockMappingApi({ twilio: false })
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.queryByRole('button', { name: 'ACchild' })).not.toBeInTheDocument()
+      expect(screen.queryByLabelText('Add a phone number')).not.toBeInTheDocument()
+      expect(screen.queryByText('Twilio subaccount')).not.toBeInTheDocument()
+
+      await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+      await user.click(await screen.findByRole('button', { name: /Cool Breeze after hours/ }))
+      await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+      // Neither hidden field is sent at all. `set_mapping()` writes only what it is given, so
+      // the SID and the numbers already stored are left exactly as they are - sending an empty
+      // string or an empty list would wipe them.
+      await waitFor(() =>
+        expect(saved.body).toEqual({ retell_agent_ids: ['agent_1', 'agent_2'] }),
+      )
+    })
+
+    it('offers only the Retell agents when setting a client up for the first time', async () => {
+      parentAnswers()
+      const user = userEvent.setup()
+      mockMappingApi({ twilio: false })
+
+      render(<AdminPage />)
+      await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating' }))
+
+      expect(
+        await screen.findByText('Not set up for billing yet. Add its Retell agents to start tracking usage.'),
+      ).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Add a Retell agent' })).toBeInTheDocument()
+      expect(screen.queryByLabelText('Add a phone number')).not.toBeInTheDocument()
+      expect(
+        screen.queryByRole('button', { name: 'Choose a Twilio subaccount' }),
+      ).not.toBeInTheDocument()
+    })
+
+    it('shows a sub-account neither its phone numbers nor its Twilio subaccount', async () => {
+      parentAnswers()
+      mockApi({
+        twilio: false,
+        perMonth: pausedMonth,
+        session: { ...agencySession, active_location: 'loc1', scope: 'location' },
+      })
+
+      render(<AdminPage />)
+      await screen.findByText('Mapping')
+
+      // The read-only mapping keeps the one thing that is billed here.
+      expect(screen.getByText('Retell agents')).toBeInTheDocument()
+      expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
+      expect(screen.queryByText('Phone numbers')).not.toBeInTheDocument()
+      expect(screen.queryByText('Twilio subaccount')).not.toBeInTheDocument()
+      expect(screen.queryByText('+15551234567')).not.toBeInTheDocument()
+      // And the read-only rates lose their call-minute row with it.
+      expect(screen.queryByText('Call minute')).not.toBeInTheDocument()
+    })
+
+    it('sends the stored call rate back unchanged when the field is hidden', async () => {
+      parentAnswers()
+      const { saved } = mockRatesApi({ twilio: false })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      const aiRate = screen.getByLabelText('AI minute rate')
+      await user.clear(aiRate)
+      await user.type(aiRate, '0.50')
+      await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+      // The endpoint requires both - they share one RateHistory row - so the stored 5c goes
+      // back as it is. A zero here would quietly reprice every Twilio minute to nothing.
+      await waitFor(() => expect(saved.body).toEqual({ voice_rate_cents: 50, call_rate_cents: 5 }))
+    })
+
+    it('leaves the stored call rate alone when the rates are reset to defaults', async () => {
+      parentAnswers()
+      const { saved } = mockRatesApi({
+        twilio: false,
+        // A client on a call rate of its own, which the defaults would otherwise overwrite.
+        detail: {
+          rates: { voice_rate_cents: 40, call_rate_cents: 9, start_date: `${THIS_MONTH}-01` },
+        },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.40')
+
+      await user.click(screen.getByRole('button', { name: 'Reset to defaults' }))
+      expect(screen.getByLabelText('AI minute rate')).toHaveValue('0.25')
+      await user.click(screen.getByRole('button', { name: 'Save rates' }))
+
+      // Only the AI rate is reset: resetting a rate nobody can see is not what was asked for.
+      await waitFor(() => expect(saved.body).toEqual({ voice_rate_cents: 25, call_rate_cents: 9 }))
+    })
+
+    it('stops the list pill from mentioning Twilio', async () => {
+      parentAnswers()
+      mockApi({
+        twilio: false,
+        // Still mapped to a subaccount - it is simply not what this page bills on.
+        perMonth: { [THIS_MONTH]: { ...mapped, usage: pausedUsage, twilio_connected: true } },
+      })
+
+      render(<AdminPage />)
+      await screen.findByText('Cool Breeze HVAC')
+
+      expect(screen.getByText('Mapped')).toHaveAttribute('title', 'Retell AI mapped')
+      expect(screen.queryByText(/Twilio/)).not.toBeInTheDocument()
+    })
+
+    it('says a client with no Retell agents is unmapped without naming Twilio', async () => {
+      parentAnswers()
+      mockApi({
+        twilio: false,
+        perMonth: {
+          [THIS_MONTH]: {
+            ...mapped,
+            usage: pausedUsage,
+            retell_connected: false,
+            twilio_connected: true,
+          },
+        },
+      })
+
+      render(<AdminPage />)
+      await screen.findByText('Cool Breeze HVAC')
+
+      expect(screen.getByText('Mapped')).toHaveAttribute('title', 'No Retell agents mapped')
+    })
+
+    it('brings the whole Twilio half back the moment the flag is on again', async () => {
+      parentAnswers()
+      mockApi({
+        twilio: true,
+        detail: { twilio_days: [twilioDay], usage: { ...mapped.usage!, twilio_stale: true } },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      // Nothing was deleted: the tile, the rate field, the picker, the phone numbers and the
+      // daily table are all exactly where they were.
+      expect(tile('Call minutes').getByText('100.00')).toBeInTheDocument()
+      expect(screen.getByLabelText('Call minute rate')).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'ACchild' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Add a phone number')).toBeInTheDocument()
+      expect(screen.getByText('Twilio calls by day')).toBeInTheDocument()
+      expect(screen.getByText('Stale')).toBeInTheDocument()
+      expect(screen.getByText(/Current through/)).toBeInTheDocument()
+      // And the money counts both halves again: $55.00 less $18.00 to Retell and $4.20 to Twilio.
+      expect(tile('Cost').getByText('$22.20')).toBeInTheDocument()
+      expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
+    })
   })
 })

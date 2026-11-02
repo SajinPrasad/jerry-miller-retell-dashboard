@@ -153,9 +153,10 @@ def test_lists_a_mapped_client_with_rates_and_usage(client):
         'start_date': '2026-01-01',
     }
     assert row['usage']['ai_minutes'] == '2.00'
+    # Still read and still reported, just not billed while Twilio is paused.
     assert row['usage']['call_minutes'] == '100.00'
-    # 2 AI minutes at 25c, plus 100 call minutes at 5c.
-    assert row['usage']['estimated_bill_cents'] == 550
+    # 2 AI minutes at 25c. The 100 call minutes are GoHighLevel's to bill, not ours.
+    assert row['usage']['estimated_bill_cents'] == 50
 
 
 def test_an_onboarded_but_unmapped_client_is_listed_as_unmapped(client):
@@ -403,6 +404,7 @@ def test_a_sub_account_with_no_mapping_gets_a_friendly_state_not_a_404(client):
         'location_id': 'loc-new',
         'client_name': 'Polar Peak Heating',
         'mapped': False,
+        'twilio_billing_enabled': False,
     }
 
 
@@ -754,3 +756,40 @@ def test_sync_returns_502_on_ghl_failure(client):
     respx.get(f'{BASE}/oauth/installed-locations').mock(return_value=httpx.Response(500))
 
     assert sync_clients(client).status_code == 502
+
+
+# --- Twilio paused -------------------------------------------------------------------------
+
+
+def test_the_list_tells_the_page_twilio_billing_is_paused(client):
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_client('loc1')
+
+    assert get_clients(client).json()['twilio_billing_enabled'] is False
+
+
+def test_the_detail_tells_the_page_twilio_billing_is_paused(client):
+    make_agency()
+    mapping = make_client('loc1')
+    RateHistory.objects.create(client=mapping, start_date=date(2026, 1, 1))
+
+    assert get_detail(client, 'loc1').json()['twilio_billing_enabled'] is False
+
+
+@override_settings(TWILIO_BILLING_ENABLED=True)
+def test_turning_twilio_billing_back_on_restores_the_estimate_and_the_flag(client):
+    """The pause is a switch, not a deletion: the figures come straight back."""
+    make_agency()
+    mapping = make_client('loc1', twilio_subaccount_sid='ACchild')
+    RateHistory.objects.create(
+        client=mapping, start_date=date(2026, 1, 1), voice_rate_cents=25, call_rate_cents=5
+    )
+    add_call(mapping, 'call1', duration_ms=120_000)
+    add_twilio_day(mapping, date(2026, 3, 10), minutes='100.00')
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['twilio_billing_enabled'] is True
+    # 2 AI minutes at 25c, plus 100 call minutes at 5c.
+    assert body['usage']['estimated_bill_cents'] == 550

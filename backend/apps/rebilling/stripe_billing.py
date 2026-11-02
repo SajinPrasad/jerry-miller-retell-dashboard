@@ -193,6 +193,7 @@ def charge_bills(month: str | None = None) -> dict:
         'charged': 0,
         'skipped': 0,
         'too_small': 0,
+        'twilio_paused': 0,
         'failed': 0,
         'total_cents': 0,
     }
@@ -201,6 +202,25 @@ def charge_bills(month: str | None = None) -> dict:
     for bill in bills:
         if bill.client.billing_mode != AUTO_CHARGE:
             result['skipped'] += 1
+            continue
+        if (
+            not settings.TWILIO_BILLING_ENABLED
+            and bill.lines.filter(line_type=TWILIO_LINE).exists()
+        ):
+            # Calculated before Twilio was paused, so its total still includes minutes
+            # GoHighLevel bills the client for as well. Charging it would take that money twice.
+            # Left `uncharged` with the reason on it: the total cannot simply be reduced here,
+            # because then the invoice and the saved bill would disagree about what was owed.
+            reason = 'Bill includes Twilio minutes, which are no longer billed here.'
+            logger.warning(
+                'billing: %s for %s carries a Twilio line while Twilio billing is paused; '
+                'not charged',
+                bill.client.location_id,
+                period,
+            )
+            bill.failure_reason = reason
+            bill.save(update_fields=['failure_reason'])
+            result['twilio_paused'] += 1
             continue
         if bill.total_cents < MINIMUM_CHARGE_CENTS:
             logger.info(

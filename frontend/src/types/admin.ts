@@ -48,6 +48,10 @@ export interface ClientSummary {
 export interface ClientsResponse {
   scope: 'agency' | 'location'
   month: string
+  /** Whether Twilio minutes are billed here at all. False while Twilio rebilling is paused -
+   * GoHighLevel already rebills those minutes natively, so showing them here would read as a
+   * second charge. Everything Twilio is hidden, not deleted: it comes back when this is true. */
+  twilio_billing_enabled: boolean
   clients: ClientSummary[]
 }
 
@@ -131,6 +135,9 @@ export interface ClientDetail {
   mapped: true
   active: boolean
   billing_mode: string
+  /** Whether Twilio minutes are billed here at all - see `ClientsResponse`. While it is false
+   * `usage.estimated_bill_cents` is Retell AI minutes only, and the page hides the rest. */
+  twilio_billing_enabled: boolean
   /** Who GoHighLevel says owns the sub-account, and whether Stripe has been matched to them.
    * All read-only: the owner comes from GHL and the customer is matched by their email. */
   owner_name: string
@@ -169,6 +176,8 @@ export interface UnmappedClientDetail {
   location_id: string
   client_name: string
   mapped: false
+  /** Carried here too, because the mapping editor on this page is gated on it. */
+  twilio_billing_enabled: boolean
 }
 
 export type ClientDetailResult = ClientDetail | UnmappedClientDetail
