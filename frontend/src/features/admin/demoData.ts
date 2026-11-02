@@ -62,6 +62,9 @@ interface Spec {
    * rather than as an estimate. Absent means this client has never been billed. */
   bill_status?: BillSummary['status']
   bill_failure_reason?: string
+  /** Only on a `retrying` bill: the retries made so far, and when the next one is due. */
+  bill_retry_count?: number
+  bill_next_retry_at?: string
   /** Headline figures for the current month; other months scale off these. */
   ai_minutes: number
   retell_cost_cents: number
@@ -142,7 +145,35 @@ const SPECS: Spec[] = [
     stale: true,
     previous_rate: { voice_rate_cents: 20, call_rate_cents: 4 },
   },
+  {
+    // A charge that failed and is being retried: amber, not the red of a failure that is over.
+    location_id: 'demo_harbor_heat',
+    client_name: 'Harbor Heat & Cool',
+    agents: ['agent_harbor_heat'],
+    numbers: ['+13105550166'],
+    twilio_sid: 'ACdemoharborheat00000000000000004',
+    owner_name: 'Renee Okafor',
+    billing_email: 'renee@harborheat.test',
+    stripe_customer_id: 'cus_demoHarborHeat',
+    stripe_customer_name: 'Harbor Heat & Cool LLC',
+    bill_status: 'retrying',
+    bill_failure_reason: 'card_declined',
+    bill_retry_count: 2,
+    bill_next_retry_at: '2026-11-03T15:00:00Z',
+    voice_rate_cents: 25,
+    call_rate_cents: 5,
+    ai_minutes: 121.7,
+    retell_cost_cents: 860,
+    call_minutes: 58,
+    twilio_cost_cents: 74,
+    twilio_day_count: 7,
+    unbillable: 0,
+    stale: false,
+  },
 ]
+
+/** The most retries the backend makes before it gives up on a charge. */
+const MAX_RETRIES = 3
 
 // Onboarded in GoHighLevel but never mapped for billing. The same in every period.
 const UNMAPPED: ClientSummary = {
@@ -377,10 +408,14 @@ function rate(spec: Spec): RateFields {
  */
 function billFor(spec: Spec, month: string, usage: UsageSummary): BillSummary | null {
   if (!spec.bill_status || month >= currentMonth()) return null
+  const retrying = spec.bill_status === 'retrying'
   return {
     status: spec.bill_status,
     total_cents: usage.estimated_bill_cents ?? 0,
     failure_reason: spec.bill_failure_reason ?? '',
+    retry_count: retrying ? (spec.bill_retry_count ?? 0) : 0,
+    max_retries: MAX_RETRIES,
+    next_retry_at: retrying ? (spec.bill_next_retry_at ?? null) : null,
   }
 }
 

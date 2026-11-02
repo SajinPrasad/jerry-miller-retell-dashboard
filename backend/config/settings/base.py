@@ -116,6 +116,8 @@ GHL_SCOPES = env(
             'conversations/message.readonly',
             'saas/company.read',
             'saas/location.read',
+            'locations/customValues.readonly',
+            'locations/customValues.write',
         ]
     ),
 )
@@ -165,6 +167,19 @@ TWILIO_REQUEST_TIMEOUT = env.int('TWILIO_REQUEST_TIMEOUT', default=30)
 STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
 STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
 
+# A declined charge is retried this many times, this many hours apart, before the bill is
+# marked failed for a person to act on. The first charge itself is never retried automatically:
+# it is started by hand with `charge_bills`.
+BILLING_MAX_RETRIES = env.int('BILLING_MAX_RETRIES', default=3)
+BILLING_RETRY_INTERVAL_HOURS = env.int('BILLING_RETRY_INTERVAL_HOURS', default=12)
+
+# The name of the custom value in each client's GoHighLevel sub-account that carries the
+# rebilling status (`failed` while a bill has failed, `active` once it is paid). Custom value ids
+# differ between sub-accounts, so the value is found by this name in each one.
+GHL_RETELL_STATUS_CUSTOM_VALUE_NAME = env(
+    'GHL_RETELL_STATUS_CUSTOM_VALUE_NAME', default='retell_rebilling_status'
+)
+
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')
 
@@ -179,5 +194,10 @@ CELERY_BEAT_SCHEDULE = {
     'pull-twilio-usage': {
         'task': 'apps.rebilling.tasks.pull_twilio_usage',
         'schedule': crontab(hour=3, minute=30),
+    },
+    # Hourly, so a retry is at most an hour late. Only bills already due are touched.
+    'retry-failed-charges': {
+        'task': 'apps.rebilling.tasks.retry_failed_charges',
+        'schedule': crontab(minute=15),
     },
 }

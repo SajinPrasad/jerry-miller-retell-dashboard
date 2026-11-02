@@ -23,6 +23,10 @@ from .models import GHLOAuthToken
 
 logger = logging.getLogger(__name__)
 
+# Custom value endpoints accept only `v3`, unlike the rest of the API, which is sent the
+# `GHL_API_VERSION` date.
+CUSTOM_VALUE_VERSION = 'v3'
+
 
 class GHLOAuthService:
     def __init__(self, client: httpx.Client | None = None):
@@ -95,6 +99,36 @@ class GHLOAuthService:
             location.expires_at = self._expires_at(data)
             location.save()
         return location.access_token
+
+    def set_custom_value(self, location_id: str, name: str, value: str) -> None:
+        """Set one custom value, found by its name, in one sub-account.
+
+        Custom value ids are per sub-account, so the id is looked up in this location rather
+        than configured once. The read needs the location's own token; so does the write.
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/locations/update-custom-value
+        """
+        try:
+            token = self.get_location_token(location_id)
+        except GHLOAuthToken.DoesNotExist as exc:
+            raise GHLError(f'No GHL token for sub-account {location_id}.') from exc
+
+        listing = self._request(
+            'GET',
+            f'/locations/{location_id}/customValues',
+            token=token,
+            version=CUSTOM_VALUE_VERSION,
+        )
+        match = next((cv for cv in listing.get('customValues', []) if cv.get('name') == name), None)
+        if match is None:
+            raise GHLError(f'No custom value named {name!r} in sub-account {location_id}.')
+
+        self._request(
+            'PUT',
+            f'/locations/{location_id}/customValues/{match["id"]}',
+            token=token,
+            version=CUSTOM_VALUE_VERSION,
+            json={'name': name, 'value': value},
+        )
 
     def sync_locations(self, agency: GHLOAuthToken) -> None:
         """Store a row for every sub-account under the agency; deactivate ones that are gone.

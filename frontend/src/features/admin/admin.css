@@ -100,6 +100,19 @@
   color: var(--warn-text);
 }
 
+.admin .pill.err {
+  background: var(--err-bg);
+  border-color: var(--err-border);
+  color: var(--err-text);
+}
+
+/* A bill's state as a tile's label: the pill sits on the label's own line, not a block. */
+.admin .tile-label.pill {
+  display: inline-block;
+  margin-right: 0;
+  font-size: 0.75rem;
+}
+
 /* --- buttons --- */
 
 .admin .button {

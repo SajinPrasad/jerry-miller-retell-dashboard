@@ -1,3 +1,4 @@
+import json
 from datetime import timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -370,3 +371,75 @@ def test_an_email_ghl_no_longer_holds_is_cleared_rather_than_kept(service):
     service.sync_locations(agency)
 
     assert GHLOAuthToken.objects.get(location_id='loc1').owner_email == ''
+
+
+# --- custom values -----------------------------------------------------------------------------
+
+CUSTOM_VALUES = f'{BASE}/locations/loc1/customValues'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_set_custom_value_finds_the_value_by_name_and_updates_it(service):
+    make_location('loc1')
+    listing = respx.get(CUSTOM_VALUES).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                'customValues': [
+                    {'id': 'cv_other', 'name': 'something_else', 'value': 'x'},
+                    {'id': 'cv_status', 'name': 'retell_rebilling_status', 'value': 'active'},
+                ]
+            },
+        )
+    )
+    update = respx.put(f'{CUSTOM_VALUES}/cv_status').mock(
+        return_value=httpx.Response(200, json={'customValue': {'id': 'cv_status'}})
+    )
+
+    service.set_custom_value('loc1', 'retell_rebilling_status', 'failed')
+
+    listed = listing.calls.last.request
+    assert listed.headers['Authorization'] == 'Bearer loc1-access'
+    assert listed.headers['Version'] == 'v3'
+    sent = update.calls.last.request
+    assert sent.headers['Version'] == 'v3'
+    assert json.loads(sent.content) == {'name': 'retell_rebilling_status', 'value': 'failed'}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_custom_value_missing_from_the_sub_account_is_an_error(service):
+    make_location('loc1')
+    respx.get(CUSTOM_VALUES).mock(
+        return_value=httpx.Response(200, json={'customValues': [{'id': 'cv_other', 'name': 'x'}]})
+    )
+    update = respx.put(f'{CUSTOM_VALUES}/cv_other')
+
+    with pytest.raises(GHLError, match='retell_rebilling_status'):
+        service.set_custom_value('loc1', 'retell_rebilling_status', 'failed')
+    assert not update.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_sub_account_with_no_token_is_an_error_not_a_crash(service):
+    with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
+        service.set_custom_value('loc1', 'retell_rebilling_status', 'failed')
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_rejected_custom_value_write_says_why(service):
+    make_location('loc1')
+    respx.get(CUSTOM_VALUES).mock(
+        return_value=httpx.Response(
+            200, json={'customValues': [{'id': 'cv_status', 'name': 'retell_rebilling_status'}]}
+        )
+    )
+    respx.put(f'{CUSTOM_VALUES}/cv_status').mock(
+        return_value=httpx.Response(422, json={'message': 'value is too long'})
+    )
+
+    with pytest.raises(GHLError, match='value is too long'):
+        service.set_custom_value('loc1', 'retell_rebilling_status', 'failed')

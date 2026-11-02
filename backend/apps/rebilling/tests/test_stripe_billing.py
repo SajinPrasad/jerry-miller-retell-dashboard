@@ -19,19 +19,16 @@ import pytest
 import stripe
 from django.conf import settings
 from django.core.management import call_command
-from rest_framework.test import APIClient
 
 # The seam every Stripe request funnels through, whichever resource was asked for. Private, but
 # it is the only place a guard can sit below all of them - see `never_reach_stripe`.
-from stripe._http_client import HTTPClient
-
 from apps.rebilling import stripe_billing
 from apps.rebilling.exceptions import StripeBillingError
 from apps.rebilling.models import (
     CHARGING,
-    FAILED,
     PAID,
     RETELL_LINE,
+    RETRYING,
     SEND_INVOICE,
     TWILIO_LINE,
     UNCHARGED,
@@ -44,34 +41,6 @@ from .test_services import make_client
 
 pytestmark = pytest.mark.django_db
 
-MONTH = '2026-03'
-URL = '/api/rebilling/webhooks/stripe/'
-
-
-# --- fakes ------------------------------------------------------------------------------------
-
-
-@pytest.fixture(autouse=True)
-def never_reach_stripe(monkeypatch):
-    """Fail loudly if anything in this module tries to actually call Stripe.
-
-    `FakeStripe` only stands in for the methods it was told about, so a Stripe call newly added
-    to the code reaches the network instead - which is how a test run ends up authenticating
-    against the real Stripe with a test key. This shuts that door at the HTTP layer, below every
-    resource, so an unmocked call fails by name instead of arriving as an auth error.
-    """
-
-    def blocked(self, method, url, *args, **kwargs):
-        raise AssertionError(f'test tried to reach Stripe: {method.upper()} {url}')
-
-    monkeypatch.setattr(HTTPClient, 'request_with_retries', blocked)
-    monkeypatch.setattr(HTTPClient, 'request_stream_with_retries', blocked)
-
-
-# A customer Stripe would charge: a card is set as the invoice default.
-CHARGEABLE = SimpleNamespace(
-    invoice_settings=SimpleNamespace(default_payment_method='pm_card1'), default_source=None
-)
 # A customer with no card at all - the shape that finalises fine and then fails at the card.
 CARDLESS = SimpleNamespace(
     invoice_settings=SimpleNamespace(default_payment_method=None), default_source=None
@@ -81,77 +50,8 @@ LEGACY_SOURCE = SimpleNamespace(
     invoice_settings=SimpleNamespace(default_payment_method=None), default_source='card_1'
 )
 
-
-class FakeStripe:
-    """Stands in for the SDK's class methods, recording what each was called with."""
-
-    def __init__(self):
-        self.calls = []
-        self.customers = []
-        self.invoice_id = 'in_test1'
-        # A method name whose next call raises, and customers whose invoice Stripe refuses.
-        self.fail_on = None
-        self.fail_customers = set()
-        # What `Customer.retrieve` answers, per id. Anything unlisted is chargeable.
-        self.customer_records = {}
-        # What the payment intent behind a failed invoice says went wrong.
-        self.payment_error = SimpleNamespace(code='card_declined')
-
-    def _record(self, name, kwargs):
-        target = kwargs.get('customer') or kwargs.get('customer_id')
-        if self.fail_on == name or target in self.fail_customers:
-            raise stripe.APIConnectionError('Stripe is unreachable.')
-        self.calls.append((name, kwargs))
-
-    def customer_list(self, **kwargs):
-        self._record('Customer.list', kwargs)
-        page = SimpleNamespace(data=list(self.customers))
-        page.auto_paging_iter = lambda: iter(self.customers)
-        return page
-
-    def customer_retrieve(self, customer_id, **kwargs):
-        self._record('Customer.retrieve', {'customer_id': customer_id, **kwargs})
-        return self.customer_records.get(customer_id, CHARGEABLE)
-
-    def payment_intent_retrieve(self, intent_id, **kwargs):
-        self._record('PaymentIntent.retrieve', {'intent_id': intent_id, **kwargs})
-        return SimpleNamespace(last_payment_error=self.payment_error)
-
-    def invoice_create(self, **kwargs):
-        self._record('Invoice.create', kwargs)
-        return SimpleNamespace(id=self.invoice_id)
-
-    def invoice_item_create(self, **kwargs):
-        self._record('InvoiceItem.create', kwargs)
-        return SimpleNamespace(id='ii_test1')
-
-    def invoice_finalize(self, invoice_id, **kwargs):
-        self._record('Invoice.finalize_invoice', {'invoice_id': invoice_id, **kwargs})
-        return SimpleNamespace(id=invoice_id)
-
-    def session_create(self, **kwargs):
-        self._record('checkout.Session.create', kwargs)
-        return SimpleNamespace(id='cs_test1', url='https://checkout.stripe.test/cs_test1')
-
-    def of(self, name):
-        """Every call made to one method, in order."""
-        return [kwargs for called, kwargs in self.calls if called == name]
-
-    def names(self):
-        return [called for called, _ in self.calls]
-
-
-@pytest.fixture
-def fake(monkeypatch):
-    faked = FakeStripe()
-    monkeypatch.setattr(stripe.Customer, 'list', faked.customer_list)
-    monkeypatch.setattr(stripe.Customer, 'retrieve', faked.customer_retrieve)
-    monkeypatch.setattr(stripe.PaymentIntent, 'retrieve', faked.payment_intent_retrieve)
-    monkeypatch.setattr(stripe.Invoice, 'create', faked.invoice_create)
-    monkeypatch.setattr(stripe.InvoiceItem, 'create', faked.invoice_item_create)
-    monkeypatch.setattr(stripe.Invoice, 'finalize_invoice', faked.invoice_finalize)
-    monkeypatch.setattr(stripe.checkout.Session, 'create', faked.session_create)
-    return faked
+MONTH = '2026-03'
+URL = '/api/rebilling/webhooks/stripe/'
 
 
 def make_billable_client(location_id='loc1', **overrides):
@@ -460,11 +360,6 @@ def sign(body: bytes, secret: str = settings.STRIPE_WEBHOOK_SECRET, timestamp=No
     return f't={timestamp},v1={digest}'
 
 
-@pytest.fixture
-def api():
-    return APIClient()
-
-
 def event_body(kind='invoice.paid', invoice_id='in_test1', created=1772323200, intent=None):
     invoice = {'id': invoice_id, 'object': 'invoice'}
     if intent:
@@ -503,14 +398,16 @@ def test_invoice_paid_marks_the_bill_paid_at_stripes_own_time(api):
     assert bill.paid_at == datetime(2026, 3, 1, tzinfo=UTC)
 
 
-def test_invoice_payment_failed_marks_the_bill_failed(api):
+def test_invoice_payment_failed_puts_the_bill_into_retry_not_failure(api):
     bill = charging_bill()
 
     response = post(api, event_body('invoice.payment_failed'))
 
     assert response.status_code == 204
     bill.refresh_from_db()
-    assert bill.status == FAILED
+    assert bill.status == RETRYING
+    assert bill.retry_count == 0
+    assert bill.next_retry_at is not None
     assert bill.paid_at is None
 
 
@@ -687,7 +584,7 @@ def test_a_failure_records_stripes_own_reason(api, fake):
     post(api, event_body('invoice.payment_failed', intent='pi_test1'))
 
     bill.refresh_from_db()
-    assert bill.status == FAILED
+    assert bill.status == RETRYING
     assert bill.failure_reason == 'authentication_required'
 
 
@@ -697,7 +594,7 @@ def test_a_failure_whose_reason_cannot_be_read_is_still_recorded(api):
     post(api, event_body('invoice.payment_failed'))
 
     bill.refresh_from_db()
-    assert bill.status == FAILED
+    assert bill.status == RETRYING
     assert bill.failure_reason == 'payment_failed'
 
 

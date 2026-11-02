@@ -111,11 +111,17 @@ export interface MappingResult extends MappingFields {
  * rate change can move it.
  */
 export interface BillSummary {
-  status: 'uncharged' | 'charging' | 'paid' | 'failed'
+  /** `retrying` is a failed charge the backend will try again: not a permanent failure. */
+  status: 'uncharged' | 'charging' | 'retrying' | 'paid' | 'failed'
   total_cents: number
   /** Why the last attempt failed. Carried whatever the status - a charge that never reached
    * Stripe records its reason while leaving the bill `uncharged`. */
   failure_reason: string
+  /** Retries made so far, out of `max_retries`. Zero for a bill that has never been retried. */
+  retry_count: number
+  max_retries: number
+  /** When the next retry is due, as an ISO-8601 UTC string. Null when none is pending. */
+  next_retry_at: string | null
 }
 
 export interface ClientDetail {

@@ -447,6 +447,9 @@ def test_detail_reports_a_paid_bill_rather_than_leaving_the_month_an_estimate(cl
         'status': 'paid',
         'total_cents': 47,
         'failure_reason': '',
+        'retry_count': 0,
+        'max_retries': 3,
+        'next_retry_at': None,
     }
 
 
@@ -485,6 +488,9 @@ def test_detail_reports_why_a_charge_failed(client):
         'status': 'failed',
         'total_cents': 650,
         'failure_reason': 'authentication_required',
+        'retry_count': 0,
+        'max_retries': 3,
+        'next_retry_at': None,
     }
 
 

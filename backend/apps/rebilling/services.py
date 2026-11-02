@@ -719,6 +719,9 @@ def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
     matched customer, no card on file - records its reason while leaving the bill `uncharged`,
     so reading it only on `failed` would hide the one state nobody can act on without being
     told.
+
+    The retry fields let the page say "In Retry, retry 2 of 3" rather than showing a failure
+    while the automatic retries are still running.
     """
     bill = mapping.bills.filter(billing_period=f'{start.year:04d}-{start.month:02d}').first()
     if bill is None:
@@ -727,6 +730,9 @@ def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
         'status': bill.status,
         'total_cents': bill.total_cents,
         'failure_reason': bill.failure_reason,
+        'retry_count': bill.retry_count,
+        'max_retries': settings.BILLING_MAX_RETRIES,
+        'next_retry_at': bill.next_retry_at.isoformat() if bill.next_retry_at else None,
     }
 
 

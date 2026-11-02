@@ -236,15 +236,19 @@ TWILIO_LINE = 'twilio'
 LINE_TYPES = [(RETELL_LINE, 'Retell AI minutes'), (TWILIO_LINE, 'Twilio call minutes')]
 
 # Values for `Bill.status`. A bill is calculated long before it is charged, and the charge is
-# answered by a webhook rather than by the call that started it, so these are four real states
-# and not a progress bar: `charging` means Stripe has the invoice and we are waiting to hear.
+# answered by a webhook rather than by the call that started it, so these are real states and not
+# a progress bar: `charging` means Stripe has the invoice and we are waiting to hear. `retrying`
+# means a charge was declined and we are still trying it on a schedule; `failed` means the
+# schedule is used up and a person has to act.
 UNCHARGED = 'uncharged'
 CHARGING = 'charging'
+RETRYING = 'retrying'
 PAID = 'paid'
 FAILED = 'failed'
 BILL_STATUSES = [
     (UNCHARGED, 'Uncharged'),
     (CHARGING, 'Charging'),
+    (RETRYING, 'In retry'),
     (PAID, 'Paid'),
     (FAILED, 'Failed'),
 ]
@@ -281,6 +285,13 @@ class Bill(models.Model):
     # which a bare `failed` cannot. Cleared when a bill is paid, because Stripe's own retries
     # can collect one that has already failed once.
     failure_reason = models.CharField(max_length=255, blank=True, default='')
+    # How many automatic retries have been made after the first failed charge. Counts retries
+    # only, so `0` while the first failure is waiting for its first retry.
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    # When the next automatic retry is due. Set only while `retrying`; cleared once paid or failed.
+    next_retry_at = models.DateTimeField(null=True, blank=True)
+    # When the last automatic retry was made, for the admin page and for checking the schedule.
+    last_retry_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
         db_table = 'rebilling_bill'

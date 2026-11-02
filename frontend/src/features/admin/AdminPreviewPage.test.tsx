@@ -112,6 +112,19 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('shows a sample bill being retried as In Retry on a finished month', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Harbor Heat & Cool' }))
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    expect(await screen.findByText('In Retry', { selector: '.tile-label' })).toHaveClass('pill', 'warn')
+    expect(screen.getByText('Retry 2 of 3')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('saves a sample rate in the preview, and it sticks on reopen', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()

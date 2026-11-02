@@ -492,7 +492,14 @@ describe('AdminPage', () => {
   it('marks each call from the bill it is on, not from the month it is in', async () => {
     parentAnswers()
     mockApi({
-      bill: { status: 'paid', total_cents: 47, failure_reason: '' },
+      bill: {
+        status: 'paid',
+        total_cents: 47,
+        failure_reason: '',
+        retry_count: 0,
+        max_retries: 3,
+        next_retry_at: null,
+      },
       calls: [
         callOn(28, 'paid'),
         callOn(29, 'paid'),
@@ -519,7 +526,14 @@ describe('AdminPage', () => {
   it('says a call is billed while the charge for it is still in the air', async () => {
     parentAnswers()
     mockApi({
-      bill: { status: 'charging', total_cents: 5500, failure_reason: '' },
+      bill: {
+        status: 'charging',
+        total_cents: 5500,
+        failure_reason: '',
+        retry_count: 0,
+        max_retries: 3,
+        next_retry_at: null,
+      },
       calls: [callOn(28, 'charging')],
     })
     const user = userEvent.setup()
@@ -528,6 +542,28 @@ describe('AdminPage', () => {
     await openClient(user)
 
     // On a bill already - what Stripe makes of it is the headline tile's business, not the row's.
+    expect(callRow(28).getByText('Billed')).toBeInTheDocument()
+    expect(screen.queryByText('Billable')).not.toBeInTheDocument()
+  })
+
+  it('says a call on a bill being retried is billed, as for any charge still in flight', async () => {
+    parentAnswers()
+    mockApi({
+      bill: {
+        status: 'retrying',
+        total_cents: 5500,
+        failure_reason: 'card_declined',
+        retry_count: 1,
+        max_retries: 3,
+        next_retry_at: '2026-11-03T15:00:00Z',
+      },
+      calls: [callOn(28, 'retrying')],
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
     expect(callRow(28).getByText('Billed')).toBeInTheDocument()
     expect(screen.queryByText('Billable')).not.toBeInTheDocument()
   })
@@ -1233,7 +1269,14 @@ describe('AdminPage', () => {
 
   it('reports a paid bill instead of still calling the month an estimate', async () => {
     parentAnswers()
-    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    mockApi({ bill: {
+      status: 'paid',
+      total_cents: 47,
+      failure_reason: '',
+      retry_count: 0,
+      max_retries: 3,
+      next_retry_at: null,
+    } })
     const user = userEvent.setup()
 
     render(<AdminPage />)
@@ -1246,7 +1289,14 @@ describe('AdminPage', () => {
 
   it('says a bill is still waiting on Stripe', async () => {
     parentAnswers()
-    mockApi({ bill: { status: 'charging', total_cents: 5500, failure_reason: '' } })
+    mockApi({ bill: {
+      status: 'charging',
+      total_cents: 5500,
+      failure_reason: '',
+      retry_count: 0,
+      max_retries: 3,
+      next_retry_at: null,
+    } })
     const user = userEvent.setup()
 
     render(<AdminPage />)
@@ -1259,7 +1309,14 @@ describe('AdminPage', () => {
   it('shows why a charge failed, in Stripe own words', async () => {
     parentAnswers()
     mockApi({
-      bill: { status: 'failed', total_cents: 5500, failure_reason: 'authentication_required' },
+      bill: {
+        status: 'failed',
+        total_cents: 5500,
+        failure_reason: 'authentication_required',
+        retry_count: 0,
+        max_retries: 3,
+        next_retry_at: null,
+      },
     })
     const user = userEvent.setup()
 
@@ -1270,6 +1327,81 @@ describe('AdminPage', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('authentication_required')
   })
 
+  it('shows a charge being retried as In Retry, with the attempt and when the next is due', async () => {
+    parentAnswers()
+    mockApi({
+      bill: {
+        status: 'retrying',
+        total_cents: 5500,
+        failure_reason: 'card_declined',
+        retry_count: 2,
+        max_retries: 3,
+        next_retry_at: '2026-11-03T15:00:00Z',
+      },
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('In Retry').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByText('In Retry', { selector: '.tile-label' })).toHaveClass('pill', 'warn')
+    // Not a permanent failure: no Failed label, and the reason sits in a notice, not an error.
+    expect(screen.queryByText('Failed', { selector: '.tile-label' })).not.toBeInTheDocument()
+    expect(screen.getByText('Retry 2 of 3')).toBeInTheDocument()
+    expect(screen.getByText(/Next retry Nov 3, 3:00 PM UTC/)).toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveClass('warn')
+    expect(screen.getByRole('alert')).toHaveTextContent('card_declined')
+  })
+
+  it('shows a charge whose retries are spent as a red Failed, for someone to act on', async () => {
+    parentAnswers()
+    mockApi({
+      bill: {
+        status: 'failed',
+        total_cents: 5500,
+        failure_reason: 'card_declined',
+        retry_count: 3,
+        max_retries: 3,
+        next_retry_at: null,
+      },
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('Failed').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByText('Failed', { selector: '.tile-label' })).toHaveClass('pill', 'err')
+    expect(screen.queryByText('In Retry')).not.toBeInTheDocument()
+    expect(screen.queryByText(/Retry \d of \d/)).not.toBeInTheDocument()
+    expect(screen.getByRole('alert')).toHaveClass('error')
+  })
+
+  it('shows a bill paid after retries as Paid, with no retry wording left over', async () => {
+    parentAnswers()
+    mockApi({
+      bill: {
+        status: 'paid',
+        total_cents: 5500,
+        failure_reason: '',
+        retry_count: 1,
+        max_retries: 3,
+        next_retry_at: null,
+      },
+    })
+    const user = userEvent.setup()
+
+    render(<AdminPage />)
+    await openClient(user)
+
+    expect(tile('Paid').getByText('$55.00')).toBeInTheDocument()
+    expect(screen.getByText('Paid', { selector: '.tile-label' })).not.toHaveClass('pill')
+    expect(screen.queryByText(/Retry \d of \d/)).not.toBeInTheDocument()
+    expect(screen.queryByText(/Next retry/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
   it('shows why a bill that never reached Stripe could not be charged', async () => {
     parentAnswers()
     mockApi({
@@ -1277,6 +1409,9 @@ describe('AdminPage', () => {
         status: 'uncharged',
         total_cents: 5500,
         failure_reason: 'No Stripe customer found for billing email: dana@coolbreeze.test',
+        retry_count: 0,
+        max_retries: 3,
+        next_retry_at: null,
       },
     })
     const user = userEvent.setup()
@@ -1291,7 +1426,14 @@ describe('AdminPage', () => {
 
   it('leaves a billed month alone when a rate is typed', async () => {
     parentAnswers()
-    mockApi({ bill: { status: 'paid', total_cents: 47, failure_reason: '' } })
+    mockApi({ bill: {
+      status: 'paid',
+      total_cents: 47,
+      failure_reason: '',
+      retry_count: 0,
+      max_retries: 3,
+      next_retry_at: null,
+    } })
     const user = userEvent.setup()
 
     render(<AdminPage />)

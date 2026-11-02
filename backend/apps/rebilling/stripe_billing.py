@@ -17,11 +17,15 @@ Docs: https://docs.stripe.com/invoicing/integration
 """
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import stripe
 from django.conf import settings
+from django.db import transaction
 from django.utils import timezone
+
+from apps.ghl.exceptions import GHLError
+from apps.ghl.services import GHLOAuthService
 
 from .exceptions import StripeBillingError
 from .models import (
@@ -30,6 +34,7 @@ from .models import (
     FAILED,
     PAID,
     RETELL_LINE,
+    RETRYING,
     TWILIO_LINE,
     UNCHARGED,
     Bill,
@@ -61,6 +66,15 @@ MINIMUM_CHARGE_CENTS = 50
 
 # What a failed charge is recorded as when Stripe's own code for it cannot be read.
 FALLBACK_FAILURE_REASON = 'payment_failed'
+
+# What a retry is recorded as when Stripe answered without an error but the invoice is still not
+# paid, which is how Stripe reports a payment that needs the client to act.
+NOT_COLLECTED_REASON = 'not_collected'
+
+# The values written to each client's custom value in GoHighLevel. Jerry's GHL workflows key off
+# these words, so they must not change without changing the workflows too.
+GHL_STATUS_FAILED = 'failed'
+GHL_STATUS_ACTIVE = 'active'
 
 
 def _configure() -> None:
@@ -311,31 +325,180 @@ def apply_event(event) -> bool:
         return False
 
     if kind == INVOICE_PAID:
-        bill.status = PAID
         # Stripe's own timestamp, not ours: a webhook can be retried hours after the payment.
-        bill.paid_at = datetime.fromtimestamp(event['created'], tz=UTC)
-        # Stripe's own retries can collect a bill that already failed once, so a paid bill must
-        # not keep the reason the earlier attempt failed.
-        bill.failure_reason = ''
-    elif bill.status == PAID:
+        _mark_paid(bill, paid_at=datetime.fromtimestamp(event['created'], tz=UTC))
+        return True
+
+    if bill.status == PAID:
         # Webhooks are not ordered, and a failed attempt Stripe later collected can still be
         # redelivered afterwards. Money already taken is never un-taken on an older event.
         logger.info(
             'billing: %s arrived for already-paid bill %s, ignored', kind, bill.billing_period
         )
         return False
-    else:
-        bill.status = FAILED
+
+    if bill.status in (RETRYING, FAILED):
+        # Already on the retry schedule, or already used up. The schedule decides what happens
+        # next; this only records why this attempt was declined.
         bill.failure_reason = _failure_reason(event)
+        bill.save(update_fields=['failure_reason'])
+        return True
+
+    record_failure(bill, _failure_reason(event))
+    return True
+
+
+def _mark_paid(bill: Bill, paid_at: datetime) -> None:
+    """A bill is paid: clear every failure and retry field, then say so in GoHighLevel."""
+    bill.status = PAID
+    bill.paid_at = paid_at
+    # Stripe's own retries can collect a bill that already failed once, so a paid bill must not
+    # keep the reason an earlier attempt failed, or a retry date that no longer applies.
+    bill.failure_reason = ''
+    bill.next_retry_at = None
+    bill.save(update_fields=['status', 'paid_at', 'failure_reason', 'next_retry_at'])
+    sync_rebilling_status(bill)
+
+
+def record_failure(bill: Bill, reason: str, now: datetime | None = None) -> None:
+    """Record a declined charge and decide what happens next: another retry, or failed.
+
+    Called by the webhook for a bill's first decline and by the retry sweep for each retry that is
+    declined, so the schedule is written in one place. Once `BILLING_MAX_RETRIES` retries have
+    been made, the bill is `failed` for a person to act on, and the client's GoHighLevel status
+    is set to `failed`.
+    """
+    now = now or timezone.now()
+    bill.failure_reason = reason
+    if bill.retry_count >= settings.BILLING_MAX_RETRIES:
+        bill.status = FAILED
+        bill.next_retry_at = None
         logger.warning(
-            'billing: charge failed for %s, bill %s (%s)',
+            'billing: retries used up for %s, bill %s (%s)',
             bill.client.location_id,
             bill.billing_period,
-            bill.failure_reason,
+            reason,
+        )
+    else:
+        bill.status = RETRYING
+        bill.next_retry_at = now + _retry_interval()
+        logger.warning(
+            'billing: charge declined for %s, bill %s (%s); retry %s of %s at %s',
+            bill.client.location_id,
+            bill.billing_period,
+            reason,
+            bill.retry_count + 1,
+            settings.BILLING_MAX_RETRIES,
+            bill.next_retry_at.isoformat(),
+        )
+    bill.save(update_fields=['status', 'failure_reason', 'next_retry_at'])
+    if bill.status == FAILED:
+        sync_rebilling_status(bill)
+
+
+def _retry_interval() -> timedelta:
+    return timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
+
+
+def sync_rebilling_status(bill: Bill) -> None:
+    """Write the client's rebilling status onto their GoHighLevel sub-account.
+
+    `failed` once a bill has used up its retries, so Jerry's GHL workflows can pause the client's
+    Retell agents. `active` once a bill is paid, unless another bill for the same client has still
+    failed: paying one month must not switch the agents back on while an earlier month is unpaid.
+    Any other status leaves GoHighLevel alone, so a bill still being retried does not pause anyone.
+
+    Best effort. The outcome is already on the bill, and a failed write to GoHighLevel must not
+    undo it or stop the webhook or the retry run, so a GHL error is logged rather than raised.
+    """
+    if bill.status == FAILED:
+        value = GHL_STATUS_FAILED
+    elif bill.status == PAID:
+        if bill.client.bills.exclude(pk=bill.pk).filter(status=FAILED).exists():
+            return
+        value = GHL_STATUS_ACTIVE
+    else:
+        return
+
+    location_id = bill.client.location_id
+    try:
+        GHLOAuthService().set_custom_value(
+            location_id, settings.GHL_RETELL_STATUS_CUSTOM_VALUE_NAME, value
+        )
+    except GHLError:
+        logger.exception(
+            'billing: could not set the rebilling status to %s in %s', value, location_id
         )
 
-    bill.save(update_fields=['status', 'paid_at', 'failure_reason'])
-    return True
+
+def retry_due_bills(now: datetime | None = None) -> dict:
+    """Make every automatic retry that is due, and report what came of each.
+
+    A bill is claimed under a row lock before Stripe is called: its retry count goes up and its
+    next retry moves on in the same transaction, so a second run at the same moment finds nothing
+    due for that bill. The Stripe call also carries an idempotency key built from the retry
+    number, so a retry repeated after a crash cannot charge the card twice.
+    """
+    now = now or timezone.now()
+    result = {'retried': 0, 'paid': 0, 'retrying': 0, 'failed': 0}
+    due = Bill.objects.filter(status=RETRYING, next_retry_at__lte=now).values_list('pk', flat=True)
+
+    for pk in list(due):
+        claimed = _claim_retry(pk, now)
+        if claimed is None:
+            continue
+        result['retried'] += 1
+        result[_retry_one(claimed, now)] += 1
+    return result
+
+
+def _claim_retry(pk: int, now: datetime) -> Bill | None:
+    """Move a due bill onto its next retry, under a lock. None if it is no longer due."""
+    with transaction.atomic():
+        bill = Bill.objects.select_for_update().select_related('client').get(pk=pk)
+        if bill.status != RETRYING or bill.next_retry_at is None or bill.next_retry_at > now:
+            return None
+        bill.retry_count += 1
+        bill.last_retry_at = now
+        bill.next_retry_at = now + _retry_interval()
+        bill.save(update_fields=['retry_count', 'last_retry_at', 'next_retry_at'])
+        return bill
+
+
+def _retry_one(bill: Bill, now: datetime) -> str:
+    """Try the open Stripe invoice again. Returns the bill's resulting status for the sweep's count.
+
+    An invoice Stripe already shows as paid is taken as paid without asking for the money again.
+    Otherwise the open invoice is paid, which makes Stripe attempt the card once more.
+    """
+    _configure()
+    key = f'bill-{bill.pk}-retry-{bill.retry_count}'
+    try:
+        invoice = stripe.Invoice.retrieve(bill.stripe_invoice_id)
+        if invoice.status != 'paid':
+            invoice = stripe.Invoice.pay(bill.stripe_invoice_id, idempotency_key=key)
+    except stripe.StripeError as exc:
+        logger.warning(
+            'billing: retry %s for %s, bill %s, could not be made',
+            bill.retry_count,
+            bill.client.location_id,
+            bill.billing_period,
+            exc_info=True,
+        )
+        record_failure(bill, _stripe_reason(exc), now)
+        return bill.status
+
+    if invoice.status == 'paid':
+        _mark_paid(bill, paid_at=now)
+        return PAID
+
+    record_failure(bill, NOT_COLLECTED_REASON, now)
+    return bill.status
+
+
+def _stripe_reason(exc: stripe.StripeError) -> str:
+    """Stripe's code for a failed attempt, or the error's name when Stripe gave no code."""
+    return (getattr(exc, 'code', None) or exc.__class__.__name__)[:255]
 
 
 def _failure_reason(event) -> str:

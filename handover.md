@@ -484,6 +484,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | Twilio pull | 03:30 daily | `apps.rebilling.tasks.pull_twilio_usage` | `python manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]` |
 | Calculate bills | **not scheduled** | — | `python manage.py calculate_bills [--month YYYY-MM]` |
 | Charge bills | **not scheduled** (deliberately) | — | `python manage.py charge_bills [--month YYYY-MM]` |
+| Retry declined charges | Hourly, at :15 | `apps.rebilling.tasks.retry_failed_charges` | `python manage.py retry_failed_charges` |
 
 - The beat schedule lives in `CELERY_BEAT_SCHEDULE` in `config/settings/base.py`.
   `config/celery.py` is the Celery app. `config/__init__.py` exposes it so `@shared_task` binds.
@@ -493,7 +494,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 - The Retell command exits non-zero on failure. The Twilio command exits non-zero **only when every
   client fails**, which points to a systemic problem such as bad credentials or Twilio being down.
   A partial failure warns and exits 0. Cron can monitor the exit code.
-- Charging is never automatic. It runs by hand, per month, in order: the Twilio month-close pull
+- The **first** charge is never automatic. It runs by hand, per month, in order: the Twilio month-close pull
   (with both dates), then `calculate_bills`, then `charge_bills`.
 
 ### 6.7 Rebilling settings
@@ -511,6 +512,9 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker |
 | `STRIPE_SECRET_KEY` | none | The API key of the Stripe account bills are charged through. See §15 |
 | `STRIPE_WEBHOOK_SECRET` | none | The webhook signing secret. Different from the API key |
+| `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
+| `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
+| `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` | `retell_rebilling_status` | Custom value in each sub-account set to `failed` on a final failure and `active` on payment. Found by name, since ids differ per sub-account |
 
 ### 6.8 Calculation (built)
 
@@ -969,6 +973,8 @@ These cannot be answered from the docs.
 
 - Celery worker and beat must both run for the nightly audit and pull (§6.6). Check they are running.
 - `charge_bills` is not scheduled. Run it by hand each month, after the Twilio month-close pull and `calculate_bills`.
+- `retry_failed_charges` runs hourly on beat. It makes only the retries that are due. The custom value `retell_rebilling_status` must exist in every sub-account, and GHL must have re-authorised the app for `locations/customValues.readonly`.
+- Stripe's own Smart Retries (dashboard setting) run alongside ours. Turn them off in Stripe so the schedule in this app is the only one.
 - The Stripe webhook must be registered for `invoice.paid` and `invoice.payment_failed` (§15).
 
 ### 17.4 Diagnosing a page that shows the wrong status

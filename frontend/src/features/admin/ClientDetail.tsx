@@ -36,8 +36,19 @@ interface Props {
 const BILL_LABELS: Record<BillSummary['status'], string> = {
   uncharged: 'Uncharged',
   charging: 'Charging',
+  retrying: 'In Retry',
   paid: 'Paid',
   failed: 'Failed',
+}
+
+/**
+ * The badge colour for a bill that needs attention. Amber while Stripe is still being retried,
+ * red once the retries are spent and someone has to step in. Paid and the in-flight states
+ * carry no badge: they are settled or on their way, not a problem to look at.
+ */
+const BILL_TONES: Partial<Record<BillSummary['status'], 'warn' | 'err'>> = {
+  retrying: 'warn',
+  failed: 'err',
 }
 
 export default function ClientDetail({
@@ -123,6 +134,7 @@ export default function ClientDetail({
           />
           <Tile
             label={bill ? BILL_LABELS[bill.status] : 'Estimated'}
+            tone={bill ? BILL_TONES[bill.status] : undefined}
             value={formatCents(headline)}
             accent
           />
@@ -148,7 +160,9 @@ export default function ClientDetail({
           )}
         </p>
         {bill?.failure_reason && (
-          <div className="banner error" role="alert">
+          // A retry is still on its way, so the reason is shown in the amber of a notice rather
+          // than the red of a failure.
+          <div className={bill.status === 'retrying' ? 'banner warn' : 'banner error'} role="alert">
             {bill.failure_reason}
           </div>
         )}
@@ -449,6 +463,13 @@ function BillNote({ bill }: { bill: BillSummary }) {
       {bill.status === 'charging' && (
         <>Billed and on a Stripe invoice. Waiting for Stripe to confirm the payment. </>
       )}
+      {bill.status === 'retrying' && (
+        <>
+          Billed. The last charge failed and will be tried again.{' '}
+          <strong>{`Retry ${bill.retry_count} of ${bill.max_retries}`}</strong>
+          {bill.next_retry_at && <> {`Next retry ${formatDateTime(bill.next_retry_at)} UTC.`}</>}{' '}
+        </>
+      )}
       {bill.status === 'failed' && <>Billed, but the last charge attempt failed. </>}
       {bill.status === 'uncharged' && <>Billed. The charge has not been attempted yet. </>}
       At the rate in effect on each call&apos;s own day, not at the rate below.
@@ -456,10 +477,20 @@ function BillNote({ bill }: { bill: BillSummary }) {
   )
 }
 
-function Tile({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
+function Tile({
+  label,
+  value,
+  accent,
+  tone,
+}: {
+  label: string
+  value: string
+  accent?: boolean
+  tone?: 'warn' | 'err'
+}) {
   return (
     <div className={`tile${accent ? ' accent' : ''}`}>
-      <span className="tile-label">{label}</span>
+      <span className={tone ? `tile-label pill ${tone}` : 'tile-label'}>{label}</span>
       <span className="tile-value">{value}</span>
     </div>
   )

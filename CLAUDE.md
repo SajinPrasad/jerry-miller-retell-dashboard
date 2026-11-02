@@ -229,7 +229,7 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   exist. `charge_bills(month)` takes each `uncharged` `Bill` for a period and puts it on a Stripe
   invoice: one `InvoiceItem` per `BillLine` whose `amount` **is** `bill_cents` (no conversion),
   then `finalize_invoice`, which is what makes Stripe attempt the card. `Bill` carries `status`
-  (`uncharged`/`charging`/`paid`/`failed`), `stripe_invoice_id`, `charged_at`, `paid_at` and
+  (`uncharged`/`charging`/`retrying`/`paid`/`failed`), `stripe_invoice_id`, `charged_at`, `paid_at` and
   `failure_reason`. Every write carries an idempotency key derived from the bill
   (`bill-<pk>-invoice`/`-retell`/`-twilio`/`-finalize`), and only `uncharged` bills are picked up
   - two independent reasons a re-run cannot charge twice. A client whose `billing_mode` is not
@@ -328,7 +328,7 @@ pip-compile requirements/prod.in -o requirements/prod.txt
 cp .env.example .env                              # then fill in values
 python manage.py migrate && python manage.py runserver   # http://localhost:8000
 celery -A config worker -l info                   # background jobs (needs REDIS_URL up)
-celery -A config beat -l info                     # scheduled (Retell 03:00, Twilio 03:30 UTC)
+celery -A config beat -l info                     # scheduled (Retell 03:00, Twilio 03:30 UTC, declined-charge retries hourly at :15)
 pytest                                            # tests (config.settings.test)
 ruff check . && ruff format .                     # lint / format
 ```
