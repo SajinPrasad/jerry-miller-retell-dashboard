@@ -1,4 +1,9 @@
-"""Phase 5: charging a calculated bill through Stripe, off-session.
+"""Phase 5: charging a calculated bill through Stripe, off-session - and whether we can.
+
+Phase 7 added the second half: whether a client has a card Stripe would collect against, read
+on the client's own page rather than discovered at month end, and the request that asks them for
+one through GoHighLevel.
+
 
 Phase 3 stops at the number. This starts from it and never recomputes it: `BillLine.bill_cents`
 is an integer number of cents and so is Stripe's `amount`, so a bill reaches the card without a
@@ -76,6 +81,19 @@ NOT_COLLECTED_REASON = 'not_collected'
 GHL_STATUS_FAILED = 'failed'
 GHL_STATUS_ACTIVE = 'active'
 
+# The same, for the card status field on the client's billing contact. Writing `card not found`
+# is what triggers the GoHighLevel workflow that emails them a card collection form.
+GHL_CARD_NOT_FOUND = 'card not found'
+
+# Whether Stripe holds a card we could charge this client with. `no_card` is what Stripe would
+# do, not what it holds: a card attached without being made the invoice default is one the
+# charge cannot reach, and saying "card on file" about it would promise a charge that fails.
+CARD_ON_FILE = 'card_on_file'
+NO_CARD = 'no_card'
+NO_CUSTOMER = 'no_customer'
+NO_BILLING_EMAIL = 'no_billing_email'
+CARD_UNKNOWN = 'unknown'
+
 
 def _configure() -> None:
     """Point the SDK at the account the bills are charged through.
@@ -119,21 +137,106 @@ def customer_id(client: ClientMapping) -> str:
     return client.stripe_customer_id
 
 
-def customer_name(stripe_customer_id: str) -> str:
-    """The Stripe customer's own name, for display - the id means nothing to a reader of the
-    admin page.
+def customer_facts(client: ClientMapping) -> dict:
+    """Who Stripe says pays for this client, and whether it holds a card we could charge.
 
-    Empty when Stripe has no name on the customer, or when Stripe cannot be reached right now:
-    showing a name is not what the charge depends on, so a Stripe outage must not break the page
-    that already shows what was billed.
+    One Stripe call answers both halves of the billing contact card: the customer's own name -
+    the id means nothing to a reader of the admin page - and the card behind it.
+
+    **The card is read here rather than remembered on the client.** A saved answer about whether
+    money can be taken is wrong from the moment the client enters a card, which is minutes after
+    being asked for one. Stripe being unreachable is `unknown` and never `no_card`, because a
+    page that invites someone to chase a client who has a perfectly good card is worse than one
+    that admits it could not check.
     """
+    if not client.stripe_customer_id and not client.billing_email:
+        # Nothing to look a customer up by. The page already says the sub-account has no owner
+        # email in GoHighLevel; this is the card row agreeing rather than guessing.
+        return _facts('', '', NO_BILLING_EMAIL)
+
+    try:
+        customer = customer_id(client)
+    except StripeBillingError:
+        return _facts('', '', NO_CUSTOMER)
+    except stripe.StripeError:
+        logger.exception('stripe: could not match a customer for %s', client.location_id)
+        return _facts('', '', CARD_UNKNOWN)
+
     _configure()
     try:
-        record = stripe.Customer.retrieve(stripe_customer_id)
+        record = stripe.Customer.retrieve(
+            # Expanded so the card's brand and last four arrive on the call that was being made
+            # for the name anyway, rather than on a second one for the payment method.
+            customer,
+            expand=['invoice_settings.default_payment_method'],
+        )
     except stripe.StripeError:
-        logger.exception('stripe: could not read customer %s', stripe_customer_id)
-        return ''
-    return getattr(record, 'name', None) or ''
+        logger.exception('stripe: could not read customer %s', customer)
+        return _facts(customer, '', CARD_UNKNOWN)
+
+    status, brand, last4 = _card(record)
+    return _facts(customer, getattr(record, 'name', None) or '', status, brand, last4)
+
+
+def _facts(customer: str, name: str, status: str, brand: str = '', last4: str = '') -> dict:
+    return {
+        'stripe_customer_id': customer,
+        'stripe_customer_name': name,
+        'card': {'status': status, 'brand': brand, 'last4': last4},
+    }
+
+
+def _card(record) -> tuple[str, str, str]:
+    """The card Stripe would collect against, tested exactly as `_assert_chargeable` tests it."""
+    invoice_settings = getattr(record, 'invoice_settings', None)
+    method = getattr(invoice_settings, 'default_payment_method', None)
+    if method is None:
+        # The older way a card is held. Stripe still collects against it, so it counts - there
+        # is just no payment method object behind it to read a brand and last four off.
+        has_source = bool(getattr(record, 'default_source', None))
+        return (CARD_ON_FILE if has_source else NO_CARD), '', ''
+
+    card = getattr(method, 'card', None)
+    return CARD_ON_FILE, getattr(card, 'brand', '') or '', getattr(card, 'last4', '') or ''
+
+
+def request_card(client: ClientMapping) -> None:
+    """Ask a client for a card, by writing the card status onto their contact in GoHighLevel.
+
+    That write is what starts Jerry's GoHighLevel workflow, which emails the client the form
+    they enter a card on. Nothing about the card itself happens here - the form and the card
+    entry both live in GoHighLevel and Stripe.
+
+    **Not best effort**, unlike `sync_rebilling_status`: an admin pressed a button, so a
+    GoHighLevel failure is raised for them to see rather than logged, or they would walk away
+    believing a client had been asked who never was.
+    """
+    if not client.billing_email:
+        raise GHLError(
+            f'{client.location_id} has no billing email in GoHighLevel to find a contact by.'
+        )
+
+    GHLOAuthService().set_contact_field(
+        client.billing_email, settings.GHL_CARD_STATUS_CUSTOM_FIELD_ID, GHL_CARD_NOT_FOUND
+    )
+    client.card_requested_at = timezone.now()
+    client.save(update_fields=['card_requested_at'])
+
+
+def clear_card_request(client: ClientMapping) -> bool:
+    """Re-read Stripe after GoHighLevel says a card was saved. True once there is one.
+
+    The webhook's word is never taken for it. Anything that can reach the endpoint can claim a
+    card was saved, and a workflow can fire on a form the client abandoned half way; Stripe is
+    the only thing that knows, so Stripe is asked, and only its answer clears the request.
+    """
+    if customer_facts(client)['card']['status'] != CARD_ON_FILE:
+        return False
+
+    if client.card_requested_at is not None:
+        client.card_requested_at = None
+        client.save(update_fields=['card_requested_at'])
+    return True
 
 
 def _assert_chargeable(customer: str) -> None:

@@ -167,8 +167,12 @@ def test_the_detail_view_shows_who_pays_and_that_stripe_matched_them(monkeypatch
     assert detail['billing_failure_reason'] == ''
 
 
-def test_the_detail_view_carries_the_reason_a_bill_could_not_be_charged():
-    """With no customer matched, this message is the whole of what an admin can act on."""
+def test_the_detail_view_carries_the_reason_a_bill_could_not_be_charged(fake):
+    """With no customer matched, this message is the whole of what an admin can act on.
+
+    `fake` answers the customer lookup the page now makes with nothing found, which is the
+    state this test is about.
+    """
     make_sub_account()
     client = make_client('loc1', billing_email='owner@coolbreeze.test')
     Bill.objects.create(

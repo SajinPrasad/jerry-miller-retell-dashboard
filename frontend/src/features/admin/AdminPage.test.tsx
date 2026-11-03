@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type {
   BillSummary,
+  CardStatus,
   ClientDetail,
   ClientSummary,
   ClientsResponse,
@@ -82,6 +83,9 @@ const detail: ClientDetail = {
   stripe_customer_id: 'cus_coolbreeze',
   stripe_customer_name: 'Cool Breeze HVAC LLC',
   billing_failure_reason: '',
+  // The fixture client has a card, so every test that does not say otherwise proves the page
+  // shows one and offers nothing to press. The states with a button have their own block.
+  card: { status: 'card_on_file', brand: 'visa', last4: '4242', requested_at: null },
   rates: { voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` },
   rate_history: [{ voice_rate_cents: 25, call_rate_cents: 5, start_date: `${THIS_MONTH}-01` }],
   default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
@@ -187,6 +191,8 @@ function mockApi(
     detail?: Partial<ClientDetail>
     /** False once Twilio rebilling is paused, which both endpoints report the same way. */
     twilio?: boolean
+    /** What the card request endpoint answers with, or a status code for one that refuses. */
+    cardRequest?: CardStatus | number
   } = {},
 ) {
   const { session = agencySession, perMonth = {}, bill = null, twilio = true } = options
@@ -206,6 +212,15 @@ function mockApi(
     if (url.startsWith('/api/ghl/sso/session/')) return json(session)
     if (url.startsWith('/api/rebilling/admin/retell-agents/')) return json(retellAgents)
     if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) return json(twilioSubaccounts)
+
+    // Before the detail branch below, which this URL also starts with.
+    if (url.startsWith('/api/rebilling/admin/clients/loc1/card-request/')) {
+      const answer = options.cardRequest ?? REQUESTED
+      if (typeof answer === 'number') {
+        return Promise.resolve(new Response('{}', { status: answer }))
+      }
+      return json({ card: answer })
+    }
 
     if (url.startsWith('/api/rebilling/admin/clients/loc1/')) {
       return json({
@@ -255,6 +270,11 @@ function tile(label: string) {
 }
 
 /** Open a client from the list and wait for its page. */
+const NO_CARD: CardStatus = { status: 'no_card', brand: '', last4: '', requested_at: null }
+
+/** What the endpoint answers with once a card has been asked for and Stripe still has none. */
+const REQUESTED: CardStatus = { ...NO_CARD, requested_at: `${THIS_MONTH}-10T14:20:00Z` }
+
 async function openClient(user: ReturnType<typeof userEvent.setup>, name = 'Cool Breeze HVAC') {
   await user.click(await screen.findByRole('button', { name }))
   await screen.findByText('Mapping')
@@ -665,6 +685,8 @@ describe('AdminPage', () => {
             stripe_customer_id: '',
             stripe_customer_name: '',
             billing_failure_reason: '',
+            // Nobody has charged this one yet, so nothing has matched it in Stripe either.
+            card: { status: 'no_customer', brand: '', last4: '', requested_at: null },
             rates: null,
             rate_history: [],
             default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
@@ -1852,6 +1874,136 @@ describe('AdminPage', () => {
       // And the money counts both halves again: $55.00 less $18.00 to Retell and $4.20 to Twilio.
       expect(tile('Cost').getByText('$22.20')).toBeInTheDocument()
       expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
+    })
+  })
+
+  // --- the card on file -------------------------------------------------------------------
+
+  describe('card on file', () => {
+    const requestButton = () => screen.queryByRole('button', { name: 'Request card' })
+
+    it('shows the card a client can be charged with, and nothing to press', async () => {
+      parentAnswers()
+      mockApi()
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.getByText('Card on file')).toBeInTheDocument()
+      expect(screen.getByText(/Visa •••• 4242/)).toBeInTheDocument()
+      expect(requestButton()).not.toBeInTheDocument()
+    })
+
+    it('offers the button to a client with a customer but no card', async () => {
+      parentAnswers()
+      mockApi({ detail: { card: NO_CARD } })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.getByText('No card on file')).toBeInTheDocument()
+      expect(requestButton()).toBeInTheDocument()
+    })
+
+    it('offers the button when no Stripe customer matched the email either', async () => {
+      parentAnswers()
+      mockApi({ detail: { card: { ...NO_CARD, status: 'no_customer' } } })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.getByText('No Stripe customer matches this email yet.')).toBeInTheDocument()
+      expect(requestButton()).toBeInTheDocument()
+    })
+
+    it('has nothing to offer a client with no email in GoHighLevel', async () => {
+      parentAnswers()
+      mockApi({ detail: { card: { ...NO_CARD, status: 'no_billing_email' } } })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(
+        screen.getByText('No email on the sub-account owner in GoHighLevel.'),
+      ).toBeInTheDocument()
+      expect(requestButton()).not.toBeInTheDocument()
+    })
+
+    it('says it could not check rather than inventing a problem to chase', async () => {
+      parentAnswers()
+      mockApi({ detail: { card: { ...NO_CARD, status: 'unknown' } } })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.getByText('Could not check')).toBeInTheDocument()
+      expect(screen.queryByText('No card on file')).not.toBeInTheDocument()
+      expect(requestButton()).not.toBeInTheDocument()
+    })
+
+    it('asks for a card once and shows when it was asked for', async () => {
+      parentAnswers()
+      const fetchMock = mockApi({ detail: { card: NO_CARD } })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(requestButton()!)
+
+      await screen.findByText(/Card requested/)
+      const asked = fetchMock.mock.calls.filter(([url]) =>
+        String(url).includes('/card-request/'),
+      )
+      expect(asked).toHaveLength(1)
+      expect(asked[0][1]).toMatchObject({ method: 'POST' })
+    })
+
+    it('shows a card attached between the page loading and the button being pressed', async () => {
+      parentAnswers()
+      mockApi({
+        detail: { card: NO_CARD },
+        cardRequest: { status: 'card_on_file', brand: 'visa', last4: '4242', requested_at: null },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(requestButton()!)
+
+      expect(await screen.findByText('Card on file')).toBeInTheDocument()
+      expect(requestButton()).not.toBeInTheDocument()
+    })
+
+    it('says so when GoHighLevel refused the request, and leaves the button there', async () => {
+      parentAnswers()
+      mockApi({ detail: { card: NO_CARD }, cardRequest: 502 })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(requestButton()!)
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Could not ask GoHighLevel/)
+      expect(requestButton()).toBeInTheDocument()
+      expect(screen.queryByText(/Card requested/)).not.toBeInTheDocument()
+    })
+
+    it('never offers a sub-account the button on its own page', async () => {
+      parentAnswers()
+      mockApi({
+        session: { ...agencySession, active_location: 'loc1', scope: 'location' },
+        detail: { card: NO_CARD },
+      })
+
+      render(<AdminPage />)
+
+      expect(await screen.findByText('No card on file')).toBeInTheDocument()
+      expect(requestButton()).not.toBeInTheDocument()
     })
   })
 })

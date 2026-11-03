@@ -496,7 +496,7 @@ def test_detail_reports_why_a_charge_failed(client):
     }
 
 
-def test_detail_carries_the_reason_a_bill_that_never_reached_stripe_recorded(client):
+def test_detail_carries_the_reason_a_bill_that_never_reached_stripe_recorded(client, fake):
     """A charge that failed before Stripe saw it leaves the bill `uncharged`, not `failed`.
 
     Reading `failure_reason` only on `failed` would hide exactly the state nobody can act on

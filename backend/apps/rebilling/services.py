@@ -682,28 +682,38 @@ def _client_row(
     }
 
 
-def _billing_link(mapping: ClientMapping) -> dict:
-    """Who GoHighLevel says pays, and whether Stripe has been matched to them yet.
+def billing_facts(mapping: ClientMapping) -> dict:
+    """Who GoHighLevel says pays, whether Stripe has been matched to them, and whether they
+    have a card.
 
     All of it is read, never edited: the owner comes from GHL and the Stripe customer is found
-    by their email on the first charge. When no customer could be matched, the reason the last
-    bill recorded is shown instead of an id - that message is the whole of what an admin can act
-    on, and it is the only thing distinguishing "not charged yet" from "cannot be charged".
+    by their email. When no customer could be matched, the reason the last bill recorded is
+    shown instead of an id - that message is the whole of what an admin can act on, and it is
+    the only thing distinguishing "not charged yet" from "cannot be charged".
+
+    The card is the one thing here that has a button behind it, and it is read now rather than
+    at month end precisely so that button is pressed while there is still time to use it.
+    `card_requested_at` is this app's own, so it is read off the row; everything else is Stripe's.
     """
     # Imported here, not at module level: `stripe_billing` imports `month_window` from this
     # module, so importing it back at the top would be circular.
-    from .stripe_billing import customer_name
+    from .stripe_billing import customer_facts
 
     owner = GHLOAuthToken.objects.filter(is_agency=False, location_id=mapping.location_id).first()
     latest = mapping.bills.first()
+    facts = customer_facts(mapping)
     return {
         'owner_name': owner.owner_name if owner else '',
         'billing_email': mapping.billing_email,
-        'stripe_customer_id': mapping.stripe_customer_id,
-        'stripe_customer_name': (
-            customer_name(mapping.stripe_customer_id) if mapping.stripe_customer_id else ''
-        ),
+        'stripe_customer_id': facts['stripe_customer_id'],
+        'stripe_customer_name': facts['stripe_customer_name'],
         'billing_failure_reason': latest.failure_reason if latest else '',
+        'card': {
+            **facts['card'],
+            'requested_at': (
+                mapping.card_requested_at.isoformat() if mapping.card_requested_at else None
+            ),
+        },
     }
 
 
@@ -778,7 +788,7 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         'retell_agents': _retell_agents(mapping),
         'phone_numbers': mapping.phone_numbers or [],
         'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
-        **_billing_link(mapping),
+        **billing_facts(mapping),
         'rates': _rate_row(current_rate(mapping, end)),
         'rate_history': [_rate_row(rate) for rate in mapping.rates.all()],
         # What "Reset to defaults" on the page writes back, so the page never holds its own

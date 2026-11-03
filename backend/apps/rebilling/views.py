@@ -1,3 +1,4 @@
+import hmac
 import json
 import logging
 
@@ -20,6 +21,7 @@ from .serializers import ClientMappingSerializer, ClientRatesSerializer
 from .services import (
     RetellReconciliationService,
     TwilioUsageService,
+    billing_facts,
     client_detail,
     client_rows,
     month_window,
@@ -28,7 +30,7 @@ from .services import (
     store_call,
     sync_billing_emails,
 )
-from .stripe_billing import apply_event, read_event
+from .stripe_billing import apply_event, clear_card_request, read_event, request_card
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +90,52 @@ class StripeWebhookView(APIView):
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
         apply_event(event)
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class GHLCardWebhookView(APIView):
+    """POST /api/rebilling/webhooks/ghl-card/: GoHighLevel saying a client has entered a card.
+
+    Called by a workflow's Custom Webhook action, not by the marketplace app, so there is no
+    `X-GHL-Signature` to check against GHL's own key - the workflow sends whatever headers it is
+    configured with, and a shared secret is the only thing available. A blank
+    `GHL_CARD_WEBHOOK_TOKEN` refuses every request rather than letting any through.
+
+    What it is told is never taken on trust: Stripe is re-read, and only Stripe's answer clears
+    the request. Answers quickly and empty, like the other two webhooks, because GHL retries
+    anything that is not a 2xx.
+    """
+
+    # The shared secret in `X-Card-Webhook-Token` is the authentication.
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request):
+        expected = settings.GHL_CARD_WEBHOOK_TOKEN
+        sent = request.headers.get('X-Card-Webhook-Token', '')
+        if not expected or not hmac.compare_digest(sent, expected):
+            logger.warning('rebilling: card webhook token rejected')
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            payload = json.loads(request.body)
+        except ValueError:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        location_id = (payload or {}).get('locationId')
+        if not location_id:
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        client = ClientMapping.objects.filter(location_id=location_id).first()
+        if client is None:
+            # Not an error: this workflow may run for sub-accounts that are not billed here.
+            logger.info('rebilling: card webhook for unmapped sub-account %s', location_id)
+            return Response(status=status.HTTP_204_NO_CONTENT)
+
+        if not clear_card_request(client):
+            logger.warning(
+                'rebilling: %s reported a saved card, but Stripe still has none', location_id
+            )
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -281,6 +329,38 @@ class AdminClientRatesView(APIView):
 
         set_rates(mapping, **serializer.validated_data)
         return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
+
+
+class AdminClientCardRequestView(APIView):
+    """POST /api/rebilling/admin/clients/<location_id>/card-request/: ask a client for a card.
+
+    Agency admins only, like the other two writes. This one sends an email to a client, so a
+    sub-account must not be able to set its own off - and a client cannot usefully chase itself.
+
+    Answers with the client's refreshed card status, re-read from Stripe rather than assumed, so
+    a client who attached a card between the page loading and the button being pressed comes
+    back as having one instead of as having been chased.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request, location_id):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can request a card.')
+
+        mapping = ClientMapping.objects.filter(location_id=location_id).first()
+        if mapping is None:
+            raise NotFound('This client has not been mapped for billing yet.')
+
+        try:
+            request_card(mapping)
+        except GHLError as exc:
+            logger.exception('rebilling: card request failed for %s', location_id)
+            return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({'card': billing_facts(mapping)['card']})
 
 
 class AdminClientMappingView(APIView):

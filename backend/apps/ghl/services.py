@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # `GHL_API_VERSION` date.
 CUSTOM_VALUE_VERSION = 'v3'
 
+# So do the contact endpoints this module uses. Their published spec names `v3` as the only
+# option for both the duplicate search and the update.
+CONTACT_VERSION = 'v3'
+
 
 class GHLOAuthService:
     def __init__(self, client: httpx.Client | None = None):
@@ -128,6 +132,56 @@ class GHLOAuthService:
             token=token,
             version=CUSTOM_VALUE_VERSION,
             json={'name': name, 'value': value},
+        )
+
+    def get_main_location_token(self) -> str:
+        """A Location-class token for the agency's own main sub-account.
+
+        That is where the billing contacts live. It is deliberately not in the client list -
+        `sync_locations` drops it - so there is no stored row to read a token off, and storing
+        one would put the agency's own location in the billing dashboard as if it were a client.
+        An agency token is not an alternative: GHL refuses a Company-class token on `/contacts/`.
+        """
+        agency = self.get_agency()
+        data = self._mint_location_token(
+            self.get_agency_token(agency), agency.company_id, settings.AGENCY_LOCATION_ID
+        )
+        return data['access_token']
+
+    def set_contact_field(self, email: str, field_id: str, value: str) -> None:
+        """Set one custom field on the main account's contact with this email address.
+
+        The contact is found by email rather than by a stored id: the address already comes from
+        the sub-account's owner in GoHighLevel and is the same one Stripe is matched by, so there
+        is one identity for a client and nothing to keep in step.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/contacts/get-duplicate-contact
+              https://marketplace.gohighlevel.com/docs/ghl/contacts/update-contact
+        """
+        location_id = settings.AGENCY_LOCATION_ID
+        token = self.get_main_location_token()
+
+        found = self._request(
+            'GET',
+            '/contacts/search/duplicate',
+            token=token,
+            version=CONTACT_VERSION,
+            params={'locationId': location_id, 'email': email},
+        )
+        contact_id = (found.get('contact') or {}).get('id')
+        if not contact_id:
+            raise GHLError(f'No contact in {location_id} with the email {email}.')
+
+        self._request(
+            'PUT',
+            f'/contacts/{contact_id}',
+            token=token,
+            version=CONTACT_VERSION,
+            # `fieldValue` rather than the deprecated `field_value`, per the v3 spec. The id is
+            # the field's own, which is the same in every contact because they are all in this
+            # one sub-account - which is why this one can be configured and the per-sub-account
+            # custom values cannot.
+            json={'customFields': [{'id': field_id, 'fieldValue': value}]},
         )
 
     def sync_locations(self, agency: GHLOAuthToken) -> None:

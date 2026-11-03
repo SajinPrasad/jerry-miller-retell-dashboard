@@ -2,7 +2,7 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminPreviewPage from './AdminPreviewPage'
-import { resetPreviewMappings, resetPreviewRates } from './demoData'
+import { resetPreviewCardRequests, resetPreviewMappings, resetPreviewRates } from './demoData'
 import { currentMonth, shiftMonth } from './format'
 
 const THIS_MONTH = currentMonth()
@@ -24,6 +24,7 @@ describe('AdminPreviewPage', () => {
     // Edits made in one test must not bleed into the next.
     resetPreviewMappings()
     resetPreviewRates()
+    resetPreviewCardRequests()
   })
 
   it('renders sample clients behind a clearly marked banner, with no network calls', async () => {
@@ -111,6 +112,29 @@ describe('AdminPreviewPage', () => {
       screen.getByText(/No Stripe customer found for billing email: imogen@branwynn.test/),
     ).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('asks a sample client for a card without calling the API', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Harbor Heat & Cool' }))
+    await user.click(await screen.findByRole('button', { name: 'Request card' }))
+
+    expect(await screen.findByText(/Card requested/)).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('shows the card a sample client is charged with', async () => {
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+
+    expect(await screen.findByText('Card on file')).toBeInTheDocument()
+    expect(screen.getByText(/Visa •••• 4242/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Request card' })).not.toBeInTheDocument()
   })
 
   it('shows a sample bill being retried as In Retry on a finished month', async () => {

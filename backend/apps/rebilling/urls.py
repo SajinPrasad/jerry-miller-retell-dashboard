@@ -6,6 +6,7 @@ app_name = 'rebilling'
 urlpatterns = [
     path('webhooks/retell/', views.RetellWebhookView.as_view(), name='retell-webhook'),
     path('webhooks/stripe/', views.StripeWebhookView.as_view(), name='stripe-webhook'),
+    path('webhooks/ghl-card/', views.GHLCardWebhookView.as_view(), name='ghl-card-webhook'),
     path('admin/clients/', views.AdminClientsView.as_view(), name='admin-clients'),
     path('admin/clients/sync/', views.AdminClientsSyncView.as_view(), name='admin-clients-sync'),
     path(
@@ -27,6 +28,11 @@ urlpatterns = [
         'admin/clients/<str:location_id>/rates/',
         views.AdminClientRatesView.as_view(),
         name='admin-client-rates',
+    ),
+    path(
+        'admin/clients/<str:location_id>/card-request/',
+        views.AdminClientCardRequestView.as_view(),
+        name='admin-client-card-request',
     ),
     path(
         'admin/clients/<str:location_id>/mapping/',

@@ -128,6 +128,22 @@ export interface BillSummary {
   next_retry_at: string | null
 }
 
+/**
+ * Whether the client has a card Stripe would charge, and whether we have asked them for one.
+ *
+ * `no_card` is what Stripe would *do*, not what it holds: a card attached without being made
+ * the invoice default cannot be charged, so it is reported as no card rather than as one that
+ * would work. `unknown` means Stripe could not be read - never shown as a problem to chase.
+ */
+export interface CardStatus {
+  status: 'card_on_file' | 'no_card' | 'no_customer' | 'no_billing_email' | 'unknown'
+  /** Stripe's own word, lowercase (`visa`). Empty for a card held the legacy way. */
+  brand: string
+  last4: string
+  /** When an admin last pressed "Request card", ISO UTC, or null if nobody ever has. */
+  requested_at: string | null
+}
+
 export interface ClientDetail {
   month: string
   location_id: string
@@ -148,6 +164,8 @@ export interface ClientDetail {
   stripe_customer_name: string
   /** Why the last bill could not be charged, when no customer was matched. */
   billing_failure_reason: string
+  /** Whether Stripe holds a card this client could be charged with, read on every view. */
+  card: CardStatus
   retell_agent_ids: string[]
   /** The same ids as `retell_agent_ids`, in the same order, each carrying the agent's own name
    * off Retell - empty when Retell has none mapped to the id right now. Separate from

@@ -19,39 +19,41 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** All work is on `feat/stripe-billing`, pushed to `origin`. The last commit is `aa40299`.
-Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `654c927`. Do not commit or push unless asked.
 
-**Uncommitted work (the most recent change, not yet on the server):** the Client Detail page now
-shows names instead of raw ids.
+**Uncommitted work (Phase 7, the card on file — §6.11):** a client's page now shows whether Stripe
+holds a card that could be charged, and an agency admin can ask them for one.
 
-- Mapped Retell agents are shown by their Retell name. The detail response carries `retell_agents`,
-  which pairs each agent id with its name read off Retell.
-- The Billing contact card shows the Stripe customer's name (`stripe_customer_name`), the sub-account
-  owner's name (falling back to the sub-account's own name), and the billing email. No raw ids.
-- Files touched: `backend/apps/rebilling/services.py`, `backend/apps/rebilling/stripe_billing.py`,
-  `backend/apps/rebilling/tests/test_admin_views.py`, `backend/apps/rebilling/tests/test_billing_email.py`,
-  `frontend/src/features/admin/{ClientBrowser,ClientDetail,MappingEditor,demoData}.tsx|ts`,
-  `frontend/src/features/admin/AdminPage.test.tsx`, `frontend/src/features/admin/AdminPreviewPage.test.tsx`,
-  `frontend/src/types/admin.ts`, `CLAUDE.md`.
+- The status is read live from Stripe on every detail view (one call, the one the customer's name
+  was already costing) and is never stored.
+- **Request card** writes `card not found` to a custom field on the client's billing contact in the
+  main account, which is what triggers Jerry's GoHighLevel workflow emailing them a form.
+- A webhook from that workflow re-asks Stripe and clears the request. It authenticates on a shared
+  secret, and its claim is never trusted on its own.
+- `contacts.write` is new in `GHL_SCOPES`, so **the app has to be re-authorised**, and
+  `GHL_CARD_STATUS_CUSTOM_FIELD_ID` / `GHL_CARD_WEBHOOK_TOKEN` are blank placeholders.
+- Files: `backend/apps/ghl/services.py`, `backend/apps/rebilling/{models,services,stripe_billing,urls,views}.py`,
+  migration `0008`, `backend/config/settings/{base,test}.py`, `backend/.env.example`,
+  `backend/apps/rebilling/tests/{conftest,test_card_status,test_admin_views,test_billing_email}.py`,
+  `backend/apps/ghl/tests/test_services.py`,
+  `frontend/src/{api/admin.ts,types/admin.ts,features/admin/{ClientDetail.tsx,demoData.ts,AdminPage.test.tsx,AdminPreviewPage.test.tsx}}`,
+  `handover.md`, `local_folder/plan.md`.
 
-**Already committed and deployed:** rates can be saved and reset on the page (`20c3579`), the
-headline and per-call status follow the actual bill (`2fb0170`, `aa40299`), and migration `0006`
-was made safe on a database that already has a `charged_at` column (`96bb084`). The server was
-last updated to `aa40299`.
-
-**Open live issue (unresolved).** After `aa40299` was deployed, the browser still showed `Paid` on
-an unbilled call in a billed month. The database row has no bill link, and the code path from the
-API to the badge was traced end to end and is correct. The most likely cause is that the browser
-or a proxy is still serving the previous frontend bundle. See §17.1 for how to check.
+**Already committed:** the automated retry schedule and the GHL rebilling-status custom value
+(`bcd48b9`), and the Twilio billing pause (`654c927`) — Twilio minutes are no longer billed or
+shown anywhere, behind `TWILIO_BILLING_ENABLED`.
 
 **Test status (last run, this state):**
 
-- Backend: `pytest apps/ghl apps/rebilling`: **289 passed**.
-- Frontend: `npm test -- --run`: **69 passed** in 3 files.
-- `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `./node_modules/.bin/oxlint src`: clean.
+- Backend: `pytest`: **358 passed**.
+- Frontend: `npm test`: **96 passed** in 3 files.
+- `npx tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
-- `manage.py makemigrations --check --dry-run`: "No changes detected".
+- `manage.py makemigrations --check --dry-run`: "No changes detected" (migration `0008` is written).
+
+**Nothing in Phase 7 has run against live GoHighLevel or Stripe.** Every call is mocked. The
+contact search and update shapes come from GHL's published v3 spec, not from a live call — §17 has
+what to check first.
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
@@ -523,6 +525,8 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
 | `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` | `retell_rebilling_status` | Custom value in each sub-account set to `failed` on a final failure and `active` on payment. Found by name, since ids differ per sub-account |
+| `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
+| `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
 
 ### 6.8 Calculation (built)
 
@@ -634,9 +638,9 @@ looks exactly like a decline.
 - A `paid` bill ignores later failure events (webhooks are not ordered). An event for an unknown invoice is
   logged and ignored. Other event types are ignored. A valid signature always answers 204.
 
-**Display name** (`customer_name(stripe_customer_id)`): `stripe.Customer.retrieve`, read live on each admin
-detail view, for the billing contact card. A Stripe error is logged and returns an empty name, so a Stripe
-outage cannot break the page.
+**Display name and card** (`customer_facts(client)`): one `stripe.Customer.retrieve`, read live on each
+admin detail view, answering both halves of the billing contact card. See §6.11. A Stripe error is logged
+and comes back as `unknown`, so a Stripe outage cannot break the page.
 
 **Setup link** (`setup_link(client)`): a Stripe Checkout session in `mode='setup'`, for a client with no card.
 Nothing calls it from a UI yet.
@@ -645,6 +649,67 @@ Nothing calls it from a UI yet.
 
 **Tests:** `test_stripe_billing.py` (every Stripe call faked by `FakeStripe`, and a guard that fails any
 unfaked call by name), and `test_billing_email.py` (who pays, and the cached-customer rules).
+
+### 6.11 Phase 7: card on file, and asking for one (built)
+
+Until this, the only thing that ever asked whether a client could be charged was `charge_bills`, at month
+end. Now the question is answered on the client's own page, the moment they are mapped, and asking them
+for a card is a button.
+
+**The status is read from Stripe on every view, never stored.** A saved answer about whether money can be
+taken is wrong from the moment the client enters a card. `customer_facts(client)`
+(`stripe_billing.py`) makes **one** `Customer.retrieve`, expanded on
+`invoice_settings.default_payment_method` — the same call the billing contact card was already making for
+the customer's name — and returns the name, the id and `{status, brand, last4}`. It is reached through
+`billing_facts(mapping)` in `services.py` (the old private `_billing_link`), which adds `requested_at`.
+
+| Status | What Stripe said | On the page |
+|---|---|---|
+| `card_on_file` | A default payment method, or the legacy `default_source` | Green pill, `Visa •••• 4242` |
+| `no_card` | A customer, but nothing Stripe would collect against | Amber pill, **Request card** |
+| `no_customer` | No Stripe customer matches `billing_email` | Amber pill, **Request card** |
+| `no_billing_email` | Nothing was looked up — GHL has no owner email | Amber pill, no button |
+| `unknown` | Stripe could not be reached | Muted "could not check", no button |
+
+Two of these are worth knowing about. **A card attached but not set as the invoice default reads as
+`no_card`**, because that is what `charge_bills` would hit — the test is `_assert_chargeable`'s, so the
+page and the charge can never disagree. And **`unknown` is never shown as `no_card`**: chasing a client
+who has a perfectly good card is worse than admitting Stripe was unreachable.
+
+The page now **matches the Stripe customer on first view** rather than on first charge, since answering the
+card question needs one. That is `customer_id()` unchanged, including its refusal to create a customer that
+matched nothing.
+
+**Requesting a card** (`request_card(client)`): writes `card not found` to the card status **custom field on
+the client's billing contact**, which is what starts Jerry's GoHighLevel workflow emailing them a form.
+`GHLOAuthService.set_contact_field(email, field_id, value)` finds the contact by email in the **main
+account** (`GET /contacts/search/duplicate`) and writes it (`PUT /contacts/{id}`, `fieldValue`), both
+`Version: v3`, both on a Location-class token minted on demand by `get_main_location_token()` and
+deliberately **not stored** — a stored row would show the agency's own location in the billing dashboard as
+a client, and an agency token is refused by `/contacts/` outright. Unlike the rebilling status write, this
+one **raises**: a human pressed a button, so a failure is shown, not logged.
+
+`ClientMapping.card_requested_at` (migration `0008`) is the only thing stored, because whether *we asked*
+is the one part Stripe cannot tell us.
+
+**Endpoint:** `POST /api/rebilling/admin/clients/<location_id>/card-request/`, agency scope only (this
+sends the client an email; 403 for a location session even on its own client), 404 unmapped, 502 when
+GoHighLevel refuses. It answers with the card status **re-read from Stripe**, so a client who attached a
+card between the page loading and the button being pressed comes back green rather than chased.
+
+**Webhook:** `POST /api/rebilling/webhooks/ghl-card/`, called by the workflow once the client has entered a
+card. It is **not** signed by GHL — a workflow's Custom Webhook action is an arbitrary request, not a
+marketplace event — so it authenticates on `GHL_CARD_WEBHOOK_TOKEN` in `X-Card-Webhook-Token`, compared
+with `hmac.compare_digest`. **A blank setting refuses everything.** What it is told is never believed:
+Stripe is re-read, and only Stripe's answer clears `card_requested_at`. 401 bad token, 400 unreadable body
+or no `locationId`, 204 otherwise, including for a sub-account we do not bill.
+
+**Scope:** `contacts.write` is new in `GHL_SCOPES`. **The app must be re-authorised** before a card request
+can work.
+
+**Tests:** `apps/rebilling/tests/test_card_status.py` (30), five more in `apps/ghl/tests/test_services.py`
+for `set_contact_field`, and a new autouse `ghl_contact_writes` fixture so nothing in the rebilling package
+can reach GoHighLevel. Frontend: a `card on file` block in `AdminPage.test.tsx` and two preview tests.
 
 ---
 
@@ -967,6 +1032,26 @@ These cannot be answered from the docs.
   own URL, not only GHL's outer page. A proxy or CDN in front may also cache `index.html`.
 - If a build fails partway, `dist/` can keep files from the previous build. Check the timestamps of the files under
   `dist/assets/` after every build.
+
+### 17.1b Before the card flow can work live (Phase 7)
+
+In this order, because each step is useless without the one before it:
+
+1. **Create the card status custom field** on contacts in the main account, and put its id in
+   `GHL_CARD_STATUS_CUSTOM_FIELD_ID`. A field id, not a name — the lookup is by id.
+2. **Re-authorise the marketplace app**, which now asks for `contacts.write` as well as the two
+   custom-value scopes the retry work added. Until then every card request 502s.
+3. **Check the first search and write by hand** before trusting the button. `GET
+   /contacts/search/duplicate?locationId=<main>&email=<owner>` should answer `{"contact": {...}}` —
+   the response shape is not in GHL's published spec, and `set_contact_field()` reads `contact.id`.
+   The write is `PUT /contacts/{id}` with `{"customFields": [{"id": …, "fieldValue": "card not
+   found"}]}`, `Version: v3`.
+4. **Build the workflow**: triggered by that field changing to `card not found`, emailing the card
+   form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/` with
+   `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`.
+5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
+   writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
+   keep saying no card — the one failure here that looks like a bug and is not.
 
 ### 17.2 Migrations on the server
 

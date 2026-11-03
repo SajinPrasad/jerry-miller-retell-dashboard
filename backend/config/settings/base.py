@@ -118,6 +118,7 @@ GHL_SCOPES = env(
             'saas/location.read',
             'locations/customValues.readonly',
             'locations/customValues.write',
+            'contacts.write',
         ]
     ),
 )
@@ -186,6 +187,17 @@ BILLING_RETRY_INTERVAL_HOURS = env.int('BILLING_RETRY_INTERVAL_HOURS', default=1
 GHL_RETELL_STATUS_CUSTOM_VALUE_NAME = env(
     'GHL_RETELL_STATUS_CUSTOM_VALUE_NAME', default='retell_rebilling_status'
 )
+
+# The custom field on a client's billing contact that carries their card status. Writing
+# `card not found` to it is what starts the GoHighLevel workflow emailing them a card form.
+# A field id rather than a name, which works here and did not for the custom value above: every
+# billing contact lives in the one main sub-account, so there is one field and one id.
+GHL_CARD_STATUS_CUSTOM_FIELD_ID = env('GHL_CARD_STATUS_CUSTOM_FIELD_ID', default='')
+
+# The shared secret a GoHighLevel workflow sends in `X-Card-Webhook-Token` when a client has
+# entered a card. A workflow's webhook is not signed by GHL, so this is the only thing that
+# authenticates it; blank refuses every request rather than accepting any.
+GHL_CARD_WEBHOOK_TOKEN = env('GHL_CARD_WEBHOOK_TOKEN', default='')
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')

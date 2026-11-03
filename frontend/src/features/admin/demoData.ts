@@ -16,6 +16,7 @@
 
 import type {
   BillSummary,
+  CardStatus,
   ClientDetail,
   ClientDetailResult,
   ClientSummary,
@@ -56,6 +57,9 @@ interface Spec {
   stripe_customer_name?: string
   /** Set only on the sample client Stripe could not match, so the preview shows that state. */
   billing_failure_reason?: string
+  /** The card Stripe holds. Absent means none, which is the state with the button behind it. */
+  card_brand?: string
+  card_last4?: string
   voice_rate_cents: number
   call_rate_cents: number
   /** How a finished month's bill ended up, so the preview shows a settled month as settled
@@ -88,6 +92,8 @@ const SPECS: Spec[] = [
     billing_email: 'dana@coolbreeze.test',
     stripe_customer_id: 'cus_demoCoolBreeze',
     stripe_customer_name: 'Cool Breeze HVAC LLC',
+    card_brand: 'visa',
+    card_last4: '4242',
     bill_status: 'paid',
     voice_rate_cents: 25,
     call_rate_cents: 5,
@@ -132,6 +138,8 @@ const SPECS: Spec[] = [
     billing_email: 'marcus@polarpeak.test',
     stripe_customer_id: 'cus_demoPolarPeak',
     stripe_customer_name: 'Polar Peak Heating & Air Inc.',
+    card_brand: 'mastercard',
+    card_last4: '5454',
     bill_status: 'failed',
     bill_failure_reason: 'card_declined',
     voice_rate_cents: 28,
@@ -226,6 +234,47 @@ export function savePreviewRates(
 
 export function resetPreviewRates(): void {
   previewRates.clear()
+}
+
+// And the same for a card request. The preview never reaches GoHighLevel either, so pressing
+// the button records the ask here and nothing leaves the browser.
+const previewCardRequests = new Map<string, string>()
+
+/** Stands in for `requestCard` in the preview, answering with the status it would have returned. */
+export function requestPreviewCard(locationId: string): CardStatus {
+  previewCardRequests.set(locationId, new Date().toISOString())
+  const spec = SPECS.find((candidate) => candidate.location_id === locationId)
+  return cardFor(spec)
+}
+
+export function resetPreviewCardRequests(): void {
+  previewCardRequests.clear()
+}
+
+/**
+ * What Stripe would say about one sample client's card.
+ *
+ * A client with a card on the spec has one; a client Stripe never matched reads as
+ * `no_customer`, which is the same state the real page shows for the sample client whose email
+ * matched nothing. Everyone else has a customer and no card - the one with the button.
+ */
+function cardFor(spec: Spec | undefined): CardStatus {
+  const requested_at = spec ? (previewCardRequests.get(spec.location_id) ?? null) : null
+  if (!spec) return { status: 'no_customer', brand: '', last4: '', requested_at }
+  if (spec.card_last4) {
+    return {
+      status: 'card_on_file',
+      brand: spec.card_brand ?? '',
+      last4: spec.card_last4,
+      requested_at,
+    }
+  }
+  return {
+    status: spec.stripe_customer_id ? 'no_card' : 'no_customer',
+    brand: '',
+    last4: '',
+    requested_at,
+  }
 }
 
 /** `spec` with any preview edit to its mapping applied. Everything else - rates, call volume -
@@ -348,6 +397,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       stripe_customer_id: '',
       stripe_customer_name: '',
       billing_failure_reason: '',
+      card: cardFor(undefined),
       rates: null,
       rate_history: [],
       default_rates: DEFAULT_RATES,
@@ -381,6 +431,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     stripe_customer_id: spec.stripe_customer_id,
     stripe_customer_name: spec.stripe_customer_name ?? '',
     billing_failure_reason: spec.billing_failure_reason ?? '',
+    card: cardFor(spec),
     rates: { ...rate(spec), start_date: `${month}-15` },
     rate_history: [
       { ...rate(spec), start_date: `${month}-15` },

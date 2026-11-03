@@ -1,4 +1,5 @@
 import type {
+  CardStatus,
   ClientDetail,
   ClientDetailResult,
   ClientsResponse,
@@ -69,6 +70,21 @@ export function saveRates(
     `/rebilling/admin/clients/${encodeURIComponent(locationId)}/rates/${monthQuery(month)}`,
     { method: 'PUT', body: JSON.stringify(rates) },
   )
+}
+
+/**
+ * Ask a client for a card, by setting the card status on their GoHighLevel billing contact,
+ * which is what starts the workflow emailing them a form. Agency admins only.
+ *
+ * Answers with the client's card status re-read from Stripe, so a client who attached one
+ * between the page loading and the button being pressed comes back as having a card.
+ */
+export async function requestCard(locationId: string): Promise<CardStatus> {
+  const body = await apiFetch<{ card: CardStatus }>(
+    `/rebilling/admin/clients/${encodeURIComponent(locationId)}/card-request/`,
+    { method: 'POST' },
+  )
+  return body.card
 }
 
 /** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */

@@ -206,15 +206,15 @@ read-only.
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
   backend verifies a dev blob exactly like a real one - there is no server-side bypass.
 
-## Voice rebilling (Task 4, Phases 1, 2, 2b, 3 and 5 built)
+## Voice rebilling (Task 4, Phases 1, 2, 2b, 3, 5 and 7 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe, Phase 7 the card on file and the card request. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 
 **Twilio billing is paused** (`TWILIO_BILLING_ENABLED`, default off): GoHighLevel rebills regular call minutes natively, so billing them here as well would charge the client twice. The pull still runs and the usage is still stored and reported; what stops is billing. `calculate_bills` builds no Twilio line, `charge_bills` refuses a pre-pause bill that carries one, the admin estimate counts Retell only, and the page hides every Twilio control behind the `twilio_billing_enabled` flag both endpoints return. It is a switch, not a deletion - the Twilio models, pull, pickers and calculation all stay, and the tests that cover them turn the setting back on.
 
-- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `twilio_subaccount_sid`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `active`), `RateHistory` (`voice_rate_cents` default 25 = the Retell AI minute, `call_rate_cents` default 5 = the Twilio call minute, `start_date`; a rate change adds a row and splits both rates at the same point), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped), `TwilioUsageDay` (one client, one GMT day, one category; `unique_together` on all three).
+- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `twilio_subaccount_sid`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `card_requested_at`, `active`), `RateHistory` (`voice_rate_cents` default 25 = the Retell AI minute, `call_rate_cents` default 5 = the Twilio call minute, `start_date`; a rate change adds a row and splits both rates at the same point), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped), `TwilioUsageDay` (one client, one GMT day, one category; `unique_together` on all three).
 - **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
 - **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute` — **Retell only**; Twilio minutes arrive pre-rounded and must never be rounded again. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`. `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` must be the **parent account's** (a main-account API key is denied subaccount resources), plus `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Billability:** every stored call carries `billing_status` (`billable`/`unbillable`, default unbillable) and `unbillable_reason` in plain words, set by `billing_state()` on store and on every re-read. A call is unbillable when its status isn't `ended`, or it has no duration or no start time. Nothing is ever dropped; Phase 3 bills `billable` rows only. Duration is taken from `duration_ms`, else `duration_seconds`, else `call_cost.total_duration_seconds`.
@@ -255,11 +255,11 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     sub-account's details leaves the stored owner alone - only GHL genuinely dropping the email
     clears it, because a stale address would quietly match and charge whoever still has it.
   - **The billing contact card shows names, never the ids behind them.** `client_detail` calls
-    `stripe_billing.customer_name()` - `stripe.Customer.retrieve()`, read fresh on every view
+    `stripe_billing.customer_facts()` - one `stripe.Customer.retrieve()`, read fresh on every view
     rather than cached, since nothing else in this app stores it - and sends `stripe_customer_name`
     alongside `stripe_customer_id`, which the page keeps for its own no-customer-yet check but
     never shows. Empty when Stripe has no name on the customer or could not be reached just now,
-    which `customer_name()` catches and logs rather than raising: a name is not what the charge
+    which `customer_facts()` catches and logs rather than raising: a name is not what the charge
     depends on, so Stripe being briefly down must not take the whole page down with it. The
     **Sub-account** row shows the GHL owner's name, same as before, falling back to the client's
     own name (`client_name`) rather than to "Not set in GoHighLevel" - always a name, never a
@@ -296,6 +296,32 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   taken is logged and ignored. Being paid clears `failure_reason`. Note the SDK hands
   `event['data']['object']` back as a `stripe.Invoice`, not a dict, so `.get()` raises rather
   than returning `None`.
+- **Card on file (Phase 7, built).** The same `Customer.retrieve` that reads the customer's name
+  is expanded on `invoice_settings.default_payment_method`, so the client's page says whether
+  Stripe holds a card it could charge - `card_on_file` / `no_card` / `no_customer` /
+  `no_billing_email` / `unknown` - with the brand and last four when there is one. **It is never
+  stored:** a saved answer about whether money can be taken is wrong the moment the client acts.
+  A card attached but not set as the invoice default reads as `no_card`, because that is what
+  `charge_bills` would hit - the test is `_assert_chargeable`'s, so the page and the charge cannot
+  disagree. Stripe being unreachable is `unknown`, never `no_card`.
+  - **Request card** (`POST /api/rebilling/admin/clients/<location_id>/card-request/`, agency scope
+    only - it emails the client) writes `card not found` to a custom field on their billing contact
+    in the **main account** (`AGENCY_LOCATION_ID`), found by `billing_email`. That write is what
+    starts Jerry's GHL workflow. `GHLOAuthService.set_contact_field()` does the search
+    (`GET /contacts/search/duplicate`) and the write (`PUT /contacts/{id}`, `fieldValue`), both
+    `Version: v3`, on a Location-class token minted on demand by `get_main_location_token()` and
+    **not stored** - a stored row would show the agency's own location as a client, and an agency
+    token is refused by `/contacts/`. Unlike the rebilling status write this one **raises**: a
+    human pressed a button, so a failure is shown rather than logged.
+  - **The webhook back** (`POST /api/rebilling/webhooks/ghl-card/`) is a workflow's Custom Webhook
+    action, not a marketplace event, so GHL does not sign it: it authenticates on
+    `GHL_CARD_WEBHOOK_TOKEN` in `X-Card-Webhook-Token`, and **a blank setting refuses everything**.
+    Its claim is never believed - Stripe is re-read, and only Stripe's answer clears
+    `ClientMapping.card_requested_at`, which is the one thing stored because it is the one thing
+    Stripe cannot tell us.
+  - **Settings:** `GHL_CARD_STATUS_CUSTOM_FIELD_ID` (an id, which works only because every billing
+    contact is in the one main account) and `GHL_CARD_WEBHOOK_TOKEN`. `contacts.write` is new in
+    `GHL_SCOPES`, so **the app must be re-authorised**.
 - **Not built yet:** no alerts beyond a log line. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 

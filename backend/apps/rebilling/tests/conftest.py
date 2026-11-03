@@ -161,3 +161,29 @@ def ghl_writes(monkeypatch):
 
     monkeypatch.setattr(GHLOAuthService, 'set_custom_value', record)
     return writes
+
+
+class _ContactWrites(list):
+    """The recorded contact field writes, with a switch for making the next one fail."""
+
+    fails_with = None
+
+
+@pytest.fixture(autouse=True)
+def ghl_contact_writes(monkeypatch):
+    """The same for the card status field on a client's billing contact.
+
+    Autouse for the same reason as `ghl_writes`: the write is a search-then-update over HTTP,
+    and a card request made in a test that forgot to fake it would go to the real API. The
+    recorded `(email, field_id, value)` triples are what the tests assert on; `fails_with` makes
+    the next write raise, which is how the "GoHighLevel refused it" paths are reached.
+    """
+    writes = _ContactWrites()
+
+    def record(self, email, field_id, value):
+        if writes.fails_with is not None:
+            raise writes.fails_with
+        writes.append((email, field_id, value))
+
+    monkeypatch.setattr(GHLOAuthService, 'set_contact_field', record)
+    return writes

@@ -1,13 +1,14 @@
 import { useState } from 'react'
-import { saveRates } from '../../api/admin'
+import { requestCard, saveRates } from '../../api/admin'
 import type {
   BillSummary,
+  CardStatus,
   ClientDetail as Detail,
   MappingResult,
   RateFields,
   RecentCall,
 } from '../../types/admin'
-import { savePreviewRates } from './demoData'
+import { requestPreviewCard, savePreviewRates } from './demoData'
 import {
   DASH,
   centsFromInput,
@@ -30,6 +31,41 @@ interface Props {
   onMappingSaved: (result: MappingResult) => void
   /** The client's whole refreshed detail, as the rates endpoint answered it. */
   onRatesSaved: (detail: Detail) => void
+}
+
+/**
+ * What the card row says, in the three words an admin acts on.
+ *
+ * The three "no card" statuses read the same deliberately: what differs is why, which is the
+ * note beside them, and only two of them have a button that would help. `unknown` is never one
+ * of them - saying "no card" because Stripe was briefly unreachable would send someone chasing
+ * a client who has a perfectly good one.
+ */
+const CARD_LABELS: Record<CardStatus['status'], string> = {
+  card_on_file: 'Card on file',
+  no_card: 'No card on file',
+  no_customer: 'No card on file',
+  no_billing_email: 'No card on file',
+  unknown: 'Could not check',
+}
+
+const CARD_TONES: Record<CardStatus['status'], string> = {
+  card_on_file: 'ok',
+  no_card: 'warn',
+  no_customer: 'warn',
+  no_billing_email: 'warn',
+  unknown: '',
+}
+
+const CARD_NOTES: Partial<Record<CardStatus['status'], string>> = {
+  no_customer: 'No Stripe customer matches this email yet.',
+  no_billing_email: 'No email on the sub-account owner in GoHighLevel.',
+  unknown: 'Stripe could not be reached just now.',
+}
+
+/** Stripe's own lowercase word for the card's brand, as it is written on the card: `visa`. */
+function cardBrand(brand: string): string {
+  return brand ? brand.charAt(0).toUpperCase() + brand.slice(1) : ''
 }
 
 /** What the headline tile is called once a bill exists, in the bill's own vocabulary. */
@@ -328,7 +364,7 @@ export default function ClientDetail({
         </p>
       </section>
 
-      <BillingContact detail={detail} />
+      <BillingContact detail={detail} canEdit={canEdit} preview={preview} />
 
       {twilioEnabled && detail.twilio_days.length > 0 && (
         <section className="card">
@@ -535,7 +571,15 @@ function Tile({
  * one. That message is the whole of what an admin can act on: it names the address that matched
  * nothing, which is fixed in GoHighLevel or in Stripe, never here.
  */
-function BillingContact({ detail }: { detail: Detail }) {
+function BillingContact({
+  detail,
+  canEdit,
+  preview,
+}: {
+  detail: Detail
+  canEdit: boolean
+  preview: boolean
+}) {
   const {
     owner_name,
     billing_email,
@@ -548,16 +592,49 @@ function BillingContact({ detail }: { detail: Detail }) {
   // either way, a name, never the raw id a reader could do nothing with.
   const subAccount = owner_name || client_name
 
+  // The server's answer, kept here once a request has been made so the row shows what the
+  // endpoint re-read from Stripe rather than the status the page was loaded with.
+  const [card, setCard] = useState(detail.card)
+  const [requesting, setRequesting] = useState(false)
+  const [requestError, setRequestError] = useState<string | null>(null)
+  // Only these two have anything a card request can fix. A client with no email has nowhere to
+  // send a form, and `unknown` means we do not know there is a problem at all.
+  const canRequest = canEdit && (card.status === 'no_card' || card.status === 'no_customer')
+
+  async function handleRequestCard() {
+    setRequesting(true)
+    setRequestError(null)
+    try {
+      setCard(
+        preview ? requestPreviewCard(detail.location_id) : await requestCard(detail.location_id),
+      )
+    } catch {
+      setRequestError(
+        'Could not ask GoHighLevel for a card. Check the contact and the card status field, then try again.',
+      )
+    } finally {
+      setRequesting(false)
+    }
+  }
+
   return (
     <section className="card">
       <h2>Billing contact</h2>
       <dl className="facts">
+        <dt>Card</dt>
+        <dd>
+          <span className={`pill ${CARD_TONES[card.status]}`}>{CARD_LABELS[card.status]}</span>
+          {card.last4 && ` ${cardBrand(card.brand)} •••• ${card.last4}`}
+          {CARD_NOTES[card.status] && (
+            <span className="muted"> {CARD_NOTES[card.status]}</span>
+          )}
+        </dd>
         <dt>Stripe customer</dt>
         <dd>
           {stripe_customer_id ? (
             stripe_customer_name || <span className="muted">No name on file in Stripe</span>
           ) : (
-            <span className="muted">Matched on the first charge</span>
+            <span className="muted">Nothing matched this email yet</span>
           )}
         </dd>
         <dt>Billing email</dt>
@@ -569,6 +646,23 @@ function BillingContact({ detail }: { detail: Detail }) {
         <dt>Sub-account</dt>
         <dd>{subAccount}</dd>
       </dl>
+      {canRequest && (
+        <p className="actions">
+          <button type="button" onClick={handleRequestCard} disabled={requesting}>
+            {requesting ? 'Requesting…' : 'Request card'}
+          </button>
+          {card.requested_at && (
+            <span className="muted small">
+              {` Card requested ${formatDateTime(card.requested_at)} UTC.`}
+            </span>
+          )}
+        </p>
+      )}
+      {requestError && (
+        <div className="banner error" role="alert">
+          {requestError}
+        </div>
+      )}
       {!stripe_customer_id && billing_failure_reason && (
         <div className="banner error" role="alert">
           {billing_failure_reason}

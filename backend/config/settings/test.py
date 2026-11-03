@@ -24,3 +24,7 @@ STRIPE_WEBHOOK_SECRET = 'whsec_test_secret'
 # and the ones that cover the Twilio calculation turn it back on with `override_settings`. A
 # developer's own `.env` must not decide which of the two the suite runs.
 TWILIO_BILLING_ENABLED = False
+# Pinned for the same reason: the card tests assert what is sent to GoHighLevel and what the
+# webhook accepts, neither of which may depend on a developer's own `.env`.
+GHL_CARD_STATUS_CUSTOM_FIELD_ID = 'cf_card_status'
+GHL_CARD_WEBHOOK_TOKEN = 'card-webhook-token'

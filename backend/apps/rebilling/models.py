@@ -86,6 +86,11 @@ class ClientMapping(models.Model):
     billing_email = models.EmailField(blank=True, default='')
     stripe_customer_id = models.CharField(max_length=255, blank=True, default='')
     billing_contact_id = models.CharField(max_length=255, blank=True, default='')
+    # When an admin last asked this client for a card through GoHighLevel. Whether they have one
+    # is never stored - it is read from Stripe on every view, because a saved answer about
+    # whether money can be taken is wrong the moment the client acts. Whether we asked is the
+    # one part of this Stripe cannot tell us.
+    card_requested_at = models.DateTimeField(null=True, blank=True)
     active = models.BooleanField(default=True)
 
     class Meta:

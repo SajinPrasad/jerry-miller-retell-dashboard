@@ -443,3 +443,92 @@ def test_a_rejected_custom_value_write_says_why(service):
 
     with pytest.raises(GHLError, match='value is too long'):
         service.set_custom_value('loc1', 'retell_rebilling_status', 'failed')
+
+
+# --- the billing contact's card status field ---------------------------------------------------
+
+DUPLICATE = f'{BASE}/contacts/search/duplicate'
+MAIN = settings.AGENCY_LOCATION_ID
+
+
+def mock_contact(contact_id='contact1'):
+    return respx.get(DUPLICATE).mock(
+        return_value=httpx.Response(200, json={'contact': {'id': contact_id}})
+    )
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_set_contact_field_finds_the_contact_by_email_and_writes_the_field(service):
+    make_agency()
+    minted = mock_location_token()
+    found = mock_contact()
+    update = respx.put(f'{BASE}/contacts/contact1').mock(
+        return_value=httpx.Response(200, json={'contact': {'id': 'contact1'}})
+    )
+
+    service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+
+    # The contact lives in the agency's own main sub-account, and only a Location-class token
+    # may read it - GHL refuses an agency token on `/contacts/`.
+    assert parse_qs(minted.calls.last.request.content.decode())['locationId'] == [MAIN]
+    searched = found.calls.last.request
+    assert dict(parse_qs(urlparse(str(searched.url)).query)) == {
+        'locationId': [MAIN],
+        'email': ['owner@coolbreeze.test'],
+    }
+    assert searched.headers['Authorization'] == f'Bearer {MAIN}-minted'
+    assert searched.headers['Version'] == 'v3'
+    sent = update.calls.last.request
+    assert sent.headers['Version'] == 'v3'
+    assert json.loads(sent.content) == {
+        'customFields': [{'id': 'cf_card_status', 'fieldValue': 'card not found'}]
+    }
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_an_email_matching_no_contact_is_an_error_not_a_silent_write(service):
+    make_agency()
+    mock_location_token()
+    respx.get(DUPLICATE).mock(return_value=httpx.Response(200, json={}))
+    update = respx.put(url__regex=rf'{BASE}/contacts/.+')
+
+    with pytest.raises(GHLError, match='owner@coolbreeze.test'):
+        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+    assert not update.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_rejected_contact_field_write_says_why(service):
+    make_agency()
+    mock_location_token()
+    mock_contact()
+    respx.put(f'{BASE}/contacts/contact1').mock(
+        return_value=httpx.Response(422, json={'message': 'custom field not found'})
+    )
+
+    with pytest.raises(GHLError, match='custom field not found'):
+        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_the_main_account_token_is_minted_fresh_and_never_stored(service):
+    """Storing it would put the agency's own location in the billing dashboard as a client."""
+    make_agency()
+    mock_location_token()
+    mock_contact()
+    respx.put(f'{BASE}/contacts/contact1').mock(return_value=httpx.Response(200, json={}))
+
+    service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+
+    assert not GHLOAuthToken.objects.filter(is_agency=False, location_id=MAIN).exists()
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_card_request_before_the_agency_installed_the_app_is_an_error(service):
+    with pytest.raises(GHLNotConnectedError):
+        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
