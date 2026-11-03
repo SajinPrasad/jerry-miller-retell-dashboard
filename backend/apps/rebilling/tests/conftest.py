@@ -2,7 +2,7 @@
 
 Nothing a test in this package does may reach Stripe or GoHighLevel. `never_reach_stripe` makes
 an unfaked Stripe call fail by name, `fake` stands in for the Stripe methods the code uses, and
-`ghl_writes` records status writes to a client's GoHighLevel custom value instead of sending them.
+`ghl_contact_writes` records writes to a client's GoHighLevel contact instead of sending them.
 """
 
 from types import SimpleNamespace
@@ -146,23 +146,6 @@ def fake(monkeypatch):
     return faked
 
 
-@pytest.fixture(autouse=True)
-def ghl_writes(monkeypatch):
-    """Record every write to a client's GoHighLevel custom value instead of sending it.
-
-    Nothing in this module may reach GoHighLevel: a status write is a list-then-update over
-    HTTP, and an unfaked one would go out to the real API. The recorded `(location, value)`
-    pairs are what the tests assert on.
-    """
-    writes = []
-
-    def record(self, location_id, name, value):
-        writes.append((location_id, name, value))
-
-    monkeypatch.setattr(GHLOAuthService, 'set_custom_value', record)
-    return writes
-
-
 class _ContactWrites(list):
     """The recorded contact field writes, with a switch for making the next one fail."""
 
@@ -171,12 +154,13 @@ class _ContactWrites(list):
 
 @pytest.fixture(autouse=True)
 def ghl_contact_writes(monkeypatch):
-    """The same for the card status field on a client's billing contact.
+    """Record every write to a client's GoHighLevel billing contact instead of sending it.
 
-    Autouse for the same reason as `ghl_writes`: the write is a search-then-update over HTTP,
-    and a card request made in a test that forgot to fake it would go to the real API. The
-    recorded `(email, field_id, value)` triples are what the tests assert on; `fails_with` makes
-    the next write raise, which is how the "GoHighLevel refused it" paths are reached.
+    Both the rebilling status and the card status are custom fields on that one contact.
+    Autouse because the write is a search-then-update over HTTP, and one made in a test that
+    forgot to fake it would go to the real API. The recorded `(email, field_id, value)` triples
+    are what the tests assert on; `fails_with` makes the next write raise, which is how the
+    "GoHighLevel refused it" paths are reached.
     """
     writes = _ContactWrites()
 

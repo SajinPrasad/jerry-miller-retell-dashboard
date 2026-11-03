@@ -116,8 +116,6 @@ GHL_SCOPES = env(
             'conversations/message.readonly',
             'saas/company.read',
             'saas/location.read',
-            'locations/customValues.readonly',
-            'locations/customValues.write',
             'contacts.write',
         ]
     ),
@@ -181,17 +179,16 @@ STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
 BILLING_MAX_RETRIES = env.int('BILLING_MAX_RETRIES', default=3)
 BILLING_RETRY_INTERVAL_HOURS = env.int('BILLING_RETRY_INTERVAL_HOURS', default=12)
 
-# The name of the custom value in each client's GoHighLevel sub-account that carries the
-# rebilling status (`failed` while a bill has failed, `active` once it is paid). Custom value ids
-# differ between sub-accounts, so the value is found by this name in each one.
-GHL_RETELL_STATUS_CUSTOM_VALUE_NAME = env(
-    'GHL_RETELL_STATUS_CUSTOM_VALUE_NAME', default='retell_rebilling_status'
-)
+# The custom field on a client's billing contact that carries their rebilling status (`failed`
+# while a bill has failed, `active` once it is paid). A contact field rather than the
+# sub-account custom value this used to be: GoHighLevel workflows can trigger off a contact
+# field changing and cannot trigger off a custom value, so the custom value was written and
+# nothing ever ran. Every billing contact lives in the one main sub-account, so one id serves
+# all of them.
+GHL_RETELL_STATUS_CUSTOM_FIELD_ID = env('GHL_RETELL_STATUS_CUSTOM_FIELD_ID', default='')
 
-# The custom field on a client's billing contact that carries their card status. Writing
-# `card not found` to it is what starts the GoHighLevel workflow emailing them a card form.
-# A field id rather than a name, which works here and did not for the custom value above: every
-# billing contact lives in the one main sub-account, so there is one field and one id.
+# The custom field on the same contact that carries their card status. Writing `card not found`
+# to it is what starts the GoHighLevel workflow emailing them a card form.
 GHL_CARD_STATUS_CUSTOM_FIELD_ID = env('GHL_CARD_STATUS_CUSTOM_FIELD_ID', default='')
 
 # The shared secret a GoHighLevel workflow sends in `X-Card-Webhook-Token` when a client has

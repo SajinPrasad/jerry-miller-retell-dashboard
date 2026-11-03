@@ -2,8 +2,9 @@
 
 A first decline puts the bill into `retrying` on a schedule rather than leaving it failed. Each
 due retry is made by `retry_due_bills`, and the bill is `failed` for a person once the schedule
-is used up. Every outcome that matters to Jerry's GHL workflows is written to the client's custom
-value, which these tests record instead of sending (see `ghl_writes`).
+is used up. Every outcome that matters to Jerry's GHL workflows is written to a custom field on
+the client's billing contact, which these tests record instead of sending (see
+`ghl_contact_writes`).
 
 Stripe is faked by `FakeStripe` and the guard in `test_stripe_billing` still stops anything
 unfaked from going out, so these tests make no network calls.
@@ -20,7 +21,6 @@ from django.core.management import call_command
 from django.utils import timezone
 
 from apps.ghl.exceptions import GHLError
-from apps.ghl.services import GHLOAuthService
 from apps.rebilling import services
 from apps.rebilling.models import FAILED, PAID, RETRYING, UNCHARGED
 from apps.rebilling.stripe_billing import retry_due_bills
@@ -31,7 +31,10 @@ from .test_stripe_billing import charging_bill, event_body, make_bill, make_bill
 pytestmark = pytest.mark.django_db
 
 NOW = datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
-STATUS_NAME = settings.GHL_RETELL_STATUS_CUSTOM_VALUE_NAME
+# Who the status is written against, and which field of theirs: the billing contact in the main
+# sub-account, found by the client's billing email.
+BILLING_EMAIL = 'ops@coolbreeze.test'
+STATUS_FIELD = settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID
 INTERVAL = timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
 DECLINED = stripe.CardError('Your card was declined.', None, 'card_declined')
 
@@ -91,7 +94,9 @@ def test_a_decline_on_a_bill_already_failed_changes_nothing_but_the_reason(api):
     assert bill.next_retry_at is None
 
 
-def test_being_paid_after_a_retry_clears_the_schedule_and_marks_the_client_active(api, ghl_writes):
+def test_being_paid_after_a_retry_clears_the_schedule_and_marks_the_client_active(
+    api, ghl_contact_writes
+):
     bill = retrying_bill(retry_count=2, next_retry_at=NOW + INTERVAL)
 
     post(api, event_body('invoice.paid'))
@@ -99,7 +104,7 @@ def test_being_paid_after_a_retry_clears_the_schedule_and_marks_the_client_activ
     bill.refresh_from_db()
     assert bill.status == PAID
     assert bill.next_retry_at is None
-    assert ghl_writes == [('loc1', STATUS_NAME, 'active')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'active')]
 
 
 # --- what a retry run does -----------------------------------------------------------------------
@@ -142,7 +147,7 @@ def test_a_due_retry_is_counted_scheduled_and_paid_with_a_key_for_that_retry(fak
     ]
 
 
-def test_a_retry_that_collects_marks_the_bill_paid_and_the_client_active(fake, ghl_writes):
+def test_a_retry_that_collects_marks_the_bill_paid_and_the_client_active(fake, ghl_contact_writes):
     bill = retrying_bill(retry_count=1)
 
     result = retry_due_bills(NOW)
@@ -153,10 +158,10 @@ def test_a_retry_that_collects_marks_the_bill_paid_and_the_client_active(fake, g
     assert bill.paid_at == NOW
     assert bill.failure_reason == ''
     assert bill.next_retry_at is None
-    assert ghl_writes == [('loc1', STATUS_NAME, 'active')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'active')]
 
 
-def test_an_invoice_stripe_already_shows_as_paid_is_not_charged_again(fake, ghl_writes):
+def test_an_invoice_stripe_already_shows_as_paid_is_not_charged_again(fake, ghl_contact_writes):
     fake.invoice_status = 'paid'
     bill = retrying_bill(retry_count=1)
 
@@ -169,7 +174,7 @@ def test_an_invoice_stripe_already_shows_as_paid_is_not_charged_again(fake, ghl_
 
 
 def test_the_last_retry_that_fails_uses_up_the_schedule_and_marks_the_client_failed(
-    fake, ghl_writes
+    fake, ghl_contact_writes
 ):
     fake.pay_error = DECLINED
     bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
@@ -181,7 +186,7 @@ def test_the_last_retry_that_fails_uses_up_the_schedule_and_marks_the_client_fai
     assert bill.status == FAILED
     assert bill.retry_count == settings.BILLING_MAX_RETRIES
     assert bill.next_retry_at is None
-    assert ghl_writes == [('loc1', STATUS_NAME, 'failed')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'failed')]
 
 
 def test_a_retry_repeated_at_the_same_moment_is_not_made_twice(fake):
@@ -208,7 +213,7 @@ def test_a_retry_that_cannot_reach_stripe_counts_as_a_declined_attempt(fake):
     assert bill.failure_reason == 'APIConnectionError'
 
 
-def test_the_schedule_runs_in_order_until_it_is_used_up(api, fake, ghl_writes):
+def test_the_schedule_runs_in_order_until_it_is_used_up(api, fake, ghl_contact_writes):
     """Three retries spaced an interval apart, then failed: what the admin page walks through."""
     bill = charging_bill()
     post(api, event_body('invoice.payment_failed'))
@@ -225,7 +230,7 @@ def test_the_schedule_runs_in_order_until_it_is_used_up(api, fake, ghl_writes):
 
     assert bill.status == FAILED
     assert bill.next_retry_at is None
-    assert ghl_writes == [('loc1', STATUS_NAME, 'failed')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'failed')]
 
 
 def test_a_declined_retry_for_one_client_does_not_stop_the_others(fake, monkeypatch):
@@ -253,7 +258,7 @@ def test_a_declined_retry_for_one_client_does_not_stop_the_others(fake, monkeypa
 
 
 def test_a_paid_bill_does_not_reactivate_a_client_whose_earlier_bill_is_still_failed(
-    fake, ghl_writes
+    fake, ghl_contact_writes
 ):
     client = make_billable_client(stripe_customer_id='cus_known')
     retrying_bill(client=client, retry_count=3, next_retry_at=None, status=FAILED, period='2026-02')
@@ -263,23 +268,20 @@ def test_a_paid_bill_does_not_reactivate_a_client_whose_earlier_bill_is_still_fa
 
     current.refresh_from_db()
     assert current.status == PAID
-    assert ghl_writes == []
+    assert ghl_contact_writes == []
 
 
-def test_a_bill_still_retrying_leaves_the_client_status_alone(fake, ghl_writes):
+def test_a_bill_still_retrying_leaves_the_client_status_alone(fake, ghl_contact_writes):
     fake.pay_error = DECLINED
     retrying_bill(retry_count=0)
 
     retry_due_bills(NOW)
 
-    assert ghl_writes == []
+    assert ghl_contact_writes == []
 
 
-def test_a_ghl_error_is_logged_and_does_not_undo_the_outcome(fake, monkeypatch):
-    def unreachable(self, location_id, name, value):
-        raise GHLError('GHL is down')
-
-    monkeypatch.setattr(GHLOAuthService, 'set_custom_value', unreachable)
+def test_a_ghl_error_is_logged_and_does_not_undo_the_outcome(fake, ghl_contact_writes):
+    ghl_contact_writes.fails_with = GHLError('GHL is down')
     bill = retrying_bill(retry_count=1)
 
     result = retry_due_bills(NOW)
@@ -287,6 +289,24 @@ def test_a_ghl_error_is_logged_and_does_not_undo_the_outcome(fake, monkeypatch):
     assert result['paid'] == 1
     bill.refresh_from_db()
     assert bill.status == PAID
+
+
+def test_a_client_with_no_billing_email_has_no_contact_to_write_the_status_to(
+    fake, ghl_contact_writes
+):
+    """The status is found by email, so without one there is nothing to write it against.
+
+    Nothing is raised and nothing is written: the bill is paid either way, and inventing a
+    contact to carry the status would tell a workflow about the wrong client.
+    """
+    client = make_billable_client(billing_email='', stripe_customer_id='cus_known')
+    bill = retrying_bill(client=client, retry_count=1)
+
+    retry_due_bills(NOW)
+
+    bill.refresh_from_db()
+    assert bill.status == PAID
+    assert ghl_contact_writes == []
 
 
 # --- the task, the command and the schedule ----------------------------------------------------

@@ -76,13 +76,14 @@ FALLBACK_FAILURE_REASON = 'payment_failed'
 # paid, which is how Stripe reports a payment that needs the client to act.
 NOT_COLLECTED_REASON = 'not_collected'
 
-# The values written to each client's custom value in GoHighLevel. Jerry's GHL workflows key off
-# these words, so they must not change without changing the workflows too.
+# The values written to the rebilling status field on the client's billing contact in
+# GoHighLevel. Jerry's GHL workflows key off these words, so they must not change without
+# changing the workflows too.
 GHL_STATUS_FAILED = 'failed'
 GHL_STATUS_ACTIVE = 'active'
 
-# The same, for the card status field on the client's billing contact. Writing `card not found`
-# is what triggers the GoHighLevel workflow that emails them a card collection form.
+# The same, for the card status field on that same contact. Writing `card not found` is what
+# triggers the GoHighLevel workflow that emails them a card collection form.
 GHL_CARD_NOT_FOUND = 'card not found'
 
 # Whether Stripe holds a card we could charge this client with. `no_card` is what Stripe would
@@ -524,12 +525,18 @@ def _retry_interval() -> timedelta:
 
 
 def sync_rebilling_status(bill: Bill) -> None:
-    """Write the client's rebilling status onto their GoHighLevel sub-account.
+    """Write the client's rebilling status onto their billing contact in GoHighLevel.
 
     `failed` once a bill has used up its retries, so Jerry's GHL workflows can pause the client's
     Retell agents. `active` once a bill is paid, unless another bill for the same client has still
     failed: paying one month must not switch the agents back on while an earlier month is unpaid.
     Any other status leaves GoHighLevel alone, so a bill still being retried does not pause anyone.
+
+    **On the contact, not on the client's sub-account.** This was a custom value in the
+    sub-account until GoHighLevel's own triggers settled it: a workflow fires on a contact field
+    changing and has no trigger at all for a custom value, so the status was written faithfully
+    and nothing downstream ever ran. The contact is the same one `request_card` writes to - the
+    billing email's contact in the main sub-account.
 
     Best effort. The outcome is already on the bill, and a failed write to GoHighLevel must not
     undo it or stop the webhook or the retry run, so a GHL error is logged rather than raised.
@@ -544,13 +551,24 @@ def sync_rebilling_status(bill: Bill) -> None:
         return
 
     location_id = bill.client.location_id
+    if not bill.client.billing_email:
+        # Nothing to find a contact by. Logged for the same reason a GHL failure is: the bill's
+        # own outcome stands either way, and this is the only trace that the workflow was
+        # never told.
+        logger.warning(
+            'billing: %s has no billing email, so its status could not be set to %s',
+            location_id,
+            value,
+        )
+        return
+
     try:
-        GHLOAuthService().set_custom_value(
-            location_id, settings.GHL_RETELL_STATUS_CUSTOM_VALUE_NAME, value
+        GHLOAuthService().set_contact_field(
+            bill.client.billing_email, settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID, value
         )
     except GHLError:
         logger.exception(
-            'billing: could not set the rebilling status to %s in %s', value, location_id
+            'billing: could not set the rebilling status to %s for %s', value, location_id
         )
 
 

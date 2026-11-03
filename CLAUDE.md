@@ -322,6 +322,15 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   - **Settings:** `GHL_CARD_STATUS_CUSTOM_FIELD_ID` (an id, which works only because every billing
     contact is in the one main account) and `GHL_CARD_WEBHOOK_TOKEN`. `contacts.write` is new in
     `GHL_SCOPES`, so **the app must be re-authorised**.
+- **The rebilling status is a contact custom field too, not a sub-account custom value.**
+  `sync_rebilling_status(bill)` writes `failed` (retries used up) or `active` (paid, and no other
+  bill of theirs still failed) to `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` on the same billing contact,
+  through the same `set_contact_field()`. It was a custom value in the client's own sub-account
+  until GHL's triggers settled it: **a workflow can trigger on a contact field changing and has no
+  trigger at all for a custom value**, so the status was written faithfully and nothing downstream
+  ever ran. `set_custom_value()` and the `locations/customValues.*` scopes are gone with it. Still
+  best effort - the outcome is already on the bill, so a GHL failure is logged, not raised - and a
+  client with no `billing_email` has no contact to write to, which is logged and skipped.
 - **Not built yet:** no alerts beyond a log line. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 

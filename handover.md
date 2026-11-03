@@ -19,41 +19,44 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `654c927`. Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `a14e0a3`. Do not commit or push unless asked.
 
-**Uncommitted work (Phase 7, the card on file — §6.11):** a client's page now shows whether Stripe
-holds a card that could be charged, and an agency admin can ask them for one.
+**Uncommitted work (Phase 8, the rebilling status write — §6.10b):** `sync_rebilling_status` now
+writes `failed` / `active` to a custom field on the client's **billing contact in the main
+account**, not to the `retell_rebilling_status` custom value in their own sub-account.
 
-- The status is read live from Stripe on every detail view (one call, the one the customer's name
-  was already costing) and is never stored.
-- **Request card** writes `card not found` to a custom field on the client's billing contact in the
-  main account, which is what triggers Jerry's GoHighLevel workflow emailing them a form.
-- A webhook from that workflow re-asks Stripe and clears the request. It authenticates on a shared
-  secret, and its claim is never trusted on its own.
-- `contacts.write` is new in `GHL_SCOPES`, so **the app has to be re-authorised**, and
-  `GHL_CARD_STATUS_CUSTOM_FIELD_ID` / `GHL_CARD_WEBHOOK_TOKEN` are blank placeholders.
-- Files: `backend/apps/ghl/services.py`, `backend/apps/rebilling/{models,services,stripe_billing,urls,views}.py`,
-  migration `0008`, `backend/config/settings/{base,test}.py`, `backend/.env.example`,
-  `backend/apps/rebilling/tests/{conftest,test_card_status,test_admin_views,test_billing_email}.py`,
-  `backend/apps/ghl/tests/test_services.py`,
-  `frontend/src/{api/admin.ts,types/admin.ts,features/admin/{ClientDetail.tsx,demoData.ts,AdminPage.test.tsx,AdminPreviewPage.test.tsx}}`,
-  `handover.md`, `local_folder/plan.md`.
+- **Why:** GoHighLevel workflows have no trigger for a custom value changing. The status was
+  written faithfully every month into a field nothing could watch, so Jerry's pause/resume
+  workflow never ran. A contact custom field is what "Contact Changed" fires on.
+- It reuses Phase 7's `set_contact_field()`, so there is one way a client's status reaches GHL.
+- `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` is replaced by `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, blank
+  until Jerry creates the field. `GHLOAuthService.set_custom_value()` and the
+  `locations/customValues.*` scopes are gone — nothing reads or writes a custom value any more.
+- A client with no `billing_email` has no contact to write to: logged and skipped, never guessed.
+- Still best effort — a GHL failure is logged, and the bill's own outcome stands.
+- Files: `backend/apps/ghl/services.py`, `backend/apps/rebilling/stripe_billing.py`,
+  `backend/config/settings/{base,test}.py`, `backend/.env.example`,
+  `backend/apps/rebilling/tests/{conftest,test_retries}.py`, `backend/apps/ghl/tests/test_services.py`,
+  `CLAUDE.md`, `handover.md`, `local_folder/plan.md`. No migration, no frontend change.
 
-**Already committed:** the automated retry schedule and the GHL rebilling-status custom value
-(`bcd48b9`), and the Twilio billing pause (`654c927`) — Twilio minutes are no longer billed or
-shown anywhere, behind `TWILIO_BILLING_ENABLED`.
+**Already committed:** Phase 7, the card on file (`a14e0a3`, §6.11) — the live Stripe card check on
+every detail view, the **Request card** button, and the webhook back. Before it, the automated retry
+schedule and the first GHL rebilling-status write (`bcd48b9`, the custom value Phase 8 replaces),
+and the Twilio billing pause (`654c927`) — Twilio minutes are no longer billed or shown anywhere,
+behind `TWILIO_BILLING_ENABLED`.
 
 **Test status (last run, this state):**
 
-- Backend: `pytest`: **358 passed**.
+- Backend: `pytest`: **355 passed** (four custom-value tests gone, one new one for a client with no billing email).
 - Frontend: `npm test`: **96 passed** in 3 files.
 - `npx tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
-- `manage.py makemigrations --check --dry-run`: "No changes detected" (migration `0008` is written).
+- `manage.py makemigrations --check --dry-run`: "No changes detected".
 
-**Nothing in Phase 7 has run against live GoHighLevel or Stripe.** Every call is mocked. The
+**Nothing in Phase 7 or 8 has run against live GoHighLevel or Stripe.** Every call is mocked. The
 contact search and update shapes come from GHL's published v3 spec, not from a live call — §17 has
-what to check first.
+what to check first. Both phases now wait on the same thing: the two field ids, and a
+re-authorisation for `contacts.write` (§17.1b).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
@@ -524,7 +527,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `STRIPE_WEBHOOK_SECRET` | none | The webhook signing secret. Different from the API key |
 | `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
-| `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` | `retell_rebilling_status` | Custom value in each sub-account set to `failed` on a final failure and `active` on payment. Found by name, since ids differ per sub-account |
+| `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `failed` on a final failure and `active` on payment. Blank until Jerry creates the field; the write fails and is logged until then |
 | `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
 | `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
 
@@ -570,6 +573,7 @@ endpoint is covered by `test_admin_rates.py`.
 | 4 | Admin page: mapping edit, rates edit and reset, bill status, per-call status, names | **Mostly built.** Not started: a UI for mapping unassigned calls; a bills table |
 | 5 | Charging through Stripe, webhook for payment events | Built (§6.10) |
 | 6 | Alerts (failed pulls, unassigned calls, failed charges, bills stuck in `charging`), then the Branwynn end-to-end test | **Not started** |
+| 7 | Card on file: Stripe check, status in the UI, GHL card request | Built (§6.11). The rebilling status write moved to a contact field with it (§6.10b) |
 
 **Mapping** (`ClientMappingSerializer`, `set_mapping()`, `AdminClientMappingView`): agent ids non-blank and
 deduplicated; phone numbers 7 to 15 digits, deduplicated, normalised; Twilio SID matches `^AC[0-9a-fA-F]{32}$`
@@ -649,6 +653,38 @@ Nothing calls it from a UI yet.
 
 **Tests:** `test_stripe_billing.py` (every Stripe call faked by `FakeStripe`, and a guard that fails any
 unfaked call by name), and `test_billing_email.py` (who pays, and the cached-customer rules).
+
+### 6.10b The rebilling status write: a contact field, not a custom value (built)
+
+`sync_rebilling_status(bill)` is what tells GoHighLevel to pause or resume a client's Retell agents:
+`failed` once a bill has used up its retries, `active` once one is paid — unless another bill of
+theirs is still `failed`, since paying one month must not switch the agents back on while an earlier
+month is unpaid. Any other status leaves GHL alone, so a bill still being retried pauses nobody.
+
+**It wrote a custom value in the client's own sub-account, and nothing ever happened.** GoHighLevel
+workflows have no trigger for a custom value changing; they trigger on a *contact* changing. So the
+status was written faithfully, every month, into a field no workflow could watch.
+
+It now writes to a custom field on the client's **billing contact in the main account**
+(`AGENCY_LOCATION_ID`), found by `billing_email` — the same contact and the same
+`GHLOAuthService.set_contact_field()` the card request uses (§6.11), so there is one way a client's
+status reaches GHL, not two.
+
+- **Setting:** `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, replacing `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME`.
+  An id rather than a name, which works for the same reason the card field's does: every billing
+  contact is in the one sub-account, so there is one field and one id.
+- **Still best effort.** The bill's own outcome is already saved, and a GHL failure must not undo it
+  or stop the webhook or the retry run, so `GHLError` is logged rather than raised. That is the one
+  difference from the card request, which raises because a human is waiting on the answer.
+- **A client with no `billing_email` has no contact to write to**, so the write is skipped and
+  logged. Nothing is invented: a guessed contact would tell a workflow about the wrong client.
+- **Gone with it:** `GHLOAuthService.set_custom_value()`, its four tests, and the
+  `locations/customValues.readonly` / `.write` scopes — nothing reads or writes a custom value any
+  more, so the re-authorisation asks for less than it did.
+- **Tests:** `test_retries.py` asserts the `(email, field_id, value)` triples recorded by the autouse
+  `ghl_contact_writes` fixture, which is now the only GoHighLevel seam in the rebilling package.
+
+---
 
 ### 6.11 Phase 7: card on file, and asking for one (built)
 
@@ -1037,10 +1073,13 @@ These cannot be answered from the docs.
 
 In this order, because each step is useless without the one before it:
 
-1. **Create the card status custom field** on contacts in the main account, and put its id in
-   `GHL_CARD_STATUS_CUSTOM_FIELD_ID`. A field id, not a name — the lookup is by id.
-2. **Re-authorise the marketplace app**, which now asks for `contacts.write` as well as the two
-   custom-value scopes the retry work added. Until then every card request 502s.
+1. **Create both custom fields** on contacts in the main account — the card status and the
+   rebilling status — and put their ids in `GHL_CARD_STATUS_CUSTOM_FIELD_ID` and
+   `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. Field ids, not names — the lookup is by id.
+2. **Re-authorise the marketplace app**, which now asks for `contacts.write`. The
+   `locations/customValues.*` scopes the retry work added are gone, since nothing reads or writes
+   a custom value any more. Until the re-auth, every card request 502s and every status write is
+   logged as a failure.
 3. **Check the first search and write by hand** before trusting the button. `GET
    /contacts/search/duplicate?locationId=<main>&email=<owner>` should answer `{"contact": {...}}` —
    the response shape is not in GHL's published spec, and `set_contact_field()` reads `contact.id`.
@@ -1048,7 +1087,9 @@ In this order, because each step is useless without the one before it:
    found"}]}`, `Version: v3`.
 4. **Build the workflow**: triggered by that field changing to `card not found`, emailing the card
    form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/` with
-   `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`.
+   `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`. The
+   **pause/resume workflow** triggers the same way, off the rebilling status field changing to
+   `failed` or `active` — the point of moving it off the custom value.
 5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
    writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
    keep saying no card — the one failure here that looks like a bug and is not.
@@ -1066,7 +1107,7 @@ In this order, because each step is useless without the one before it:
 
 - Celery worker and beat must both run for the nightly audit and pull (§6.6). Check they are running.
 - `charge_bills` is not scheduled. Run it by hand each month, after the Twilio month-close pull and `calculate_bills`.
-- `retry_failed_charges` runs hourly on beat. It makes only the retries that are due. The custom value `retell_rebilling_status` must exist in every sub-account, and GHL must have re-authorised the app for `locations/customValues.readonly`.
+- `retry_failed_charges` runs hourly on beat. It makes only the retries that are due. The status it writes needs `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` filled in and the app re-authorised for `contacts.write` — §17.1b, which the card flow needs anyway.
 - Stripe's own Smart Retries (dashboard setting) run alongside ours. Turn them off in Stripe so the schedule in this app is the only one.
 - The Stripe webhook must be registered for `invoice.paid` and `invoice.payment_failed` (§15).
 
@@ -1140,8 +1181,12 @@ Branch `feat/stripe-billing`, oldest first:
 | `20c3579` | Persist client rates; show the actual bill status on the admin page |
 | `2fb0170` | Paid and billed status on the recent calls table |
 | `aa40299` | Call status badge derived from each call's own bill (**deployed**) |
+| `f00c41c` | Human-readable names in the mapping chips and the billing contact |
+| `bcd48b9` | Automated retry schedule and the first GHL rebilling-status write |
+| `654c927` | Twilio billing paused |
+| `a14e0a3` | Phase 7: the card on file, and asking for one |
 
-Uncommitted on top of `aa40299`: the names work (§0).
+Uncommitted on top of `a14e0a3`: Phase 8, the rebilling status write (§0).
 
 Other branches in the repository: `feat/ghl-billing-with-stripe-fallback` (the GHL one-off invoice attempt, with its own
 `0006` and the `ghl_invoice_*` columns), `main`, and a few older working branches (`frontend`, `maping`, `retell`, `stripe`).
@@ -1165,12 +1210,12 @@ Other branches in the repository: `feat/ghl-billing-with-stripe-fallback` (the G
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`, if they exist on the machine.
-3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest apps/ghl apps/rebilling -q` and expect
-   **289 passed**. From `frontend/`, run `npm test -- --run` and expect **69 passed**. Also run `ruff check .`,
+3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
+   **355 passed**. From `frontend/`, run `npm test -- --run` and expect **96 passed**. Also run `ruff check .`,
    `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
    `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
-4. Check `git status` and `git log --oneline | head` before changing anything. Expect the names work (§0) to be uncommitted.
-5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, and most of 4 are built. Still open: the unassigned-call mapping UI, the bills
+4. Check `git status` and `git log --oneline | head` before changing anything. Expect Phase 8 (§0) to be uncommitted.
+5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and most of 4 are built. Still open: the unassigned-call mapping UI, the bills
    table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started. Don't start any of these
    without an explicit request. Ask first if the request is ambiguous. **Never make live API calls.**
 6. Before the first live charge, answer the Stripe account question in §15.
