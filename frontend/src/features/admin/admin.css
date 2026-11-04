@@ -747,3 +747,50 @@
 .admin .select-note {
   margin: 0.5rem 0.5rem 0.25rem;
 }
+
+/* --- Retell workspace key --- */
+
+.admin .key-editor {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin: 0.8rem 0 0.6rem;
+}
+
+.admin .key-field {
+  display: block;
+  flex: 1 1 14rem;
+  max-width: 20rem;
+}
+
+.admin .key-field > .tile-label {
+  display: block;
+  margin-bottom: 0.35rem;
+}
+
+.admin .key-field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 0.375rem;
+  padding: 0.45rem 0.6rem;
+  font: inherit;
+}
+
+.admin .key-field input:focus-visible {
+  outline: 0;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+/* The webhook URL: long, and meant to be copied rather than read. */
+.admin .copy-field {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.admin .copy-field code {
+  overflow-wrap: anywhere;
+}

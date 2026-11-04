@@ -22,6 +22,7 @@ import {
   marginCents,
 } from './format'
 import MappingEditor from './MappingEditor'
+import RetellKeyCard from './RetellKeyCard'
 
 interface Props {
   detail: Detail
@@ -29,6 +30,9 @@ interface Props {
   canEdit: boolean
   preview: boolean
   onMappingSaved: (result: MappingResult) => void
+  /** Re-read everything. A saved Retell key can create the client's mapping, so the list
+   * behind this page moves too. */
+  onKeySaved: () => void
   /** The client's whole refreshed detail, as the rates endpoint answered it. */
   onRatesSaved: (detail: Detail) => void
 }
@@ -92,6 +96,7 @@ export default function ClientDetail({
   canEdit,
   preview,
   onMappingSaved,
+  onKeySaved,
   onRatesSaved,
 }: Props) {
   const { usage, rates, bill } = detail
@@ -311,58 +316,55 @@ export default function ClientDetail({
         )}
       </section>
 
-      <section className="card">
-        <h2>Mapping</h2>
-        {canEdit ? (
-          <MappingEditor
-            locationId={detail.location_id}
-            clientName={detail.client_name}
-            initial={{
-              twilio_subaccount_sid: detail.twilio_subaccount_sid,
-              retell_agent_ids: detail.retell_agent_ids,
-              phone_numbers: detail.phone_numbers,
-            }}
-            agentNames={detail.retell_agents}
-            twilioEnabled={twilioEnabled}
-            preview={preview}
-            onSaved={onMappingSaved}
-          />
-        ) : (
-          <dl className="facts">
-            <dt>Retell agents</dt>
-            <dd>
-              {detail.retell_agents.length > 0 ? (
-                detail.retell_agents.map((agent) => agent.agent_name || agent.agent_id).join(', ')
-              ) : (
-                <span className="muted">None mapped</span>
-              )}
-            </dd>
-            {twilioEnabled && (
-              <>
-                <dt>Phone numbers</dt>
-                <dd>
-                  {detail.phone_numbers.length > 0 ? (
-                    detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
-                  ) : (
-                    <span className="muted">None mapped</span>
-                  )}
-                </dd>
-                <dt>Twilio subaccount</dt>
-                <dd>
-                  {detail.twilio_subaccount_sid ? (
-                    <code>{detail.twilio_subaccount_sid}</code>
-                  ) : (
-                    <span className="muted">Not billed for regular calls</span>
-                  )}
-                </dd>
-              </>
-            )}
-          </dl>
-        )}
-        <p className="muted small">
-          Billing mode: {detail.billing_mode === 'auto_charge' ? 'Auto charge' : 'Send invoice'}
-        </p>
-      </section>
+      <RetellKeyCard
+        locationId={detail.location_id}
+        clientName={detail.client_name}
+        workspace={detail.retell_workspace}
+        agents={detail.retell_agents}
+        canEdit={canEdit}
+        preview={preview}
+        onSaved={onKeySaved}
+      />
+
+      {/* Everything Twilio is hidden while rebilling is paused, and with Retell moved to its
+          own card there is nothing else left in here - so the card goes rather than sitting
+          empty. It comes back whole the moment the setting does. */}
+      {twilioEnabled && (
+        <section className="card">
+          <h2>Twilio</h2>
+          {canEdit ? (
+            <MappingEditor
+              locationId={detail.location_id}
+              clientName={detail.client_name}
+              initial={{
+                twilio_subaccount_sid: detail.twilio_subaccount_sid,
+                phone_numbers: detail.phone_numbers,
+              }}
+              preview={preview}
+              onSaved={onMappingSaved}
+            />
+          ) : (
+            <dl className="facts">
+              <dt>Phone numbers</dt>
+              <dd>
+                {detail.phone_numbers.length > 0 ? (
+                  detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
+                ) : (
+                  <span className="muted">None mapped</span>
+                )}
+              </dd>
+              <dt>Twilio subaccount</dt>
+              <dd>
+                {detail.twilio_subaccount_sid ? (
+                  <code>{detail.twilio_subaccount_sid}</code>
+                ) : (
+                  <span className="muted">Not billed for regular calls</span>
+                )}
+              </dd>
+            </dl>
+          )}
+        </section>
+      )}
 
       <BillingContact detail={detail} canEdit={canEdit} preview={preview} />
 
@@ -621,6 +623,8 @@ function BillingContact({
     <section className="card">
       <h2>Billing contact</h2>
       <dl className="facts">
+        <dt>Billing mode</dt>
+        <dd>{detail.billing_mode === 'auto_charge' ? 'Auto charge' : 'Send invoice'}</dd>
         <dt>Card</dt>
         <dd>
           <span className={`pill ${CARD_TONES[card.status]}`}>{CARD_LABELS[card.status]}</span>

@@ -2,7 +2,12 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminPreviewPage from './AdminPreviewPage'
-import { resetPreviewCardRequests, resetPreviewMappings, resetPreviewRates } from './demoData'
+import {
+  resetPreviewCardRequests,
+  resetPreviewKeys,
+  resetPreviewMappings,
+  resetPreviewRates,
+} from './demoData'
 import { currentMonth, shiftMonth } from './format'
 
 const THIS_MONTH = currentMonth()
@@ -25,6 +30,7 @@ describe('AdminPreviewPage', () => {
     resetPreviewMappings()
     resetPreviewRates()
     resetPreviewCardRequests()
+    resetPreviewKeys()
   })
 
   it('renders sample clients behind a clearly marked banner, with no network calls', async () => {
@@ -82,7 +88,7 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
-    await screen.findByText('Mapping')
+    await screen.findByText('Retell workspace')
 
     // The sample data still carries this client's SID, its phone numbers and its daily Twilio
     // rows - the preview simply does not show them while rebilling is paused.
@@ -93,8 +99,8 @@ describe('AdminPreviewPage', () => {
     expect(screen.queryByText('Twilio calls by day')).not.toBeInTheDocument()
     expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
-    // Still the one thing an admin can map here.
-    expect(screen.getByRole('button', { name: 'Add a Retell agent' })).toBeInTheDocument()
+    // Still the one thing an admin sets up here.
+    expect(screen.getByLabelText('Retell workspace API key')).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
@@ -193,35 +199,51 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('searches the sample agent list without calling Retell', async () => {
+  it('tests a sample key without calling Retell, and names what it found', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
-    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
-    await user.type(screen.getByLabelText('Search Retell agents'), 'after-hours')
+    await user.type(screen.getByLabelText('Retell workspace API key'), 'key_sample')
+    await user.click(screen.getByRole('button', { name: 'Test' }))
 
-    expect(await screen.findByText('Shared after-hours line')).toBeInTheDocument()
-    expect(screen.queryByText('Branwynn Destinations — main line')).not.toBeInTheDocument()
+    expect(await screen.findByText(/This key can see/)).toBeInTheDocument()
+    expect(screen.getByText(/Shared after-hours line/)).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
-  it('sets up the unmapped sample client, which then appears mapped in the list', async () => {
+  it('shows the sample client stuck in the webhook badge trap', async () => {
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Branwynn Destinations' }))
+    await screen.findByText('Retell workspace')
+
+    // Saved, green, and never heard from: the one failure nothing automatic can catch.
+    expect(screen.getByText('Active')).toBeInTheDocument()
+    expect(screen.getByText(/probably not the one with the webhook badge/)).toBeInTheDocument()
+  })
+
+  it('sets up the unmapped sample client with a key, which then appears mapped', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
 
-    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
-    await user.click(await screen.findByRole('button', { name: /Summit Air Solutions — main line/ }))
-    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+    await user.type(screen.getByLabelText('Retell workspace API key'), 'key_summit_9c40')
+    await user.click(screen.getByRole('button', { name: 'Test' }))
+    await screen.findByText(/This key can see/)
+    await user.click(screen.getByRole('button', { name: 'Save key' }))
 
-    // The setup card is gone: it is a mapped client's page now, with the agent it was given -
-    // by name, not by its raw Retell id.
-    expect(await screen.findByText('Summit Air Solutions — main line')).toBeInTheDocument()
+    // The setup card is gone: it is a mapped client's page now, with the last four of the key
+    // it was given and the agents its workspace turned out to hold.
+    expect(await screen.findByText('••••9c40')).toBeInTheDocument()
+    expect(
+      screen.queryByText('Not set up for billing yet.', { exact: false }),
+    ).not.toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '← All clients' }))
 

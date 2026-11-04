@@ -14,19 +14,19 @@ TWILIO_SID_RE = re.compile(r'^AC[0-9a-fA-F]{32}$')
 
 
 class ClientMappingSerializer(serializers.Serializer):
-    """What `PUT /admin/clients/<location_id>/mapping/` accepts.
+    """What `PUT /admin/clients/<location_id>/mapping/` accepts: the Twilio half of a client.
 
-    Only the three fields the admin page edits: the Twilio subaccount, the Retell agent IDs, and
-    the backup phone numbers. Rates have their own history and their own change rules,
-    `active`/`billing_mode` are not asked for here, and `billing_email` comes from the
-    sub-account's GoHighLevel owner rather than from anyone typing it - so none of them is
-    touched by this serializer.
+    **Retell agents are not here.** They are whatever is in that client's own Retell workspace,
+    filled in from their key and topped up when a call carries one we have not seen. Accepting
+    a typed list would let a save silently contradict the workspace, and the agent check reads
+    that list.
+
+    Rates have their own history and their own change rules, `active`/`billing_mode` are not
+    asked for here, and `billing_email` comes from the sub-account's GoHighLevel owner rather
+    than from anyone typing it - so none of them is touched by this serializer either.
     """
 
     twilio_subaccount_sid = serializers.CharField(required=False, allow_blank=True, max_length=64)
-    retell_agent_ids = serializers.ListField(
-        child=serializers.CharField(max_length=255), required=False
-    )
     phone_numbers = serializers.ListField(
         child=serializers.CharField(max_length=32), required=False
     )
@@ -40,12 +40,6 @@ class ClientMappingSerializer(serializers.Serializer):
             )
         return value
 
-    def validate_retell_agent_ids(self, value: list[str]) -> list[str]:
-        cleaned = [item.strip() for item in value]
-        if any(not item for item in cleaned):
-            raise serializers.ValidationError('Agent IDs cannot be blank.')
-        return _deduplicate(cleaned)
-
     def validate_phone_numbers(self, value: list[str]) -> list[str]:
         cleaned = []
         for number in value:
@@ -55,6 +49,23 @@ class ClientMappingSerializer(serializers.Serializer):
                 raise serializers.ValidationError(f'"{number}" is not a usable phone number.')
             cleaned.append(number)
         return _deduplicate(cleaned)
+
+
+class RetellWorkspaceSerializer(serializers.Serializer):
+    """What `POST`/`PUT /admin/clients/<location_id>/retell-workspace/` accepts.
+
+    The key must be the workspace's **webhook-badged** one: Retell signs a workspace's
+    webhooks with that key alone, and nothing in this request can tell whether it is the right
+    one - any valid key of that workspace lists agents perfectly well and then fails every
+    signature. That is why the endpoint answers with the agent names it found instead of a
+    bare "saved": reading them is the only check there is.
+
+    Whitespace is stripped (DRF's default), which matters more here than anywhere else in this
+    app - a key is pasted, and a trailing newline would fail every signature silently.
+    """
+
+    api_key = serializers.CharField(max_length=255)
+    workspace_name = serializers.CharField(required=False, allow_blank=True, max_length=255)
 
 
 class ClientRatesSerializer(serializers.Serializer):

@@ -4,7 +4,7 @@ import logging
 
 from celery import shared_task
 
-from .services import RetellReconciliationService, TwilioUsageService
+from .services import TwilioUsageService, reconcile_all
 from .stripe_billing import retry_due_bills
 
 logger = logging.getLogger(__name__)
@@ -14,10 +14,11 @@ logger = logging.getLogger(__name__)
 def reconcile_retell_calls() -> dict:
     """The nightly audit, on Celery beat. Same work as `manage.py reconcile_retell_calls`.
 
-    A `RetellError` is left to fail the task: Celery logs it, and the next night covers the same
-    window again, so there is nothing worth retrying here.
+    Walks every client's Retell workspace one at a time. A single bad key is recorded against
+    that workspace and counted in `failed` rather than raised, so one client cannot cost the
+    others their night - and the next run covers the same window again anyway.
     """
-    result = RetellReconciliationService().reconcile()
+    result = reconcile_all()
     logger.info('retell: nightly reconciliation finished %s', result)
     return result
 

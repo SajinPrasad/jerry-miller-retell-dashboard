@@ -1,8 +1,12 @@
-"""The two lists behind the mapping editor's pickers: Retell agents, Twilio subaccounts.
+"""The list behind the mapping editor's one remaining picker: Twilio subaccounts.
 
-Nothing is stored. Both endpoints read the live provider account so an agency admin picks a
-real agent or subaccount instead of pasting an id into a text box. The Stripe customer is not
-among them: it is matched automatically from the sub-account owner's email, never picked.
+Nothing is stored. The endpoint reads the live Twilio account so an agency admin picks a real
+subaccount instead of pasting a SID into a text box.
+
+There is no Retell equivalent any more. A client's agents are not chosen from a catalogue -
+they are whatever is in that client's own Retell workspace, discovered from their own key (see
+`test_retell_key.py`). The Stripe customer was never picked either: it is matched
+automatically from the sub-account owner's email.
 """
 
 import httpx
@@ -15,22 +19,11 @@ from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency
 
 pytestmark = pytest.mark.django_db
 
-RETELL_URL = f'{settings.RETELL_API_BASE_URL}/v2/list-agents'
 TWILIO_URL = f'{settings.TWILIO_API_BASE_URL}/2010-04-01/Accounts.json'
 
 
 def get(client, name, blob=VECTOR_AGENCY):
     return client.get(reverse(f'rebilling:{name}'), HTTP_X_GHL_SESSION=blob)
-
-
-def agent(agent_id, agent_name='Front desk'):
-    return {
-        'agent_id': agent_id,
-        'agent_name': agent_name,
-        'channel': 'voice',
-        'tags': {},
-        'user_modified_timestamp': 1_767_000_000_000,
-    }
 
 
 def account(sid, friendly_name='Cool Breeze HVAC'):
@@ -40,67 +33,6 @@ def account(sid, friendly_name='Cool Breeze HVAC'):
         'status': 'active',
         'owner_account_sid': settings.TWILIO_ACCOUNT_SID,
     }
-
-
-# --- Retell agents -------------------------------------------------------------------------
-
-
-@respx.mock
-def test_lists_retell_agents_by_name(client):
-    make_agency()
-    respx.post(RETELL_URL).mock(
-        return_value=httpx.Response(
-            200,
-            json={
-                'items': [agent('agent_2', 'Service calls'), agent('agent_1', 'After hours')],
-                'has_more': False,
-            },
-        )
-    )
-
-    response = get(client, 'admin-retell-agents')
-
-    assert response.status_code == 200
-    # Only what a picker needs, alphabetically: Retell's own order is by timestamp.
-    assert response.data['agents'] == [
-        {'agent_id': 'agent_1', 'agent_name': 'After hours'},
-        {'agent_id': 'agent_2', 'agent_name': 'Service calls'},
-    ]
-
-
-@respx.mock
-def test_follows_retell_pagination(client):
-    make_agency()
-    respx.post(RETELL_URL).mock(
-        side_effect=[
-            httpx.Response(
-                200,
-                json={
-                    'items': [agent('agent_1', 'After hours')],
-                    'has_more': True,
-                    'pagination_key': 'agent_1',
-                },
-            ),
-            httpx.Response(
-                200, json={'items': [agent('agent_2', 'Service calls')], 'has_more': False}
-            ),
-        ]
-    )
-
-    response = get(client, 'admin-retell-agents')
-
-    assert [row['agent_id'] for row in response.data['agents']] == ['agent_1', 'agent_2']
-    assert respx.calls[1].request.url.params['pagination_key'] == 'agent_1'
-
-
-@respx.mock
-def test_a_failing_retell_call_is_a_502(client):
-    make_agency()
-    respx.post(RETELL_URL).mock(return_value=httpx.Response(500))
-
-    response = get(client, 'admin-retell-agents')
-
-    assert response.status_code == 502
 
 
 # --- Twilio subaccounts --------------------------------------------------------------------
@@ -179,16 +111,14 @@ def test_a_failing_twilio_call_is_a_502(client):
 # --- unauthorized callers are blocked ------------------------------------------------------
 
 
-@pytest.mark.parametrize('name', ['admin-retell-agents', 'admin-twilio-subaccounts'])
-def test_401s_without_a_session(client, name):
+def test_401s_without_a_session(client):
     make_agency()
 
-    assert client.get(reverse(f'rebilling:{name}')).status_code == 401
+    assert client.get(reverse('rebilling:admin-twilio-subaccounts')).status_code == 401
 
 
-@pytest.mark.parametrize('name', ['admin-retell-agents', 'admin-twilio-subaccounts'])
-def test_a_sub_account_session_cannot_read_the_pickers(client, name):
+def test_a_sub_account_session_cannot_read_the_picker(client):
     """Only an agency admin edits mapping, so only an agency admin sees what to map to."""
     make_agency()
 
-    assert get(client, name, blob=VECTOR_LOCATION).status_code == 403
+    assert get(client, 'admin-twilio-subaccounts', blob=VECTOR_LOCATION).status_code == 403

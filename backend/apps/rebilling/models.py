@@ -11,6 +11,8 @@ from decimal import Decimal
 from django.conf import settings
 from django.db import models
 
+from apps.common.encryption import EncryptedTextField
+
 MS_PER_MINUTE = 60_000
 
 AUTO_CHARGE = 'auto_charge'
@@ -28,6 +30,12 @@ ENDED = 'ended'
 BILLABLE = 'billable'
 UNBILLABLE = 'unbillable'
 BILLING_STATUSES = [(BILLABLE, 'Billable'), (UNBILLABLE, 'Unbillable')]
+
+# Values for `RetellWorkspace.status`. There is no "no key" state: a row only exists once a
+# key that works has been saved, so the only question left about it is whether it still does.
+WORKSPACE_ACTIVE = 'active'
+WORKSPACE_KEY_INVALID = 'key_invalid'
+WORKSPACE_STATUSES = [(WORKSPACE_ACTIVE, 'Active'), (WORKSPACE_KEY_INVALID, 'Key not working')]
 
 # The one Twilio usage category we bill. It excludes SIP and trunking calls by Twilio's own
 # definition, which is what keeps Retell's minutes (they run over a SIP trunk) out of it.
@@ -101,6 +109,56 @@ class ClientMapping(models.Model):
         return f'ClientMapping({self.location_id}, {self.client_name!r})'
 
 
+class RetellWorkspace(models.Model):
+    """One client's own Retell workspace: the key that reads it, and whether it still works.
+
+    A workspace is Retell's isolation boundary - its own agents, phone numbers, API keys,
+    webhook and bill. Only its own key can read it, and **the same key verifies the signature
+    on its webhooks**, which is why the client has to be known from the URL before the
+    signature can be checked at all.
+
+    One row per client, created the moment an agency admin saves a key that works. A client
+    with no row has no Retell key yet: the page says so, the nightly audit skips them, and
+    their webhook URL answers 401. There is no account-level key to fall back to - every
+    client's voice usage reaches us through their own workspace or not at all.
+    """
+
+    client = models.OneToOneField(
+        ClientMapping, on_delete=models.CASCADE, related_name='retell_workspace'
+    )
+    # What the GHL team called this workspace in Retell. Shown so an admin can recognise it;
+    # Retell has no API that reports it, so it is typed.
+    workspace_name = models.CharField(max_length=255, blank=True, default='')
+    # The workspace's **webhook-badged** key. Retell signs a workspace's webhooks with that one
+    # key alone, so any other key reads the API perfectly well and fails every signature -
+    # a client who looks configured and sends nothing. Encrypted at rest and never returned by
+    # the API; the page shows the last four characters and nothing else.
+    api_key = EncryptedTextField()
+    status = models.CharField(max_length=20, choices=WORKSPACE_STATUSES, default=WORKSPACE_ACTIVE)
+    # When the key last proved it still works, by listing this workspace's agents.
+    last_checked_at = models.DateTimeField(null=True, blank=True)
+    # When a signed webhook last arrived from this workspace. Still null while the status is
+    # active is the one visible symptom of a valid key that is not the badged one.
+    last_webhook_at = models.DateTimeField(null=True, blank=True)
+    # The newest call start this workspace has been listed up to, in epoch milliseconds. The
+    # nightly audit resumes from here rather than re-listing a fixed window per client, which
+    # is what keeps the request count flat as clients are added.
+    last_call_timestamp_ms = models.BigIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'rebilling_retell_workspace'
+        ordering = ['client__client_name']
+
+    def __str__(self):
+        return f'RetellWorkspace({self.client_id}, {self.workspace_name!r})'
+
+    @property
+    def key_last4(self) -> str:
+        """The only part of the key that ever leaves the server: enough to tell two apart."""
+        return (self.api_key or '')[-4:]
+
+
 class RateHistory(models.Model):
     """What Jerry charges one client per minute, from `start_date` onwards.
 
@@ -165,36 +223,6 @@ class RetellCall(models.Model):
     @property
     def billable_minutes(self) -> Decimal:
         return billable_minutes(self.duration_ms)
-
-
-class UnassignedCall(models.Model):
-    """A call that matched no agent and no phone number.
-
-    Kept rather than dropped: once someone maps the agent or number, it gets billed in that period.
-    """
-
-    call_id = models.CharField(max_length=255, unique=True)
-    agent_id = models.CharField(max_length=255, blank=True, default='')
-    from_number = models.CharField(max_length=32, blank=True, default='')
-    to_number = models.CharField(max_length=32, blank=True, default='')
-    direction = models.CharField(max_length=16, blank=True, default='')
-    started_at = models.DateTimeField(null=True, blank=True)
-    ended_at = models.DateTimeField(null=True, blank=True)
-    duration_ms = models.PositiveIntegerField(null=True, blank=True)
-    retell_cost_cents = models.PositiveIntegerField(null=True, blank=True)
-    call_status = models.CharField(max_length=32, blank=True, default='')
-    # Set from `billing_state` whenever the call is stored or re-read. Defaults to unbillable so a
-    # row created by hand is never billed until something has checked it.
-    billing_status = models.CharField(max_length=20, choices=BILLING_STATUSES, default=UNBILLABLE)
-    # Why it can't be billed, for the admin page. Empty when it can.
-    unbillable_reason = models.CharField(max_length=255, blank=True, default='')
-
-    class Meta:
-        db_table = 'rebilling_unassigned_call'
-        ordering = ['-started_at']
-
-    def __str__(self):
-        return f'UnassignedCall({self.call_id}, agent={self.agent_id!r})'
 
 
 class TwilioUsageDay(models.Model):

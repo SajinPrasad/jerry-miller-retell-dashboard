@@ -6,7 +6,8 @@ import type {
   MappingFields,
   MappingResult,
   RateFields,
-  RetellAgent,
+  RetellKeyTest,
+  RetellWorkspaceSaved,
   SsoSession,
   TwilioSubaccount,
 } from '../types/admin'
@@ -87,10 +88,33 @@ export async function requestCard(locationId: string): Promise<CardStatus> {
   return body.card
 }
 
-/** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */
-export async function getRetellAgents(): Promise<RetellAgent[]> {
-  const body = await apiFetch<{ agents: RetellAgent[] }>('/rebilling/admin/retell-agents/')
-  return body.agents
+/**
+ * Ask Retell whether this key works, and which agents it can see. Writes nothing.
+ *
+ * The agent names are the point: a valid key belonging to *another* client's workspace
+ * authenticates, lists, and would then bill this client for someone else's calls. Nothing
+ * automatic can catch that - someone reading the names is the check.
+ */
+export function testRetellKey(locationId: string, apiKey: string): Promise<RetellKeyTest> {
+  return apiFetch<RetellKeyTest>(
+    `/rebilling/admin/clients/${encodeURIComponent(locationId)}/retell-key/`,
+    { method: 'POST', body: JSON.stringify({ api_key: apiKey }) },
+  )
+}
+
+/**
+ * Save the key against the client. The server re-tests it first, whatever the page believes,
+ * and answers with the last four characters - never the key.
+ */
+export function saveRetellKey(
+  locationId: string,
+  apiKey: string,
+  workspaceName: string,
+): Promise<RetellWorkspaceSaved> {
+  return apiFetch<RetellWorkspaceSaved>(
+    `/rebilling/admin/clients/${encodeURIComponent(locationId)}/retell-key/`,
+    { method: 'PUT', body: JSON.stringify({ api_key: apiKey, workspace_name: workspaceName }) },
+  )
 }
 
 /** Every subaccount under Jerry's Twilio parent account, for the subaccount picker. */

@@ -11,7 +11,7 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.utils import timezone
 
-from apps.rebilling.models import RetellCall, TwilioUsageDay, UnassignedCall
+from apps.rebilling.models import RetellCall, TwilioUsageDay
 from apps.rebilling.services import TwilioUsageService
 from apps.rebilling.tasks import pull_twilio_usage
 
@@ -326,17 +326,18 @@ def test_days_from_an_earlier_page_survive_a_later_failure(service):
 @respx.mock
 def test_the_twilio_pull_leaves_retell_rows_alone(service):
     """Both paths share ClientMapping and nothing else."""
-    from apps.rebilling.services import store_call
+    from apps.rebilling.services import store_workspace_call
+
+    from .test_services import make_workspace
 
     client = make_twilio_client()
-    store_call(call_payload())
+    store_workspace_call(make_workspace(client), call_payload())
     mock_usage(page(record()))
 
     service.pull()
 
     assert RetellCall.objects.get().client == client
     assert RetellCall.objects.get().duration_ms == 15791
-    assert not UnassignedCall.objects.exists()
     assert TwilioUsageDay.objects.count() == 1
 
 

@@ -1,6 +1,8 @@
 """The two voice ingest paths, and the client each one belongs to.
 
-Retell: a webhook per call, plus a nightly audit that catches what the webhook missed.
+Retell: one workspace per client, each with its own API key and its own webhook URL. A call
+arrives already knowing whose it is - the URL says so on the webhook, and on the nightly audit
+the key that read it can only ever see one workspace. Nothing is matched or guessed.
 Twilio: a daily pull of regular call minutes, because Usage Records has no webhook.
 
 The two never touch. They share `ClientMapping` and nothing else: Retell is one row per call,
@@ -12,12 +14,15 @@ Docs: https://docs.retellai.com/features/webhook-overview
 
 import calendar
 import logging
+import time as clock
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import ROUND_HALF_UP, Decimal
+from urllib.parse import urljoin
 
 import httpx
 from django.conf import settings
 from django.db.models import Max, Q, Sum
+from django.urls import reverse
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
@@ -32,13 +37,15 @@ from .models import (
     RETELL_LINE,
     TWILIO_LINE,
     UNBILLABLE,
+    WORKSPACE_ACTIVE,
+    WORKSPACE_KEY_INVALID,
     Bill,
     BillLine,
     ClientMapping,
     RateHistory,
     RetellCall,
+    RetellWorkspace,
     TwilioUsageDay,
-    UnassignedCall,
     billable_minutes,
     billing_state,
 )
@@ -47,8 +54,17 @@ logger = logging.getLogger(__name__)
 
 # How far back the nightly audit looks. Longer than a day so a missed run still gets caught.
 RECONCILE_WINDOW_HOURS = 48
+# How far back before its own high-water mark a workspace audit starts. A call Retell recorded
+# late would be stepped over by resuming from the exact last timestamp seen; storing is
+# idempotent on `call_id`, so the overlap costs a few rows read twice and nothing else.
+RECONCILE_OVERLAP_HOURS = 1
 # Retell's maximum for /v3/list-calls.
 PAGE_SIZE = 1000
+# The longest a 429 can hold a request up before we give up on it. Retell answers with
+# `RateLimit-Reset` in seconds, and the `list-*` budget refills in ten, so a header asking for
+# longer than that is capped rather than believed.
+# https://docs.retellai.com/get-started/sdk
+RATE_LIMIT_MAX_WAIT_SECONDS = 10
 
 # How many days back the daily Twilio pull re-reads, today included. A day keeps settling after
 # it ends and a re-pull only updates rows, so this is cheap insurance against a missed run.
@@ -62,86 +78,135 @@ def normalise_number(value: str) -> str:
     return ''.join(c for c in (value or '') if c.isdigit())
 
 
-def match_client(call: dict) -> ClientMapping | None:
-    """The client a call belongs to: by Retell agent first, then by phone number."""
-    mappings = list(ClientMapping.objects.filter(active=True))
+def store_workspace_call(workspace: RetellWorkspace, call: dict) -> bool:
+    """Store one call that arrived from a client's own Retell workspace. True if it was new.
 
-    agent_id = call.get('agent_id')
-    if agent_id:
-        for mapping in mappings:
-            if agent_id in mapping.retell_agent_ids:
-                return mapping
+    Nothing is matched here. A workspace belongs to exactly one client, so whichever key read
+    the call - or whichever webhook URL it arrived on - has already said whose it is. That is a
+    stronger claim about ownership than any agent list of ours, which is why an `agent_id` we
+    have never seen is **recorded and kept**, never rejected and never left unassigned: it
+    means the GHL team added an agent to the workspace and our copy of the list is behind.
 
-    # The client's own number: the one dialled on the way in, the one dialled from on the way out.
-    own_number = (
-        call.get('to_number') if call.get('direction') == 'inbound' else call.get('from_number')
-    )
-    wanted = normalise_number(own_number)
-    if wanted:
-        for mapping in mappings:
-            if any(normalise_number(n) == wanted for n in mapping.phone_numbers):
-                return mapping
-    return None
-
-
-def store_call(call: dict) -> bool:
-    """Store one call against its client, or as unassigned. True if it was new.
-
-    Does nothing if we already have the call: Retell retries a webhook up to three times, and the
-    nightly audit re-reads calls the webhook already delivered.
+    Idempotent on `call_id`: Retell retries a webhook up to three times without a 2xx, and the
+    nightly audit re-reads a window the webhook has already delivered.
     """
     call_id = call.get('call_id')
     if not call_id:
         logger.warning('retell: call without a call_id, ignored')
         return False
 
-    already_stored = (
-        RetellCall.objects.filter(call_id=call_id).exists()
-        or UnassignedCall.objects.filter(call_id=call_id).exists()
-    )
-    if already_stored:
+    if RetellCall.objects.filter(call_id=call_id).exists():
         return False
 
-    fields = _call_fields(call)
-    client = match_client(call)
-    if client is None:
-        UnassignedCall.objects.get_or_create(call_id=call_id, defaults=fields)
+    client = workspace.client
+    agent_id = call.get('agent_id') or ''
+    if agent_id and agent_id not in (client.retell_agent_ids or []):
         logger.warning(
-            'retell: call %s matched no client (agent=%s, from=%s, to=%s)',
+            'retell: call %s from %s carries agent %s, which was not on this client',
             call_id,
-            call.get('agent_id'),
-            call.get('from_number'),
-            call.get('to_number'),
+            client.location_id,
+            agent_id,
         )
-        return True
+        client.retell_agent_ids = [*(client.retell_agent_ids or []), agent_id]
+        client.save(update_fields=['retell_agent_ids'])
 
-    RetellCall.objects.get_or_create(call_id=call_id, defaults={'client': client, **fields})
+    RetellCall.objects.get_or_create(
+        call_id=call_id, defaults={'client': client, **_call_fields(call)}
+    )
     return True
 
 
-class RetellReconciliationService:
-    """The nightly audit: catch calls whose webhook never arrived, and fill in what it left out.
+def reconcile_all() -> dict:
+    """The nightly audit, one client's Retell workspace at a time.
 
-    Also answers the admin page's "which agents are there?" with the same client and key.
+    **Serialized on purpose.** Retell's `list-*` budget is 30 requests per 10 seconds, counted
+    "per organization + route", and its own docs say not to parallelize those calls. Whether a
+    workspace counts as its own organization is undocumented, so fanning out might spend one
+    shared budget N times over; serial is correct under either answer, and a 429 is waited out
+    in `_request` rather than lost.
+
+    A client with no workspace row has no key yet and is simply not here - there is nothing to
+    read them with, and nothing to fall back to.
+
+    One client's bad key marks that workspace `key_invalid` and the run carries on, so a single
+    unreadable workspace never costs the others their night. `failed` is what the command's
+    exit code reads: only every workspace failing is systemic.
+    """
+    totals = {'workspaces': 0, 'failed': 0, 'seen': 0, 'stored': 0, 'backfilled': 0}
+
+    for workspace in RetellWorkspace.objects.select_related('client'):
+        totals['workspaces'] += 1
+        service = RetellReconciliationService(workspace.api_key)
+        try:
+            result = service.reconcile_workspace(workspace)
+        except RetellError:
+            logger.exception('retell: workspace audit failed for %s', workspace.client.location_id)
+            # Written straight to the row rather than through the instance in hand, so a
+            # failure cannot re-encrypt and rewrite the key on its way past.
+            RetellWorkspace.objects.filter(pk=workspace.pk).update(
+                status=WORKSPACE_KEY_INVALID, last_checked_at=timezone.now()
+            )
+            totals['failed'] += 1
+            continue
+        for field in ('seen', 'stored', 'backfilled'):
+            totals[field] += result[field]
+
+    return totals
+
+
+class RetellReconciliationService:
+    """One Retell workspace, read with its own key.
+
+    Does the nightly audit for that workspace - catching calls whose webhook never arrived and
+    filling in what it left out - and answers the admin page's "which agents are in here?".
+
+    The key **is** the scope. A Retell key can only ever read the workspace it belongs to, so
+    there is no account id, filter or client parameter here that could be got wrong, and no
+    way for one client's run to see another's calls.
 
     Docs: https://docs.retellai.com/api-references/list-calls
     """
 
-    def __init__(self, client: httpx.Client | None = None):
+    def __init__(self, api_key: str, client: httpx.Client | None = None):
+        self.api_key = api_key
         self.client = client or httpx.Client(
             base_url=settings.RETELL_API_BASE_URL, timeout=settings.RETELL_REQUEST_TIMEOUT
         )
 
-    def reconcile(self) -> dict:
-        """Audit the last `RECONCILE_WINDOW_HOURS`. Returns what it did, for the command."""
-        window_start = timezone.now() - timedelta(hours=RECONCILE_WINDOW_HOURS)
+    def reconcile_workspace(self, workspace: RetellWorkspace) -> dict:
+        """Audit one client's own workspace, resuming from where the last run reached.
+
+        The listing window starts at the newest call this workspace has already been listed up
+        to, less `RECONCILE_OVERLAP_HOURS`, rather than at a fixed 48 hours. Re-listing two
+        days per client every night is the same data fetched N times over, against a budget
+        that may well be shared - and a workspace nothing has listed yet still falls back to
+        the full window, so nothing is missed the first time.
+
+        The **backfill** keeps the fixed window whatever the high-water mark says. A call that
+        will never be billable - one that never connected - must not be re-fetched every night
+        for the rest of time.
+        """
+        now = timezone.now()
 
         seen = stored = 0
-        for call in self._list_calls(window_start):
+        newest = workspace.last_call_timestamp_ms or 0
+        for call in self._list_calls(_workspace_window_start(workspace, now)):
             seen += 1
-            stored += store_call(call)
+            stored += store_workspace_call(workspace, call)
+            newest = max(newest, call.get('start_timestamp') or 0)
 
-        return {'seen': seen, 'stored': stored, 'backfilled': self._backfill(window_start)}
+        backfilled = self._backfill(
+            now - timedelta(hours=RECONCILE_WINDOW_HOURS), client=workspace.client
+        )
+
+        # A list that answered is the key proving it still works, so the daily health check and
+        # the nightly audit are the same request rather than two.
+        workspace.status = WORKSPACE_ACTIVE
+        workspace.last_checked_at = now
+        workspace.last_call_timestamp_ms = newest or None
+        workspace.save(update_fields=['status', 'last_checked_at', 'last_call_timestamp_ms'])
+
+        return {'seen': seen, 'stored': stored, 'backfilled': backfilled}
 
     def _list_calls(self, window_start):
         """Every call Retell has in the window, a page at a time."""
@@ -167,18 +232,20 @@ class RetellReconciliationService:
             if not (page.get('has_more') and pagination_key):
                 return
 
-    def _backfill(self, window_start) -> int:
-        """Re-read calls in the window we can't bill yet, or that are still missing a cost.
+    def _backfill(self, window_start, client: ClientMapping) -> int:
+        """Re-read this client's calls in the window we can't bill yet, or that still have no cost.
 
         The webhook may carry neither duration nor cost, and a call that was still running when we
         first saw it has ended by now. Only the window is looked at, so a call that will never be
         billable (one that never connected) isn't re-fetched every night forever.
+
+        Scoped to one client because this key is: asking for another client's call would be a
+        request this workspace cannot answer, N times over, every night.
         """
         pending = Q(retell_cost_cents__isnull=True) | Q(billing_status=UNBILLABLE)
-        records = [
-            *RetellCall.objects.filter(pending, started_at__gte=window_start),
-            *UnassignedCall.objects.filter(pending, started_at__gte=window_start),
-        ]
+        records = list(
+            RetellCall.objects.filter(pending, started_at__gte=window_start, client=client)
+        )
 
         filled = 0
         for record in records:
@@ -239,17 +306,21 @@ class RetellReconciliationService:
         return agents
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
-        headers = {
-            'Accept': 'application/json',
-            'Authorization': f'Bearer {settings.RETELL_API_KEY}',
-        }
+        headers = {'Accept': 'application/json', 'Authorization': f'Bearer {self.api_key}'}
         try:
             response = self.client.request(method, path, headers=headers, **kwargs)
+            if response.status_code == 429:
+                # Waited out once, for as long as Retell's own header asks. One workspace
+                # hitting the limit would otherwise end its whole pass, and with the audit
+                # running workspace after workspace that is one client losing a night's calls
+                # because the client before it was busy.
+                clock.sleep(_rate_limit_wait(response))
+                response = self.client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
             return response.json()
         except (httpx.HTTPError, ValueError) as exc:
-            # Includes 429. The window covers two days, so the next run picks up whatever this
-            # one missed rather than us retrying in a loop here.
+            # Includes a 429 that survived the wait. The window overlaps, so the next run picks
+            # up whatever this one missed rather than us retrying in a loop here.
             raise RetellError(f'Retell {method} {path} failed: {exc}') from exc
 
 
@@ -333,8 +404,8 @@ class TwilioUsageService:
         """Write one day's usage. True if the row already existed, None if it was unusable.
 
         `update_or_create` on purpose: Twilio keeps revising a day after it ends, so the newest
-        read wins. `store_call()`'s first-write-wins rule would freeze a day at whatever it
-        happened to look like the first time we saw it.
+        read wins. The first-write-wins rule `store_workspace_call()` follows would freeze a
+        day at whatever it happened to look like the first time we saw it.
         """
         usage_date = record.get('start_date')
         if not usage_date:
@@ -451,6 +522,34 @@ def _epoch_ms(moment: datetime) -> int:
     return int(moment.timestamp() * 1000)
 
 
+def _workspace_window_start(workspace: RetellWorkspace, now: datetime) -> datetime:
+    """Where this workspace's next listing starts: its own high-water mark, less the overlap.
+
+    Deliberately not clamped to `RECONCILE_WINDOW_HOURS`. A clamp would make a quiet client -
+    one whose last call was a week ago - skip everything between, and listing back to a mark
+    that old costs one near-empty page.
+    """
+    if workspace.last_call_timestamp_ms:
+        return _timestamp(workspace.last_call_timestamp_ms) - timedelta(
+            hours=RECONCILE_OVERLAP_HOURS
+        )
+    return now - timedelta(hours=RECONCILE_WINDOW_HOURS)
+
+
+def _rate_limit_wait(response: httpx.Response) -> float:
+    """How long a 429 asks us to wait, in seconds, within reason.
+
+    `RateLimit-Reset` is Retell's own count of seconds until the budget refills. It is capped
+    rather than trusted: this runs inside the admin page's Test button as well as the nightly
+    audit, and a header asking for a minute would hang a person in front of a form.
+    """
+    try:
+        wait = float(response.headers.get('RateLimit-Reset', 1))
+    except (TypeError, ValueError):
+        wait = 1.0
+    return min(max(wait, 1.0), RATE_LIMIT_MAX_WAIT_SECONDS)
+
+
 def _usage_minutes(record: dict) -> Decimal:
     """Twilio's `usage` for `calls`: minutes, already rounded per call by Twilio.
 
@@ -532,10 +631,13 @@ def sync_billing_emails() -> int:
 def set_mapping(location_id: str, default_client_name: str, fields: dict) -> ClientMapping:
     """Create or update a client's mapping from what an agency admin edited.
 
-    `fields` holds only keys that passed `ClientMappingSerializer`: `twilio_subaccount_sid`,
-    `retell_agent_ids`, `phone_numbers`. A key left out is left alone rather than cleared, so
-    editing one field never has to resend the other two. `client_name` is only ever set here on
-    first creation, from the sub-account's own GHL name - renaming a client is not part of this.
+    `fields` holds only keys that passed `ClientMappingSerializer`: `twilio_subaccount_sid`
+    and `phone_numbers`. A key left out is left alone rather than cleared, so editing one field
+    never has to resend the other. `client_name` is only ever set here on first creation, from
+    the sub-account's own GHL name - renaming a client is not part of this.
+
+    Retell is not among them: a client's agents come from their own workspace, and their key is
+    saved by `set_workspace_key()`.
 
     `billing_email` is not among them and never typed: it is seeded from the sub-account's GHL
     owner the moment the mapping is created, and kept in step by `sync_billing_emails()`.
@@ -553,6 +655,51 @@ def set_mapping(location_id: str, default_client_name: str, fields: dict) -> Cli
     if changed:
         mapping.save(update_fields=changed)
     return mapping
+
+
+def set_workspace_key(
+    location_id: str, default_client_name: str, api_key: str, workspace_name: str, agents: list
+) -> RetellWorkspace:
+    """Put a client on their own Retell workspace, with the key that has just been proved.
+
+    The caller lists the workspace's agents first and passes them in: a key that cannot be
+    read is never saved, so a row existing means a key that worked at least once. Saving again
+    with a different key replaces it, which is how a rotated key is handled - there is nothing
+    to roll back to, because the old one no longer opens anything.
+
+    Creating the `ClientMapping` here if there isn't one is deliberate. `RetellCall.client` is
+    not nullable, so a workspace hanging off a sub-account nobody had set up for billing would
+    be a client whose calls arrive with nowhere to put them. Pasting a workspace key *is*
+    setting a client up, so it seeds the mapping the same way the mapping editor does.
+
+    The workspace's agents **replace** `retell_agent_ids`. The workspace is the authority on
+    what is in it, nobody types these any more, and the list is only ever read to notice when
+    a call carries an agent we have not seen - so a stale entry is noise and a re-save is how
+    it gets cleaned up.
+    """
+    mapping, _ = ClientMapping.objects.get_or_create(
+        location_id=location_id,
+        defaults={
+            'client_name': default_client_name,
+            'billing_email': billing_email_for(location_id),
+        },
+    )
+
+    agent_ids = [agent['agent_id'] for agent in agents]
+    if agent_ids != (mapping.retell_agent_ids or []):
+        mapping.retell_agent_ids = agent_ids
+        mapping.save(update_fields=['retell_agent_ids'])
+
+    workspace, _ = RetellWorkspace.objects.update_or_create(
+        client=mapping,
+        defaults={
+            'api_key': api_key,
+            'workspace_name': workspace_name,
+            'status': WORKSPACE_ACTIVE,
+            'last_checked_at': timezone.now(),
+        },
+    )
+    return workspace
 
 
 def set_rates(mapping: ClientMapping, voice_rate_cents: int, call_rate_cents: int) -> RateHistory:
@@ -622,6 +769,13 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
     "nobody has set this client up" from "this client used nothing".
     """
     mappings = {m.location_id: m for m in ClientMapping.objects.all()}
+    # Whose key is working, in one query rather than one per row. A client missing from here
+    # has no Retell key at all, which the list says in as many words.
+    working = set(
+        RetellWorkspace.objects.filter(status=WORKSPACE_ACTIVE).values_list(
+            'client__location_id', flat=True
+        )
+    )
     locations = GHLOAuthToken.objects.filter(is_agency=False).order_by('name')
 
     rows = []
@@ -637,6 +791,7 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
                 mappings.get(location.location_id),
                 start,
                 end,
+                location.location_id in working,
             )
         )
 
@@ -644,14 +799,21 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
     for mapped_location, mapping in mappings.items():
         if mapped_location in seen or (location_id and mapped_location != location_id):
             continue
-        rows.append(_client_row(mapped_location, '', mapping, start, end))
+        rows.append(
+            _client_row(mapped_location, '', mapping, start, end, mapped_location in working)
+        )
 
     rows.sort(key=lambda row: (row['client_name'] or '').lower())
     return rows
 
 
 def _client_row(
-    location_id: str, ghl_name: str, mapping: ClientMapping | None, start: date, end: date
+    location_id: str,
+    ghl_name: str,
+    mapping: ClientMapping | None,
+    start: date,
+    end: date,
+    retell_connected: bool,
 ) -> dict:
     if mapping is None:
         # No usage object rather than a zero one: an unmapped client cannot have usage, and
@@ -673,9 +835,9 @@ def _client_row(
         'mapped': True,
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
-        # Retell matches a call by agent id first, then by phone number, so either one mapped
-        # means Retell calls can reach this client.
-        'retell_connected': bool(mapping.retell_agent_ids or mapping.phone_numbers),
+        # A key that worked on the last check. Nothing else lets a Retell call reach this
+        # client: no key, no webhook anyone can verify and nothing to read their calls with.
+        'retell_connected': retell_connected,
         'twilio_connected': bool(mapping.twilio_subaccount_sid),
         'rates': _rate_row(current_rate(mapping, end)),
         'usage': usage_summary(mapping, start, end),
@@ -746,35 +908,78 @@ def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
     }
 
 
-def _retell_agents(mapping: ClientMapping) -> list[dict]:
+def _retell_agents(mapping: ClientMapping, workspace: RetellWorkspace | None) -> list[dict]:
     """The mapped agents' own names, for display - a sub-account's read-only page cannot call
     the agency-only picker endpoint to learn them itself, so this reads them the same way that
     endpoint does.
 
-    Falls back to the bare id, the same as the picker, whenever Retell has no name for it: an
-    agent removed from Retell since it was mapped, or Retell unreachable right now, is still a
-    real mapping even though its name cannot be read at the moment.
+    Read with the client's own key, which lists that one workspace and nothing else. Without a
+    key there is nothing to ask, so the ids stand on their own - which is also the only state
+    a client can be in before anyone has set them up.
+
+    Falls back to the bare id whenever Retell has no name for one: an agent deleted since the
+    last call, or Retell unreachable right now, is still a real agent on a real call. A failure
+    here is **not** taken as evidence the key is dead - a page view must not flip a client to
+    "key not working" over one bad moment. The nightly audit owns that verdict.
     """
     agent_ids = mapping.retell_agent_ids or []
     if not agent_ids:
         return []
 
     names = {}
-    try:
-        names = {
-            agent['agent_id']: agent['agent_name']
-            for agent in RetellReconciliationService().list_agents()
-        }
-    except RetellError:
-        logger.exception('rebilling: Retell agent list failed while naming %s', mapping.location_id)
+    if workspace is not None:
+        try:
+            service = RetellReconciliationService(workspace.api_key)
+            names = {agent['agent_id']: agent['agent_name'] for agent in service.list_agents()}
+        except RetellError:
+            logger.exception(
+                'rebilling: Retell agent list failed while naming %s', mapping.location_id
+            )
 
     return [
         {'agent_id': agent_id, 'agent_name': names.get(agent_id) or ''} for agent_id in agent_ids
     ]
 
 
-def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
-    """One client: how they are mapped, what they are charged, and what they used."""
+def _workspace_row(
+    workspace: RetellWorkspace | None, mapping: ClientMapping, webhook_base: str
+) -> dict | None:
+    """One client's own Retell workspace, or None while they are still on the shared account.
+
+    The key itself never leaves the server, not even masked beyond its last four characters -
+    the onboarding endpoint set that precedent and there is no reason to break it for a secret
+    that can read a client's whole call history.
+
+    The webhook URL is **built from the route**, never typed. A typo in the URL pasted into
+    Retell is a client whose calls simply never arrive, and nothing notices until the month is
+    billed short.
+    """
+    if workspace is None:
+        return None
+
+    path = reverse('rebilling:retell-client-webhook', args=[mapping.location_id])
+    return {
+        'workspace_name': workspace.workspace_name,
+        'key_last4': workspace.key_last4,
+        'status': workspace.status,
+        'last_checked_at': (
+            workspace.last_checked_at.isoformat() if workspace.last_checked_at else None
+        ),
+        'last_webhook_at': (
+            workspace.last_webhook_at.isoformat() if workspace.last_webhook_at else None
+        ),
+        'webhook_url': urljoin(webhook_base, path) if webhook_base else path,
+    }
+
+
+def client_detail(mapping: ClientMapping, start: date, end: date, webhook_base: str = '') -> dict:
+    """One client: how they are mapped, what they are charged, and what they used.
+
+    `webhook_base` is the public origin this server is being reached on, which is what makes
+    the client's own webhook URL absolute enough to paste into Retell. Left out, the URL comes
+    back as a path - true, and still useless to paste, which is why both callers pass it.
+    """
+    workspace = RetellWorkspace.objects.filter(client=mapping).first()
     return {
         'location_id': mapping.location_id,
         'client_name': mapping.client_name,
@@ -785,7 +990,9 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
         'active': mapping.active,
         'billing_mode': mapping.billing_mode,
         'retell_agent_ids': mapping.retell_agent_ids or [],
-        'retell_agents': _retell_agents(mapping),
+        'retell_agents': _retell_agents(mapping, workspace),
+        # Null while this client is still billed off the one account-level key.
+        'retell_workspace': _workspace_row(workspace, mapping, webhook_base),
         'phone_numbers': mapping.phone_numbers or [],
         'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
         **billing_facts(mapping),

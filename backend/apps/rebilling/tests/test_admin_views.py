@@ -23,12 +23,13 @@ from apps.rebilling.models import (
     PAID,
     UNBILLABLE,
     UNCHARGED,
+    WORKSPACE_KEY_INVALID,
     Bill,
     RateHistory,
     RetellCall,
     TwilioUsageDay,
 )
-from apps.rebilling.tests.test_services import make_client
+from apps.rebilling.tests.test_services import make_client, make_workspace
 
 pytestmark = pytest.mark.django_db
 
@@ -41,9 +42,9 @@ RETELL_AGENTS_URL = f'{settings.RETELL_API_BASE_URL}/v2/list-agents'
 
 @pytest.fixture(autouse=True)
 def default_retell_agents():
-    """`client_detail` now names each mapped agent off Retell, and `make_client()` maps every
-    sample client to `agent1`, so every `get_detail()` call in this file would otherwise ask
-    Retell for a name it mostly does not care about.
+    """`client_detail` names each mapped agent off that client's own Retell workspace, so any
+    test here that gives a client a workspace would otherwise ask Retell for a name it mostly
+    does not care about. (A client with no workspace asks nothing at all.)
 
     A router of its own, independent of `respx.mock` - the global singleton the two GHL sync
     tests below activate with their own `@respx.mock`. Left unmocked here (`assert_all_mocked`
@@ -138,6 +139,7 @@ def test_lists_a_mapped_client_with_rates_and_usage(client):
     make_agency()
     make_location('loc1', 'Cool Breeze HVAC')
     mapping = make_client('loc1')
+    make_workspace(mapping)
     RateHistory.objects.create(client=mapping, start_date=date(2026, 1, 1))
     add_call(mapping, 'c1', duration_ms=120_000)
     add_twilio_day(mapping, date(2026, 3, 10), minutes='100.00', cents=420)
@@ -587,7 +589,7 @@ def test_a_call_follows_its_own_bill_while_the_charge_is_in_the_air(client):
 
 def test_each_mapped_agent_carries_its_own_name(client, default_retell_agents):
     make_agency()
-    make_client('loc1', retell_agent_ids=['agent1', 'agent2'])
+    make_workspace(make_client('loc1', retell_agent_ids=['agent1', 'agent2']))
     default_retell_agents.post(RETELL_AGENTS_URL).mock(
         return_value=httpx.Response(
             200,
@@ -615,7 +617,7 @@ def test_an_agent_retell_no_longer_has_falls_back_to_no_name(client, default_ret
     """An agent removed from Retell since it was mapped is still a real mapping - it has simply
     lost the name that went with it, which the page falls back to the bare id for."""
     make_agency()
-    make_client('loc1', retell_agent_ids=['agent_gone'])
+    make_workspace(make_client('loc1', retell_agent_ids=['agent_gone']))
 
     body = get_detail(client, 'loc1').json()
 
@@ -626,7 +628,7 @@ def test_no_agents_mapped_means_no_name_lookup_at_all(client, default_retell_age
     """Nothing to name, so nothing asked - proven by the call count, not only by the result,
     since an empty catalog would answer `[]` either way."""
     make_agency()
-    make_client('loc1', retell_agent_ids=[])
+    make_workspace(make_client('loc1', retell_agent_ids=[]))
 
     assert get_detail(client, 'loc1').json()['retell_agents'] == []
     assert default_retell_agents.calls.call_count == 0
@@ -635,13 +637,91 @@ def test_no_agents_mapped_means_no_name_lookup_at_all(client, default_retell_age
 def test_a_failed_retell_lookup_leaves_the_mapping_real_but_unnamed(client, default_retell_agents):
     """Retell being unreachable must not take the whole page down with it."""
     make_agency()
-    make_client('loc1')
+    make_workspace(make_client('loc1'))
     default_retell_agents.post(RETELL_AGENTS_URL).mock(return_value=httpx.Response(500))
 
     body = get_detail(client, 'loc1').json()
 
     assert body.get('retell_agent_ids') == ['agent1']
     assert body['retell_agents'] == [{'agent_id': 'agent1', 'agent_name': ''}]
+
+
+def test_a_client_with_no_key_is_not_asked_about_their_agents(client, default_retell_agents):
+    """There is nothing to ask with, which is also the state every client starts in."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent1'])
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['retell_agents'] == [{'agent_id': 'agent1', 'agent_name': ''}]
+    assert default_retell_agents.calls.call_count == 0
+
+
+# --- the client's own Retell workspace, as the page reads it --------------------------------
+
+
+def test_the_list_says_a_mapped_client_has_no_working_retell_key(client):
+    """No key, no webhook anyone can verify - the month bills zero and looks fine."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_client('loc1')
+
+    assert get_clients(client).json()['clients'][0]['retell_connected'] is False
+
+
+def test_the_list_says_a_key_the_audit_refused_is_not_working(client):
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_workspace(make_client('loc1'), status=WORKSPACE_KEY_INVALID)
+
+    assert get_clients(client).json()['clients'][0]['retell_connected'] is False
+
+
+def test_a_client_with_no_key_reads_as_no_workspace(client, default_retell_agents):
+    make_agency()
+    make_client('loc1')
+
+    assert get_detail(client, 'loc1').json()['retell_workspace'] is None
+
+
+def test_the_workspace_row_carries_the_last_four_and_never_the_key(client):
+    make_agency()
+    make_workspace(make_client('loc1'), api_key='key_workspace_abc_3a9f')
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['retell_workspace']['key_last4'] == '3a9f'
+    assert body['retell_workspace']['status'] == 'active'
+    assert 'key_workspace_abc_3a9f' not in str(body)
+    assert 'api_key' not in body['retell_workspace']
+
+
+def test_the_webhook_url_is_built_for_pasting_into_retell(client):
+    """Absolute, and derived from the route - a typo here is a client who never bills."""
+    make_agency()
+    make_workspace(make_client('loc1'))
+
+    url = get_detail(client, 'loc1').json()['retell_workspace']['webhook_url']
+
+    assert url == 'http://testserver/api/rebilling/webhooks/retell/loc1/'
+
+
+def test_a_workspace_that_has_never_sent_a_webhook_says_so(client):
+    """The one symptom of a valid key that is not the webhook-badged one."""
+    make_agency()
+    make_workspace(make_client('loc1'))
+
+    assert get_detail(client, 'loc1').json()['retell_workspace']['last_webhook_at'] is None
+
+
+def test_a_sub_account_sees_its_own_workspace_status_but_not_its_key(client):
+    make_agency()
+    make_workspace(make_client('loc-cool-breeze'), api_key='key_workspace_abc_3a9f')
+
+    body = get_detail(client, 'loc-cool-breeze', blob=VECTOR_LOCATION).json()
+
+    assert body['retell_workspace']['status'] == 'active'
+    assert 'key_workspace_abc_3a9f' not in str(body)
 
 
 # --- the Stripe customer's own name, for the billing contact card ---------------------------

@@ -19,7 +19,23 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `a14e0a3`. Do not commit or push unless asked.
+**Branch.** `feat/retell-workspace-per-subaccount`, off `main` at `867f963`. Do not commit or push
+unless asked.
+
+> ### Phase 9 changed the Retell half of this document (4 Nov)
+>
+> **There is one Retell workspace per GHL sub-account now, and no account-level key.** Each client
+> has their own encrypted API key on `RetellWorkspace`, their own webhook URL
+> (`/api/rebilling/webhooks/retell/<location_id>/`), and their own pass in the nightly audit.
+> **`RETELL_API_KEY` no longer exists**, nor does the account-level webhook route,
+> `match_client()`, `store_call()` or `UnassignedCall` (dropped in migration `0010`).
+>
+> Sections **6.4**, **6.7**, **15** and **17** below still describe the single-account design in
+> places. `local_folder/plan.md` **Phase 9** is the authoritative description of what is built;
+> `CriticalFindings.md` §2.8 and R6–R10 carry the risks that came with it. The single sharpest:
+> **Retell signs a workspace's webhooks with one specific key** — the one carrying the webhook
+> badge — so any other key of that workspace tests green here and then fails every signature,
+> silently, per client.
 
 **Uncommitted work (Phase 8, the rebilling status write — §6.10b):** `sync_rebilling_status` now
 writes `failed` / `active` to a custom field on the client's **billing contact in the main
@@ -420,35 +436,49 @@ branch adds it.
 
 ### 6.4 Retell path
 
-**Webhook** `POST /api/rebilling/webhooks/retell/` (`apps/rebilling/views.py`):
+**Webhook** `POST /api/rebilling/webhooks/retell/<location_id>/` (`apps/rebilling/views.py`):
 
 1. Reads `request.body` **before anything parses the stream**. The signature covers the raw bytes.
-2. `retell.lib.verify(raw_body, RETELL_API_KEY, X-Retell-Signature)`. Returns 401 if the
-   signature is bad, 400 if the JSON is bad.
-3. Only `call_ended` is handled. It calls `store_call()`.
-4. Always answers **204 with an empty body**. Retell allows 10 seconds and retries up to 3 times
+2. Looks up that client's `RetellWorkspace` by the id in the path. No row → 401, nothing stored.
+3. `retell.lib.verify(raw_body, workspace.api_key, X-Retell-Signature)`. 401 if the signature is
+   bad, 400 if the JSON is bad. **The key is the signing secret**, which is why the client has to
+   come from the URL: the right key cannot be chosen until the client is known.
+4. Stamps `last_webhook_at` on **any** verified event, not only `call_ended` — it is the only
+   evidence the webhook-badged key is the one we hold.
+5. `call_ended` goes to `store_workspace_call()`.
+6. Always answers **204 with an empty body**. Retell allows 10 seconds and retries up to 3 times
    on a non-2xx.
 
-**Matching** (`match_client()`): by `agent_id` first, since each client has their own agent. Then
-by phone number: `to_number` for inbound, `from_number` for outbound, compared digits-only. Only
-`active` mappings match. No match creates an `UnassignedCall` and logs a warning. Web calls have no
-phone numbers, so they can only match by agent.
+**No matching.** The workspace belongs to exactly one client, so the URL (or, in the audit, the
+key that fetched the call) has already said whose it is. A call whose `agent_id` is not on the
+client is **stored against them anyway**, the agent appended to `retell_agent_ids` and a warning
+logged — never rejected, never unassigned. An agent the GHL team created an hour ago is not in our
+list yet, and rejecting would drop a new client's first real calls.
 
-**Storing** (`store_call()`): idempotent on `call_id` across **both** tables. Retell's retries and
-the nightly audit both rely on this. First write wins.
+**Storing** (`store_workspace_call()`): idempotent on `call_id`. Retell's retries and the nightly
+audit both rely on this. First write wins.
 
-**Nightly audit** `RetellReconciliationService.reconcile()`:
+**Nightly audit** `reconcile_all()` → `RetellReconciliationService(key).reconcile_workspace(ws)`:
 
-- `POST /v3/list-calls` over the last **48 hours** (`RECONCILE_WINDOW_HOURS`), `limit` 1000,
-  paging on `pagination_key` until `has_more` is false. It stops if `has_more` is true but no key
-  comes back.
-- Every call goes through `store_call()`.
-- Backfill: for calls **inside the window** that are unbillable or missing a cost, it calls
-  `GET /v2/get-call/{call_id}`, refreshes duration, cost, status and `ended_at`, and re-runs
-  `billing_state()`.
-- Errors: a failed list (429 included) raises `RetellError` and ends the run. The next night's
-  window covers it. A failed get-call is logged and skipped.
-- Auth: `Authorization: Bearer RETELL_API_KEY`.
+- One pass **per workspace**, strictly **serial**. Retell's `list-*` budget is 30 req/10 s "per
+  organization + route" and its docs say not to parallelize those calls; whether a workspace is
+  its own organization is undocumented, so serial is correct either way.
+- `POST /v3/list-calls`, `limit` 1000, paging on `pagination_key` until `has_more` is false. It
+  stops if `has_more` is true but no key comes back.
+- The window starts at that workspace's `last_call_timestamp_ms` less `RECONCILE_OVERLAP_HOURS`
+  (1), not a fixed 48 hours — re-listing two days per client every night is the same data fetched
+  N times over. A mark older than the window is **not** clamped back to it. A workspace nothing
+  has listed yet falls back to `RECONCILE_WINDOW_HOURS`.
+- Every call goes through `store_workspace_call()`.
+- Backfill: for **that client's** calls inside the fixed 48-hour window that are unbillable or
+  missing a cost, `GET /v2/get-call/{call_id}`, refreshing duration, cost, status and `ended_at`
+  and re-running `billing_state()`. Scoped to one client because the key is.
+- Errors: a 429 is waited out **once** for `RateLimit-Reset` seconds, capped at 10. Anything else
+  raises `RetellError`, which marks that workspace `key_invalid` and moves to the next one. The
+  command exits non-zero only when **every** workspace failed.
+- A list that answered proves the key, so it also sets `status` and `last_checked_at`. The daily
+  health check and the nightly audit are the same request.
+- Auth: `Authorization: Bearer <that workspace's key>`.
 - Duration is read from `duration_ms`, else `duration_seconds`, else
   `call_cost.total_duration_seconds`.
 
@@ -456,8 +486,10 @@ the nightly audit both rely on this. First write wins.
 the window it would be re-fetched every night, forever.
 
 **Agent names** (`RetellReconciliationService.list_agents()`, `POST /v2/list-agents`, paged on
-`pagination_key`): used by the picker and by the client detail, which names each mapped agent on every
-view. See §16 for the cost of that.
+`pagination_key`): read with **that client's own key**, so it lists one workspace rather than the
+whole account. Used by the key test (where the names are shown so a person can confirm the key
+belongs to this client) and by the client detail, which names each agent on every view. A client
+with no key is not asked at all. See §16 for the cost of that.
 
 ### 6.5 Twilio path
 
@@ -514,7 +546,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 
 | Setting | Default | Notes |
 |---|---|---|
-| `RETELL_API_KEY` | none | Must be the key with the **webhook badge**. It also verifies signatures |
+| ~~`RETELL_API_KEY`~~ | — | **Removed (Phase 9).** Each client's key lives encrypted on `RetellWorkspace` and is pasted on their page. It must still be that workspace's **webhook-badged** key, which also verifies its signatures |
 | `RETELL_ROUNDING` | `per_second` | or `round_up_minute`. **Retell only** |
 | `RETELL_API_BASE_URL` | `https://api.retellai.com` | |
 | `RETELL_REQUEST_TIMEOUT` | 30 | seconds |
@@ -825,7 +857,7 @@ Everything is in `backend/.env`, which is gitignored. `backend/.env.example` doc
 - **GHL:** `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`, `GHL_APP_ID`, `GHL_APP_SSO_KEY`, `AGENCY_LOCATION_ID`,
   `GHL_REDIRECT_URI`, `GHL_INSTALL_URL_BASE`, `GHL_API_VERSION` (default `2021-07-28`), `GHL_SCOPES`,
   `GHL_API_BASE_URL`, `GHL_REQUEST_TIMEOUT`.
-- **Retell:** `RETELL_API_KEY`, `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
+- **Retell:** `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`. **No API key**: one per client, encrypted on `RetellWorkspace` (Phase 9).
 - **Twilio:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Stripe:** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
 
@@ -993,12 +1025,16 @@ These cannot be answered from the docs.
   regular staff call.
 - Twilio's `usage` for `calls` is whole minutes, already rounded per call.
 
-**Verify on the first real Retell call:**
+**Verify on the first real Retell call (now per client — see `plan.md` Phase 9):**
 
 - `call_ended` carries `duration_ms` and `call_cost`.
-- No agent has its own `webhook_url` overriding the account-level one.
+- No agent has its own `webhook_url` overriding its workspace's. `list-agents` reports neither
+  `webhook_url` nor `webhook_events`, so this needs `GET /v2/get-agent/{id}` per agent.
 - Each agent's `webhook_events` includes `call_ended`.
-- `RETELL_API_KEY` is the webhook-badge key. Otherwise signatures fail silently.
+- **The saved key is that workspace's webhook-badged key.** Otherwise signatures fail silently —
+  and the dashboard still reads green, because any valid key of the workspace passes the Test
+  button. This is now N chances to get it wrong rather than one; the client's page warns when a
+  key has been saved and no webhook has ever arrived.
 
 **Verify on Jerry's GHL account:**
 
@@ -1020,16 +1056,26 @@ These cannot be answered from the docs.
 - Who receives **alert emails**? (Phase 6.)
 - If SMS ever comes into scope: does Twilio's `usage` count messages or **segments**?
 
-**Retell multi-location architecture (answered):**
+**Retell multi-location architecture (SUPERSEDED 4 Nov — see `plan.md` Phase 9):**
+
+> **This section no longer describes what is built.** It concluded "one workspace, many Apps" and
+> **rejected** workspace isolation for the reasons listed below. On 4 Nov Jerry's team chose the
+> opposite — **one Retell workspace per sub-account** — and it was built: per-client encrypted
+> key, per-client webhook URL, per-workspace nightly audit, and no account-level `RETELL_API_KEY`
+> at all. The objections below were raised again before building and were overruled, which is
+> their call; they are kept verbatim because they are still **true costs** of the chosen design,
+> not arguments that were refuted. Jerry's team is handling the split billing separately.
+>
+> The research in this section about **Apps and connections** is unaffected and still accurate.
 
 Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one App per sub-account, one agent per sub-account**, all provisioned by script. Attribution (the `agent_id` → `ClientMapping.retell_agent_ids` match) is untouched.
 
 - **Multiple concurrent connections, same provider:** Yes. The Integrations page's Available tab shows each provider with an "Add Account" button that works after connecting once. The underlying API is `/create-app` (creates a new app with its own `app_id`), `/list-apps`, `/update-app`, `/test-app-auth` — all returning distinct connections. A connection is scoped to one GHL Location ID, with its own Private Integration Token.
 - **Per-provider limit:** 20 apps per provider by default. At 50+ sub-accounts, request a custom limit from Retell before collecting tokens.
 - **Tool binding:** A tool in an agent is bound to one specific connection at config time (field `app_id`). Multiple tools in one agent can use different connections. Multiple agents can use the same connection.
-- **Workspace isolation (reject):** Retell offers workspaces, but they are hard-isolated: separate API keys, agents, phone numbers, and billing. This breaks our model — `services.py` pulls every call through `/v3/list-calls` with one `RETELL_API_KEY`, and `retell_cost_cents` is the basis of rebilling. Fifty workspaces = fifty keys, fifty audit passes, and costs split across fifty balances.
+- **Workspace isolation (~~reject~~ — ADOPTED 4 Nov):** Retell offers workspaces, and they are hard-isolated: separate API keys, agents, phone numbers, and billing. Fifty workspaces = fifty keys, fifty audit passes, and costs split across fifty balances — **all of that is now true and accepted.** `services.py` no longer pulls every call through one key: `reconcile_all()` walks each workspace with its own key, serially, resuming from a per-workspace high-water mark. `retell_cost_cents` is per call and unaffected, so rebilling and margin are unchanged. The split balances are Jerry's team's to manage.
 - **One shared agent with dynamic variables (reject for this):** Tools bind to connections at config time, not call time. The calendar can be chosen mid-call, but the CRM connection cannot. This breaks attribution (every call carries the same `agent_id`, so `match_client()` returns the first mapping and bills one client for everyone).
-- **Contact sync limit (real constraint):** Only one CRM connection per workspace can drive contact sync at a time. Retell's native sync can serve one sub-account; the rest must use the per-client webhook path (custom GHL workflow → webhook to this app) instead. Integration tools (create opportunity, book calendar) work on every connection regardless.
+- **Contact sync limit (real constraint, and the only one):** Only one CRM connection per workspace can drive contact sync at a time. Under one workspace per client this stops being a limit at all, which is the strongest argument for the new topology — and, notably, **not** the argument the source PDF gave (see `CriticalFindings.md` R6).
 - **Private Integration Tokens:** No API exists to mint them. Each sub-account's token must be created by hand: Settings → Private Integrations → Create new Integration, scopes (Contacts, Opportunities, Custom Fields, Calendar), copy once. Collect all 50 at once, then script the rest.
 - **Verification before scaling:** (1) Call `GET /list-app-templates` to get the exact provider string for GoHighLevel. (2) Create a second app via `POST /create-app` with a different Location ID. (3) Both should appear in `GET /list-apps` with distinct `app_id` and `tenant_id`, both `connection_status: "connected"`. If the second call overwrites the first or a second row doesn't appear, it is genuinely 1:1 and this whole plan needs rethinking.
 
@@ -1276,10 +1322,10 @@ Work outward from the data:
 **Known limits:**
 
 - **20 apps per provider:** Default limit in Retell. Request a custom higher limit if it blocks your client count.
-- **Contact sync is workspace-wide:** Only one CRM connection can drive Retell's native contact sync. Others use webhooks (custom GHL workflows posting call data back to this app).
-- **No workspace creation API:** Workspaces are dashboard-only and isolated; stick to one workspace (§15).
+- **Contact sync is workspace-wide:** Only one CRM connection can drive Retell's native contact sync — which is why each client now has a workspace of their own (`plan.md` Phase 9).
+- **No workspace creation API:** Workspaces are dashboard-only and isolated. Since 4 Nov there is **one per client**, each created by hand in Retell's dashboard and connected here by pasting its webhook-badged API key into the client's page (§15, `plan.md` Phase 9).
 
-**What changes in this app's code:** Nothing. The single `RETELL_API_KEY` pulls calls from all agents via `/v3/list-calls`, and attribution stays via `agent_id` → `ClientMapping.retell_agent_ids` matching.
+**What changed in this app's code (4 Nov):** everything about how a call arrives. There is no single key: each client's own workspace key pulls their calls via `/v3/list-calls`, and attribution is the workspace itself rather than an `agent_id` match. See `plan.md` Phase 9.
 
 ---
 

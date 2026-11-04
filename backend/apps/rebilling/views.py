@@ -4,8 +4,14 @@ import logging
 
 import stripe
 from django.conf import settings
+from django.utils import timezone
 from rest_framework import status
-from rest_framework.exceptions import NotFound, PermissionDenied, ValidationError
+from rest_framework.exceptions import (
+    APIException,
+    NotFound,
+    PermissionDenied,
+    ValidationError,
+)
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from retell.lib import verify
@@ -16,8 +22,12 @@ from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import GHLOAuthService
 
 from .exceptions import RetellError, TwilioError
-from .models import ClientMapping
-from .serializers import ClientMappingSerializer, ClientRatesSerializer
+from .models import ClientMapping, RetellWorkspace
+from .serializers import (
+    ClientMappingSerializer,
+    ClientRatesSerializer,
+    RetellWorkspaceSerializer,
+)
 from .services import (
     RetellReconciliationService,
     TwilioUsageService,
@@ -27,7 +37,8 @@ from .services import (
     month_window,
     set_mapping,
     set_rates,
-    store_call,
+    set_workspace_key,
+    store_workspace_call,
     sync_billing_emails,
 )
 from .stripe_billing import apply_event, clear_card_request, read_event, request_card
@@ -35,24 +46,55 @@ from .stripe_billing import apply_event, clear_card_request, read_event, request
 logger = logging.getLogger(__name__)
 
 
-class RetellWebhookView(APIView):
-    """POST /api/rebilling/webhooks/retell/: the account-level webhook URL set in Retell.
+class RetellKeyRefused(APIException):
+    """Retell would not answer for the key just given. Wrong key, or Retell is down."""
 
-    Retell gives us 10 seconds and retries up to three times without a 2xx, so this answers 204
-    with an empty body and keeps the work to two indexed lookups. A database failure is left to
-    raise, so the retry is the thing that recovers it.
+    status_code = status.HTTP_502_BAD_GATEWAY
+    default_detail = (
+        'Retell would not accept this key. Check it is the workspace API key with the webhook '
+        'badge, then try again.'
+    )
+
+
+class RetellClientWebhookView(APIView):
+    """POST /api/rebilling/webhooks/retell/<location_id>/: one client's own Retell workspace.
+
+    The client is in the URL because it has to be: a workspace's webhooks are signed with that
+    workspace's own API key, so nothing can be verified until we know whose key to verify it
+    with. The signature is still the authentication - the id in the path only picks the key,
+    and a guessed one buys nothing without it. That is also why the key itself is never the
+    path: it would then be in every access log and referrer along the way.
+
+    Retell gives us 10 seconds and retries up to three times without a 2xx, so this answers
+    204 with an empty body and keeps the work to three indexed touches: the workspace lookup,
+    the webhook stamp, and the call. A database failure is left to raise, so the retry is the
+    thing that recovers it.
+
+    The stamp is the only way to see the one failure nothing else can - a valid key that is
+    not the webhook-badged one, which passes every test this app can run and then silently
+    fails every signature Retell sends.
     """
 
     # A machine-to-machine webhook: the signature is the authentication.
     authentication_classes: list = []
     permission_classes: list = []
 
-    def post(self, request):
+    def post(self, request, location_id):
         # Read before anything parses the stream: the signature covers the raw body.
         raw_body = request.body
+
+        workspace = (
+            RetellWorkspace.objects.select_related('client')
+            .filter(client__location_id=location_id)
+            .first()
+        )
+        if workspace is None:
+            logger.warning('retell: webhook for a sub-account with no workspace: %s', location_id)
+            return Response(status=status.HTTP_401_UNAUTHORIZED)
+
         signature = request.headers.get('X-Retell-Signature', '')
-        if not verify(raw_body.decode(), settings.RETELL_API_KEY, signature):
-            logger.warning('retell: webhook signature rejected')
+        if not verify(raw_body.decode(), workspace.api_key, signature):
+            logger.warning('retell: webhook signature rejected for %s', location_id)
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
@@ -60,8 +102,13 @@ class RetellWebhookView(APIView):
         except ValueError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
+        # Any event that verified proves this workspace's webhook reaches us and is signed
+        # with the key we hold, which is exactly what the badge trap hides. Stamped before the
+        # event is looked at, because `call_started` proves it just as well as `call_ended`.
+        RetellWorkspace.objects.filter(pk=workspace.pk).update(last_webhook_at=timezone.now())
+
         if payload.get('event') == 'call_ended':
-            store_call(payload.get('call') or {})
+            store_workspace_call(workspace, payload.get('call') or {})
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -240,32 +287,93 @@ class AdminClientDetailView(APIView):
                 )
             raise NotFound('This client has not been mapped for billing yet.')
 
-        return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
+        return Response(
+            {
+                'month': start.strftime('%Y-%m'),
+                **client_detail(mapping, start, end, _webhook_base(request)),
+            }
+        )
 
 
-class AdminRetellAgentsView(APIView):
-    """GET /api/rebilling/admin/retell-agents/: the Retell agents a client can be mapped to.
+def _webhook_base(request) -> str:
+    """The public origin this request arrived on, which the client's webhook URL hangs off.
 
-    What the agent picker in the mapping editor reads, so an agency admin chooses an agent off
-    the Retell account instead of pasting an id. Agency scope only, because mapping itself is.
+    Taken from the request rather than from a setting of its own: this is the host Retell will
+    have to reach, and it is the one the admin reading the page is already talking to. Behind
+    the proxy, `SECURE_PROXY_SSL_HEADER` is what keeps the scheme honest.
+    """
+    return request.build_absolute_uri('/')
+
+
+class AdminClientRetellKeyView(APIView):
+    """The client's own Retell workspace key: `POST` tests one, `PUT` saves it.
+
+    `/api/rebilling/admin/clients/<location_id>/retell-key/`, agency admins only - this
+    is a credential that reads a whole workspace, and a sub-account has no business setting
+    one, not even its own.
+
+    **A save always re-tests.** The two verbs run the same check against Retell; the only
+    difference is whether the key is kept. Gating the write on a flag the browser sends would
+    make "tested" something the page asserts rather than something the server knows.
+
+    Both answer with the **agent names** the key found. That is not decoration: a valid key
+    belonging to the *wrong* client's workspace authenticates, lists, verifies that
+    workspace's webhooks and bills this client for someone else's calls. No automated check
+    can catch it. Someone reading the names is the check.
     """
 
     authentication_classes: list = []
     permission_classes: list = []
 
-    def get(self, request):
+    def post(self, request, location_id):
+        self._require_agency(request)
+        return Response({'agents': self._agents(request, location_id)})
+
+    def put(self, request, location_id):
+        self._require_agency(request)
+
+        location = GHLOAuthToken.objects.filter(is_agency=False, location_id=location_id).first()
+        if location is None:
+            raise NotFound('This sub-account has not been onboarded.')
+
+        fields = self._fields(request)
+        agents = self._agents(request, location_id, fields)
+        workspace = set_workspace_key(
+            location_id,
+            location.name,
+            fields['api_key'],
+            fields.get('workspace_name', ''),
+            agents,
+        )
+        return Response(
+            {
+                'location_id': location_id,
+                'workspace_name': workspace.workspace_name,
+                'key_last4': workspace.key_last4,
+                'agents': agents,
+            }
+        )
+
+    def _require_agency(self, request):
         context = sso.context_from_request(request)
         if context.scope != sso.AGENCY:
-            raise PermissionDenied('Only an agency admin can read the Retell agents.')
+            raise PermissionDenied('Only an agency admin can set a Retell workspace key.')
 
+    def _fields(self, request) -> dict:
+        serializer = RetellWorkspaceSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        return serializer.validated_data
+
+    def _agents(self, request, location_id, fields=None) -> list:
+        fields = fields if fields is not None else self._fields(request)
         try:
-            agents = RetellReconciliationService().list_agents()
+            return RetellReconciliationService(api_key=fields['api_key']).list_agents()
         except RetellError:
-            logger.exception('rebilling: Retell agent list failed')
-            return Response(
-                {'detail': 'Retell request failed.'}, status=status.HTTP_502_BAD_GATEWAY
-            )
-        return Response({'agents': agents})
+            # One message for both halves of it: the key is wrong, or Retell is unreachable.
+            # Nothing here can tell them apart, and guessing would send someone to the wrong
+            # place. Logged at warning rather than exception - a mistyped key is not a fault.
+            logger.warning('rebilling: Retell would not accept the key for %s', location_id)
+            raise RetellKeyRefused() from None
 
 
 class AdminTwilioSubaccountsView(APIView):
@@ -328,7 +436,12 @@ class AdminClientRatesView(APIView):
         serializer.is_valid(raise_exception=True)
 
         set_rates(mapping, **serializer.validated_data)
-        return Response({'month': start.strftime('%Y-%m'), **client_detail(mapping, start, end)})
+        return Response(
+            {
+                'month': start.strftime('%Y-%m'),
+                **client_detail(mapping, start, end, _webhook_base(request)),
+            }
+        )
 
 
 class AdminClientCardRequestView(APIView):
@@ -364,11 +477,14 @@ class AdminClientCardRequestView(APIView):
 
 
 class AdminClientMappingView(APIView):
-    """PUT /api/rebilling/admin/clients/<location_id>/mapping/: set up or edit a client's mapping.
+    """PUT /api/rebilling/admin/clients/<location_id>/mapping/: a client's Twilio mapping.
 
     Agency admins only. Opened inside a sub-account the page shows usage, not settings, so a
     location session is refused here even for its own client - there is no request to let a
     client edit their own mapping.
+
+    Retell is not set here: a client's agents come from their own workspace, and the key that
+    reads it is set by `AdminClientRetellKeyView`.
     """
 
     authentication_classes: list = []
@@ -392,7 +508,6 @@ class AdminClientMappingView(APIView):
                 'location_id': mapping.location_id,
                 'client_name': mapping.client_name,
                 'twilio_subaccount_sid': mapping.twilio_subaccount_sid,
-                'retell_agent_ids': mapping.retell_agent_ids,
                 'phone_numbers': mapping.phone_numbers,
             }
         )

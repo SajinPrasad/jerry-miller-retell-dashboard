@@ -71,57 +71,59 @@ read-only.
   and `GET /api/rebilling/admin/clients/<location_id>/`, both taking `?month=YYYY-MM` (default:
   this month). The list is every **sub-account from Task 1** left-joined to `ClientMapping`, so an
   onboarded-but-unmapped client shows as `mapped: false` with null usage - "nobody set this up" must
-  not read as "used nothing". Each row also carries `retell_connected` / `twilio_connected`, which
-  is what the list's single status pill says on hover.
+  not read as "used nothing". Each row also carries `retell_connected` (**a Retell workspace key
+  that worked on the last check**, not an agent list) and `twilio_connected`, which is what the
+  list's status pill says on hover - and a client without the first gets a visible **No key**
+  pill, because a client with no key records no calls at all and bills a zero nobody would
+  question.
 - **"Refresh clients"** (`ClientBrowser.tsx`'s clients-card header, agency scope only - a
   sub-account's own page never reaches the list, so it never renders): `POST
   /api/rebilling/admin/clients/sync/`, same `?month=` as the list. Re-runs Task 1's
   `sync_locations` against GHL, then returns the same shape `GET /api/rebilling/admin/clients/`
   does, so `AdminPage.tsx` swaps the table in place - no reload, just the state update.
-- **Mapping is one of the two things an agency admin can write.** `PUT
-  /api/rebilling/admin/clients/<location_id>/mapping/` (agency scope only, 403 for a location
-  session even on its own client) takes `twilio_subaccount_sid`, `retell_agent_ids`,
-  `phone_numbers` - never `active`, `billing_mode`, rates or `billing_email`, which have their
-  own rules or come from GoHighLevel. Rates are the other, and have their own endpoint below.
+- **An agency admin writes three things: the Retell key, the Twilio mapping, and the rates.**
+  `PUT /api/rebilling/admin/clients/<location_id>/mapping/` (agency scope only, 403 for a
+  location session even on its own client) takes `twilio_subaccount_sid` and `phone_numbers` -
+  never Retell agents (they come from the workspace), and never `active`, `billing_mode`, rates
+  or `billing_email`, which have their own rules or come from GoHighLevel.
   `ClientMappingSerializer` (`apps/rebilling/serializers.py`) validates a Twilio SID's shape
-  (`AC` + 32 hex) and a phone number's digit count, and de-duplicates both lists; `set_mapping()`
+  (`AC` + 32 hex) and a phone number's digit count, and de-duplicates the list; `set_mapping()`
   (`services.py`) creates the row on first save (`client_name` from Task 1's sync, never
-  user-typed) or updates only the fields sent, leaving the rest alone. `MappingEditor.tsx` is the
-  one editor, reused on an already-mapped client's page (`ClientDetail.tsx`, in place of the
-  read-only `dl`) and on an unmapped one (`ClientBrowser.tsx`'s `SetUpMapping`, in place of the
-  sub-account-facing `UnmappedNotice`) - `canEdit` (`!isSubAccount`) picks which a given viewer
-  gets. `ClientMapping` also has a plain Django admin registration now, as a fallback to the page.
-- **The agent and the subaccount are picked, not typed.** `GET /api/rebilling/admin/retell-agents/`
-  and `GET /api/rebilling/admin/twilio-subaccounts/` (agency scope only, like the mapping write
-  they serve) read Jerry's live Retell and Twilio accounts through the services that already hold
-  those credentials - `RetellReconciliationService.list_agents()` (`POST /v2/list-agents`, paged on
-  `pagination_key`) and `TwilioUsageService.list_subaccounts()` (`GET /2010-04-01/Accounts.json`,
-  paged on `next_page_uri`). Each returns the two fields a picker needs, sorted by name. **The
-  Twilio parent account is left out of its list**: a client mapped to it would be billed for every
-  other client's minutes. A provider that cannot be reached is a 502, which the dropdown says in
-  words. `SearchableSelect.tsx` is the one dropdown, used for both: it fetches **when the panel is
-  first opened**, not on page load (most visits to a client's page never touch the mapping, and
-  each one would otherwise cost two live provider calls), keeps the list for later opens, retries
-  on the next open after a failure, and filters on name *or* id as you type. An agent already on
-  the client is marked `Added` and not offerable twice; the Twilio list carries a
-  `No Twilio subaccount` row, which is how a client is taken off regular-call billing now that the
-  SID is not a text box. **Phone numbers are still typed** - they are the backup match for calls no
-  mapped agent covers, and they come off a GHL sub-account, not off Retell.
-  - **A mapped agent is shown by name everywhere, including to a sub-account that cannot open the
-    picker.** `client_detail` carries `retell_agents` - `retell_agent_ids` itself, unchanged,
-    plus the same ids each paired with a name read off `RetellReconciliationService.list_agents()`
-    (`_retell_agents()`, `services.py`), empty for one Retell has no name for right now (removed
-    since, or Retell unreachable - logged, not raised) or when nothing is mapped at all, which
-    skips the call entirely. This *is* a live call on every view of a mapped client's page, unlike
-    the picker's full catalog above - the name is shown unconditionally, not only once a picker is
-    opened, so there is no visit to defer it past. `MappingEditor`'s chip list seeds its labels
-    from `retell_agents` and fills in anything picked afterwards from the option it was chosen
-    from, so it never re-asks the backend for a name it was just given.
+  user-typed) or updates only the fields sent, leaving the rest alone. With Twilio rebilling
+  paused there is nothing left in `MappingEditor.tsx`, so `ClientDetail.tsx` hides the whole
+  Twilio card rather than rendering it empty; it returns whole when the flag does.
+  **`RetellKeyCard.tsx` is what an unmapped client's page shows** (`ClientBrowser.tsx`'s
+  `SetUpClient`, in place of the sub-account-facing `UnmappedNotice`), because saving a key is
+  what creates the client. `canEdit` (`!isSubAccount`) decides whether a viewer gets the form or
+  just the status. `ClientMapping` also has a plain Django admin registration, as a fallback.
+- **The Twilio subaccount is picked, not typed.** `GET /api/rebilling/admin/twilio-subaccounts/`
+  (agency scope only, like the mapping write it serves) reads Jerry's live Twilio account through
+  `TwilioUsageService.list_subaccounts()` (`GET /2010-04-01/Accounts.json`, paged on
+  `next_page_uri`), returning the two fields a picker needs, sorted by name. **The Twilio parent
+  account is left out**: a client mapped to it would be billed for every other client's minutes.
+  A provider that cannot be reached is a 502, which the dropdown says in words.
+  `SearchableSelect.tsx` fetches **when the panel is first opened**, not on page load, keeps the
+  list for later opens, retries on the next open after a failure, and filters on name *or* id as
+  you type. The list carries a `No Twilio subaccount` row, which is how a client is taken off
+  regular-call billing now that the SID is not a text box. **Phone numbers are still typed** -
+  they come off a GHL sub-account, not off Twilio.
+  - **There is no Retell agent picker.** Phase 9 removed it along with
+    `GET /api/rebilling/admin/retell-agents/` and `retell_agent_ids` on the mapping endpoint: a
+    client's agents are whatever is in their own Retell workspace, filled in when their key is
+    saved and topped up when a call carries one we have not seen. A typed list would silently
+    contradict the workspace, and the agent check reads that list.
+  - **An agent is shown by name everywhere, including to a sub-account.** `client_detail` carries
+    `retell_agents` - `retell_agent_ids` itself, unchanged, plus the same ids each paired with a
+    name read off **that client's own workspace** (`_retell_agents()`, `services.py`), empty for
+    one Retell has no name for right now (deleted since, or Retell unreachable - logged, not
+    raised) and skipped entirely for a client with no key or no agents. A failure here is **not**
+    taken as evidence the key is dead: a page view must not flip a client to "key not working"
+    over one bad moment. The nightly audit owns that verdict.
 - **An agency admin opening an unmapped client never calls the 404ing detail endpoint.** Both
   `AdminPage.tsx` and `AdminPreviewPage.tsx` skip the detail fetch whenever the clients list has
   already marked the selected row `mapped: false`, and hand `ClientBrowser` a synthesized
   `{month, location_id, client_name, mapped: false}` instead - the same shape the endpoint itself
-  returns for a sub-account's own unmapped page. That is what lets `SetUpMapping` render
+  returns for a sub-account's own unmapped page. That is what lets `SetUpClient` render
   immediately instead of racing (and losing to) the 404 described below.
 - **Two pages, two jobs.** The list answers "who is onboarded, and is anyone billing them": client
   name and status, nothing else. Every figure - minutes, rates, estimate, cost, margin - and the
@@ -199,26 +201,32 @@ read-only.
   requires a valid session for every admin request.** A mapping edit in the preview
   (`MappingEditor`'s `preview` prop) never reaches `saveMapping` - it writes into `demoData.ts`'s
   own in-memory `previewMappings` map instead, which `resetPreviewMappings()` clears between tests.
-  The same prop feeds the two pickers from `demoRetellAgents()` / `demoTwilioSubaccounts()`, so
-  previewing never reaches Retell or Twilio either.
+  A Retell key "saved" in the preview records only its last four in `previewKeys`
+  (`resetPreviewKeys()`), and a key *test* there answers from `previewRetellAgents()` - so
+  previewing never reaches Retell or Twilio either. One sample client is deliberately left in
+  the badge trap (saved, active, never heard from) so that state can be seen.
 - **Local development:** the handshake needs a GHL parent, so `local_folder/make_dev_session.py`
   seals a blob for `frontend/.env.local` (`VITE_DEV_SSO_BLOB`) and
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
   backend verifies a dev blob exactly like a real one - there is no server-side bypass.
 
-## Voice rebilling (Task 4, Phases 1, 2, 2b, 3, 5 and 7 built)
+## Voice rebilling (Task 4, Phases 1, 2, 2b, 3, 5, 7, 8 and 9 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe, Phase 7 the card on file and the card request. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe, Phase 7 the card on file and the card request, **Phase 9 one Retell workspace per sub-account**. Phase 4's rate editing is built (see the admin page above); its bills table and Phase 6 (alerts) are not started, and **its unassigned-calls screen is dropped** — Phase 9 made `UnassignedCall` unreachable and it was deleted.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 
+**One Retell workspace per client (Phase 9).** There is no account-level Retell key and no shared account: each client has their own Retell workspace, their own encrypted API key on `RetellWorkspace`, and their own webhook URL carrying their `location_id`. **The key is also the webhook signing secret**, which is why the client has to be identified by the URL before a signature can be checked at all. A call therefore arrives already knowing whose it is — nothing is matched, nothing can be unassigned. A client with no key records nothing: the page says **No key**, the nightly audit skips them, and their webhook URL answers 401.
+
 **Twilio billing is paused** (`TWILIO_BILLING_ENABLED`, default off): GoHighLevel rebills regular call minutes natively, so billing them here as well would charge the client twice. The pull still runs and the usage is still stored and reported; what stops is billing. `calculate_bills` builds no Twilio line, `charge_bills` refuses a pre-pause bill that carries one, the admin estimate counts Retell only, and the page hides every Twilio control behind the `twilio_billing_enabled` flag both endpoints return. It is a switch, not a deletion - the Twilio models, pull, pickers and calculation all stay, and the tests that cover them turn the setting back on.
 
-- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `twilio_subaccount_sid`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `card_requested_at`, `active`), `RateHistory` (`voice_rate_cents` default 25 = the Retell AI minute, `call_rate_cents` default 5 = the Twilio call minute, `start_date`; a rate change adds a row and splits both rates at the same point), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `UnassignedCall` (matched no client; same call fields; never dropped), `TwilioUsageDay` (one client, one GMT day, one category; `unique_together` on all three).
-- **Webhook** `POST /api/rebilling/webhooks/retell/`: verifies `X-Retell-Signature` over the raw body with `RETELL_API_KEY` (`retell.lib.verify`; 5-minute replay window), handles `call_ended` only, answers 204 empty. Matching is by `agent_id`, then by phone number (`to_number` inbound, `from_number` outbound, digits-only), else `UnassignedCall`. Idempotent on `call_id` across both tables.
-- **Settings:** `RETELL_API_KEY` must be the key with the **webhook badge** (it also verifies signatures). `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute` — **Retell only**; Twilio minutes arrive pre-rounded and must never be rounded again. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`. `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` must be the **parent account's** (a main-account API key is denied subaccount resources), plus `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
+- **Models** (`apps/rebilling/models.py`): `ClientMapping` (`location_id`, `client_name`, `retell_agent_ids`, `phone_numbers`, `twilio_subaccount_sid`, `billing_mode`, `stripe_customer_id`, `billing_contact_id`, `card_requested_at`, `active`), `RetellWorkspace` (one-to-one with `ClientMapping`; `workspace_name`, `api_key` encrypted, `status` = `active`/`key_invalid`, `last_checked_at`, `last_webhook_at`, `last_call_timestamp_ms`), `RateHistory` (`voice_rate_cents` default 25 = the Retell AI minute, `call_rate_cents` default 5 = the Twilio call minute, `start_date`; a rate change adds a row and splits both rates at the same point), `RetellCall` (keyed on `call_id`, holds `duration_ms`, `retell_cost_cents` = `call_cost.combined_cost`, `billing_status`, `unbillable_reason`), `TwilioUsageDay` (one client, one GMT day, one category; `unique_together` on all three). `UnassignedCall` is **gone** (migration `0010`) — nothing can reach it now that the workspace names the client.
+- **Webhook** `POST /api/rebilling/webhooks/retell/<location_id>/`: looks the client's `RetellWorkspace` up by the id in the path (401 if there is none), verifies `X-Retell-Signature` over the raw body with **that workspace's** key (`retell.lib.verify`; 5-minute replay window), stamps `last_webhook_at` on any verified event, stores `call_ended`, answers 204 empty. Idempotent on `call_id`. **No matching:** the client is known from the URL. A call whose `agent_id` is not on the client is **stored anyway**, the agent appended to `retell_agent_ids` and a warning logged — never rejected, because an agent the GHL team added an hour ago is not in our list yet.
+- **The client's key** `POST|PUT /api/rebilling/admin/clients/<location_id>/retell-key/` (agency scope only): `POST` tests a key and answers with the agents it found; `PUT` **re-tests and then saves**, creating the `ClientMapping` if there is none — pasting a key is what sets a client up now. The key is never returned (only `key_last4`) and never stored unencrypted. `RetellKeyCard.tsx` shows the status, the masked key, the webhook URL with a copy button, and the agents; it gates Save on a passing test and clears that test when the key is edited.
+- **The badge trap.** Retell signs a workspace's webhooks with **one** key — the one carrying the webhook badge. Any other key of that workspace tests green and fails every signature, silently. Nothing in code can tell them apart: the page says `Settings → API Keys — copy the key with the webhook badge` beside the field, and warns when `last_webhook_at` is null while the status is `active`. Equally, **another client's valid key would work here too** — which is why Test shows the agent names and asks for them to be checked.
+- **Settings:** there is **no `RETELL_API_KEY`** — each client's key lives encrypted on `RetellWorkspace`. `RETELL_ROUNDING` is `per_second` (default) or `round_up_minute` — **Retell only**; Twilio minutes arrive pre-rounded and must never be rounded again. `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`. `TWILIO_ACCOUNT_SID` + `TWILIO_AUTH_TOKEN` must be the **parent account's** (a main-account API key is denied subaccount resources), plus `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Billability:** every stored call carries `billing_status` (`billable`/`unbillable`, default unbillable) and `unbillable_reason` in plain words, set by `billing_state()` on store and on every re-read. A call is unbillable when its status isn't `ended`, or it has no duration or no start time. Nothing is ever dropped; Phase 3 bills `billable` rows only. Duration is taken from `duration_ms`, else `duration_seconds`, else `call_cost.total_duration_seconds`.
-- **Reconciliation** `RetellReconciliationService.reconcile()`: `POST /v3/list-calls` over the last 48 hours (`RECONCILE_WINDOW_HOURS`), paged on `pagination_key`, feeding every call through the same `store_call()`; then `GET /v2/get-call/{id}` for calls in the window that are unbillable or still missing a cost, refreshing duration, cost, status and `ended_at` and re-running `billing_state()`. A failed list ends the run (the next window re-covers it); a failed get-call is skipped.
+- **Reconciliation** `reconcile_all()`: walks `RetellWorkspace` rows **one at a time**, each with `RetellReconciliationService(workspace.api_key)`. Serial on purpose — Retell's `list-*` budget is 30 req/10 s **"per organization + route"** and its docs say not to parallelize those calls; whether a workspace is its own organization is undocumented, so serial is correct either way. A 429 is waited out once for `RateLimit-Reset` seconds, capped at 10. Each workspace resumes from its own `last_call_timestamp_ms` less `RECONCILE_OVERLAP_HOURS` (1) instead of re-listing a fixed window per client; a mark older than the window is **not** clamped back to it. The **backfill** keeps the 48-hour window (`RECONCILE_WINDOW_HOURS`) and is scoped to that one client. A successful list is the key's health check, so it sets `status`/`last_checked_at`; a failure marks that workspace `key_invalid` and the run carries on. The command exits non-zero only when **every** workspace failed.
 - **Twilio pull** `TwilioUsageService.pull(start_date, end_date)`: for each `active` client with a `twilio_subaccount_sid`, `GET /2010-04-01/Accounts/{sid}/Usage/Records/Daily.json` with `Category=calls`, `IncludeSubaccounts=false` (its default is **true**) and `PageSize=1000`, paging on the `next_page_uri` Twilio hands back. Stored with `update_or_create` on `(client, usage_date, category)` because Twilio keeps revising a day after it ends. Defaults to a rolling 3-day window; pass both dates for the month-close run. Only `calls` is billed — it excludes SIP and trunking calls by Twilio's definition, which is where Retell's minutes land. A failed client is logged, counted in `failed` and skipped; the others still land.
 - **Schedule:** Celery beat runs `apps.rebilling.tasks.reconcile_retell_calls` at **03:00 UTC** and `apps.rebilling.tasks.pull_twilio_usage` at **03:30 UTC** (`CELERY_BEAT_SCHEDULE` in `config/settings/base.py`); both need a worker and a beat process. Each has a management command that does the same work synchronously for a manual run: `manage.py reconcile_retell_calls` and `manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]`. The Twilio command exits non-zero only when **every** client failed (systemic: credentials, Twilio down); a partial failure warns and exits 0.
 - **Charging (Phase 5, built on `feat/stripe-billing`)** lives in its own module,
@@ -331,8 +339,8 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   ever ran. `set_custom_value()` and the `locations/customValues.*` scopes are gone with it. Still
   best effort - the outcome is already on the bill, so a GHL failure is logged, not raised - and a
   client with no `billing_email` has no contact to write to, which is logged and skipped.
-- **Not built yet:** no alerts beyond a log line. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
-- **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
+- **Not built yet:** no alerts beyond a log line and what the page shows. Phase 9 made three per-client failures visible — key refused (`key_invalid`), key never heard from (`last_webhook_at` null while active), no key at all — but **nothing pushes any of them anywhere**; Phase 6 owns the channel and none has been chosen. A client's Twilio mapping is edited from the agency admin page (see above) or, as a fallback, the Django admin; rates and the Retell key are set from that page too.
+- **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides its workspace's webhook URL — `list-agents` returns neither `webhook_url` nor `webhook_events`, so that needs `GET /v2/get-agent/{id}` per agent and is not built. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
 
 ## Structure
 

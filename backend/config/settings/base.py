@@ -143,9 +143,9 @@ FIELD_ENCRYPTION_KEY = env('FIELD_ENCRYPTION_KEY', default='')
 # Where the OAuth callback sends the browser afterwards (the React app).
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
 
-# Retell voice rebilling (Task 4). The same key verifies webhook signatures, so it must be the
-# API key carrying the webhook badge in the Retell dashboard.
-RETELL_API_KEY = env('RETELL_API_KEY', default='')
+# Retell voice rebilling (Task 4). There is no account-level API key: every client has their
+# own Retell workspace, and its key is stored encrypted on `RetellWorkspace` rather than in
+# the environment. These two settings are the same for all of them.
 # How a call's minutes are billed: 'per_second' or 'round_up_minute' (round each call up).
 RETELL_ROUNDING = env('RETELL_ROUNDING', default='per_second')
 RETELL_API_BASE_URL = env('RETELL_API_BASE_URL', default='https://api.retellai.com')

@@ -1,3 +1,11 @@
+"""Storing one Retell call against the client whose workspace it came from.
+
+There is no matching left to test. A workspace belongs to exactly one client, so whichever
+key read the call - or whichever webhook URL it arrived on - has already said whose it is.
+What is left is what gets stored, whether it can be billed, and what happens when the call
+names an agent this client has never had.
+"""
+
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -9,11 +17,15 @@ from apps.rebilling.models import (
     UNBILLABLE,
     ClientMapping,
     RetellCall,
-    UnassignedCall,
+    RetellWorkspace,
 )
-from apps.rebilling.services import store_call
+from apps.rebilling.services import store_workspace_call
 
 pytestmark = pytest.mark.django_db
+
+# Stands in for a workspace's own API key everywhere in the suite. Never a real one, and
+# never read by anything but a respx mock.
+WORKSPACE_KEY = 'key_workspace_cool_breeze'
 
 
 def make_client(location_id='loc1', **overrides):
@@ -25,6 +37,16 @@ def make_client(location_id='loc1', **overrides):
     }
     fields.update(overrides)
     return ClientMapping.objects.create(**fields)
+
+
+def make_workspace(client=None, api_key=WORKSPACE_KEY, **overrides):
+    """A client with their own Retell workspace: the only way a call can reach us."""
+    return RetellWorkspace.objects.create(
+        client=client or make_client(),
+        api_key=api_key,
+        workspace_name='Cool Breeze HVAC',
+        **overrides,
+    )
 
 
 def call_payload(**overrides):
@@ -45,18 +67,69 @@ def call_payload(**overrides):
     return call
 
 
-def test_matches_by_agent_id():
-    client = make_client()
+# --- whose call it is ------------------------------------------------------------------------
 
-    store_call(call_payload(to_number='+19999999999'))
 
-    assert RetellCall.objects.get(call_id='call1').client == client
+def test_the_call_belongs_to_the_workspace_it_came_from():
+    workspace = make_workspace()
+
+    store_workspace_call(workspace, call_payload())
+
+    assert RetellCall.objects.get(call_id='call1').client == workspace.client
+
+
+def test_nothing_about_the_call_can_send_it_to_another_client():
+    """Numbers and agents are not consulted at all: the workspace is the whole answer."""
+    workspace = make_workspace()
+    other = make_client('loc2', client_name='Branwynn', retell_agent_ids=['agent_other'])
+
+    store_workspace_call(
+        workspace,
+        call_payload(agent_id='agent_other', to_number='+19999999999'),
+    )
+
+    assert RetellCall.objects.get(call_id='call1').client == workspace.client
+    assert other.calls.count() == 0
+
+
+def test_an_unknown_agent_is_kept_and_learned_rather_than_refused():
+    """The GHL team adding an agent must not cost the client that agent's first calls."""
+    workspace = make_workspace()
+
+    store_workspace_call(workspace, call_payload(agent_id='agent_new'))
+
+    call = RetellCall.objects.get(call_id='call1')
+    assert call.client == workspace.client
+    assert call.agent_id == 'agent_new'
+    workspace.client.refresh_from_db()
+    assert workspace.client.retell_agent_ids == ['agent1', 'agent_new']
+
+
+def test_a_known_agent_does_not_grow_the_list():
+    workspace = make_workspace()
+
+    store_workspace_call(workspace, call_payload())
+
+    workspace.client.refresh_from_db()
+    assert workspace.client.retell_agent_ids == ['agent1']
+
+
+def test_a_call_for_a_client_whose_billing_is_paused_is_still_recorded():
+    """`active` decides whether they are billed, not whether their calls are kept."""
+    workspace = make_workspace(make_client(active=False))
+
+    store_workspace_call(workspace, call_payload())
+
+    assert RetellCall.objects.get(call_id='call1').client == workspace.client
+
+
+# --- what gets stored ------------------------------------------------------------------------
 
 
 def test_stores_the_call_fields():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload())
+    store_workspace_call(workspace, call_payload())
 
     call = RetellCall.objects.get(call_id='call1')
     assert call.duration_ms == 15791
@@ -67,101 +140,31 @@ def test_stores_the_call_fields():
     assert call.ended_at == datetime(2024, 5, 2, 0, 8, 11, 736000, tzinfo=UTC)
 
 
-def test_inbound_matches_on_the_dialled_number():
-    client = make_client(retell_agent_ids=[])
-
-    store_call(call_payload(direction='inbound', to_number='+12137771234'))
-
-    assert RetellCall.objects.get(call_id='call1').client == client
-
-
-def test_outbound_matches_on_the_calling_number():
-    client = make_client(retell_agent_ids=[])
-
-    store_call(
-        call_payload(direction='outbound', from_number='+12137771234', to_number='+15550000001')
-    )
-
-    assert RetellCall.objects.get(call_id='call1').client == client
-
-
-def test_number_match_ignores_formatting():
-    client = make_client(retell_agent_ids=[], phone_numbers=['+1 (213) 777-1234'])
-
-    store_call(call_payload(agent_id='unmapped'))
-
-    assert RetellCall.objects.get(call_id='call1').client == client
-
-
-def test_agent_match_wins_over_a_number_match():
-    by_number = make_client('loc1', retell_agent_ids=[], phone_numbers=['+12137771234'])
-    by_agent = make_client('loc2', client_name='Branwynn', retell_agent_ids=['agent1'])
-
-    store_call(call_payload())
-
-    assert RetellCall.objects.get(call_id='call1').client == by_agent
-    assert by_number.calls.count() == 0
-
-
-def test_unmatched_call_is_stored_as_unassigned():
-    make_client()
-
-    store_call(call_payload(agent_id='other-agent', to_number='+19999999999'))
-
-    assert not RetellCall.objects.exists()
-    unassigned = UnassignedCall.objects.get(call_id='call1')
-    assert unassigned.agent_id == 'other-agent'
-    assert unassigned.duration_ms == 15791
-    assert unassigned.retell_cost_cents == 42
-
-
-def test_inactive_client_does_not_match():
-    make_client(active=False)
-
-    store_call(call_payload())
-
-    assert UnassignedCall.objects.filter(call_id='call1').exists()
-
-
-def test_web_call_without_numbers_is_unassigned():
-    make_client(retell_agent_ids=[])
-
-    store_call({'call_id': 'call1', 'call_type': 'web_call', 'call_status': 'ended'})
-
-    assert UnassignedCall.objects.filter(call_id='call1').exists()
-
-
 def test_duplicate_webhook_is_ignored():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload())
-    store_call(call_payload(duration_ms=999))
+    store_workspace_call(workspace, call_payload())
+    store_workspace_call(workspace, call_payload(duration_ms=999))
 
     call = RetellCall.objects.get()
     assert call.duration_ms == 15791
 
 
-def test_duplicate_of_an_unassigned_call_is_ignored():
-    store_call(call_payload())
-    store_call(call_payload())
-
-    assert UnassignedCall.objects.count() == 1
-    assert not RetellCall.objects.exists()
-
-
 def test_call_without_an_id_is_ignored():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload(call_id=None))
+    store_workspace_call(workspace, call_payload(call_id=None))
 
     assert not RetellCall.objects.exists()
-    assert not UnassignedCall.objects.exists()
+
+
+# --- whether it can be billed ------------------------------------------------------------------
 
 
 def test_a_complete_call_is_billable_with_no_reason():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload())
+    store_workspace_call(workspace, call_payload())
 
     call = RetellCall.objects.get()
     assert call.billing_status == BILLABLE
@@ -169,11 +172,11 @@ def test_a_complete_call_is_billable_with_no_reason():
 
 
 def test_a_duration_in_seconds_is_stored_as_milliseconds():
-    make_client()
+    workspace = make_workspace()
 
     payload = call_payload()
     del payload['duration_ms']  # leaves call_cost.total_duration_seconds = 15.8
-    store_call(payload)
+    store_workspace_call(workspace, payload)
 
     call = RetellCall.objects.get()
     assert call.duration_ms == 15_800
@@ -181,23 +184,23 @@ def test_a_duration_in_seconds_is_stored_as_milliseconds():
 
 
 def test_a_top_level_seconds_duration_is_stored_as_milliseconds():
-    make_client()
+    workspace = make_workspace()
 
     payload = call_payload(duration_seconds=12)
     del payload['duration_ms']
     del payload['call_cost']
-    store_call(payload)
+    store_workspace_call(workspace, payload)
 
     assert RetellCall.objects.get().duration_ms == 12_000
 
 
 def test_a_call_without_a_duration_is_kept_but_unbillable():
-    make_client()
+    workspace = make_workspace()
 
     payload = call_payload()
     del payload['duration_ms']
     del payload['call_cost']
-    store_call(payload)
+    store_workspace_call(workspace, payload)
 
     call = RetellCall.objects.get()
     assert call.duration_ms is None
@@ -208,9 +211,9 @@ def test_a_call_without_a_duration_is_kept_but_unbillable():
 
 
 def test_a_call_that_has_not_ended_is_unbillable():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload(call_status='ongoing'))
+    store_workspace_call(workspace, call_payload(call_status='ongoing'))
 
     call = RetellCall.objects.get()
     assert call.billing_status == UNBILLABLE
@@ -218,43 +221,35 @@ def test_a_call_that_has_not_ended_is_unbillable():
 
 
 def test_a_call_with_no_status_at_all_is_unbillable():
-    make_client()
+    workspace = make_workspace()
 
-    store_call(call_payload(call_status=None))
+    store_workspace_call(workspace, call_payload(call_status=None))
 
     assert RetellCall.objects.get().unbillable_reason == 'Call status is missing, not ended.'
 
 
 def test_a_call_without_a_start_time_is_unbillable():
-    make_client()
+    workspace = make_workspace()
 
     payload = call_payload()
     del payload['start_timestamp']
-    store_call(payload)
+    store_workspace_call(workspace, payload)
 
     call = RetellCall.objects.get()
     assert call.billing_status == UNBILLABLE
     assert 'start time' in call.unbillable_reason
 
 
-def test_an_unassigned_call_is_marked_the_same_way():
-    store_call(call_payload(call_status='error'))
-
-    unassigned = UnassignedCall.objects.get()
-    assert unassigned.billing_status == UNBILLABLE
-    assert unassigned.unbillable_reason == 'Call status is error, not ended.'
-
-
 def test_billable_minutes_per_second():
-    make_client()
-    store_call(call_payload(duration_ms=90_000))
+    workspace = make_workspace()
+    store_workspace_call(workspace, call_payload(duration_ms=90_000))
 
     assert RetellCall.objects.get().billable_minutes == Decimal('1.5')
 
 
 @override_settings(RETELL_ROUNDING='round_up_minute')
 def test_billable_minutes_rounded_up():
-    make_client()
-    store_call(call_payload(duration_ms=90_000))
+    workspace = make_workspace()
+    store_workspace_call(workspace, call_payload(duration_ms=90_000))
 
     assert RetellCall.objects.get().billable_minutes == Decimal(2)

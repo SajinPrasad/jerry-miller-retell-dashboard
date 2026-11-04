@@ -132,8 +132,9 @@ export default function AdminPage() {
     }
   }
 
-  // A mapping was just saved on the open client's page: re-read it, and the list behind it
-  // (an unmapped row there needs to flip to mapped), rather than guessing the result in place.
+  // A mapping or a Retell key was just saved on the open client's page: re-read it, and the
+  // list behind it (an unmapped row there needs to flip to mapped), rather than guessing the
+  // result in place. Saving a key can create the mapping, so both go through here.
   function handleMappingSaved(): void {
     if (!selected) return
     Promise.all([getClientDetail(selected, month), getClients(month)])
@@ -230,6 +231,7 @@ export default function AdminPage() {
         syncing={syncing}
         preview={false}
         onMappingSaved={handleMappingSaved}
+        onKeySaved={handleMappingSaved}
         onRatesSaved={handleRatesSaved}
       />
     </Shell>

@@ -38,7 +38,7 @@ export interface ClientSummary {
   mapped: boolean
   active: boolean | null
   billing_mode: string | null
-  /** Retell agents or phone numbers are mapped, so Retell calls can reach this client. */
+  /** This client has their own Retell workspace key, and it worked on the last check. */
   retell_connected: boolean
   twilio_connected: boolean
   rates: Rates | null
@@ -82,10 +82,46 @@ export interface RecentCall {
   bill_status: BillSummary['status'] | null
 }
 
-/** One agent on Jerry's Retell account, as the mapping editor's picker lists it. */
+/** One agent in a client's own Retell workspace. Discovered from their key, never typed. */
 export interface RetellAgent {
   agent_id: string
   agent_name: string
+}
+
+/**
+ * A client's own Retell workspace, or null while nobody has given them a key.
+ *
+ * The key itself is never here: only its last four characters, which are enough to tell two
+ * keys apart and no use to anyone who reads them.
+ */
+export interface RetellWorkspaceSummary {
+  /** What the GHL team called it in Retell. Typed, and only ever shown. */
+  workspace_name: string
+  key_last4: string
+  /** `key_invalid` means the nightly audit could not read the workspace with this key. */
+  status: 'active' | 'key_invalid'
+  /** When the key last proved it still works, ISO UTC, or null if it never has since saving. */
+  last_checked_at: string | null
+  /**
+   * When a signed webhook last arrived. **Null while the status is active is the one visible
+   * symptom of a key that is valid but is not the webhook-badged one** - Retell signs with that
+   * one key alone, so any other key tests green here and then fails every signature silently.
+   */
+  last_webhook_at: string | null
+  /** Absolute, built on the server from the route. This is what gets pasted into Retell. */
+  webhook_url: string
+}
+
+/** What a key test found: the agents in that workspace, for a person to recognise. */
+export interface RetellKeyTest {
+  agents: RetellAgent[]
+}
+
+/** What saving a key answers with. Carries the agents too, so the page need not re-ask. */
+export interface RetellWorkspaceSaved extends RetellKeyTest {
+  location_id: string
+  workspace_name: string
+  key_last4: string
 }
 
 /** One subaccount under Jerry's Twilio parent account. The parent itself is never listed. */
@@ -94,11 +130,15 @@ export interface TwilioSubaccount {
   friendly_name: string
 }
 
-/** What an agency admin can set on a client's mapping, and nothing else - rates, billing mode
- * and the billing email have their own rules and are not edited here. */
+/**
+ * What an agency admin can set on a client's mapping, and nothing else.
+ *
+ * Retell agents are not among them any more: they are whatever is in that client's own Retell
+ * workspace, discovered from their key. Rates, billing mode and the billing email have their
+ * own rules and are not edited here either.
+ */
 export interface MappingFields {
   twilio_subaccount_sid: string
-  retell_agent_ids: string[]
   phone_numbers: string[]
 }
 
@@ -168,9 +208,11 @@ export interface ClientDetail {
   card: CardStatus
   retell_agent_ids: string[]
   /** The same ids as `retell_agent_ids`, in the same order, each carrying the agent's own name
-   * off Retell - empty when Retell has none mapped to the id right now. Separate from
-   * `retell_agent_ids` because editing still works in plain ids. */
+   * read off the client's workspace - empty when Retell has no name for it right now, or when
+   * the client has no key to ask with. */
   retell_agents: RetellAgent[]
+  /** Null while this client is still without a Retell key of their own. */
+  retell_workspace: RetellWorkspaceSummary | null
   phone_numbers: string[]
   twilio_subaccount_sid: string
   rates: Rates | null

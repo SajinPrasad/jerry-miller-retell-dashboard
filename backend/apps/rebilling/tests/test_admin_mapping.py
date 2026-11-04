@@ -1,4 +1,8 @@
-"""PUT /api/rebilling/admin/clients/<location_id>/mapping/: agency admins set up a client."""
+"""PUT /api/rebilling/admin/clients/<location_id>/mapping/: a client's Twilio mapping.
+
+Retell is not here. A client's agents come from their own Retell workspace, and the key
+that reads it has its own endpoint - see `test_retell_key.py`.
+"""
 
 import pytest
 from django.urls import reverse
@@ -33,11 +37,7 @@ def test_sets_up_a_previously_unmapped_client(client):
     response = put_mapping(
         client,
         'loc-new',
-        {
-            'twilio_subaccount_sid': VALID_SID,
-            'retell_agent_ids': ['agent_1'],
-            'phone_numbers': ['+12135551234'],
-        },
+        {'twilio_subaccount_sid': VALID_SID, 'phone_numbers': ['+12135551234']},
     )
 
     assert response.status_code == 200
@@ -45,7 +45,6 @@ def test_sets_up_a_previously_unmapped_client(client):
     # The display name falls back to what Task 1's sync already knows; nothing here invents one.
     assert mapping.client_name == 'Polar Peak Heating'
     assert mapping.twilio_subaccount_sid == VALID_SID
-    assert mapping.retell_agent_ids == ['agent_1']
     assert mapping.phone_numbers == ['+12135551234']
 
 
@@ -54,15 +53,12 @@ def test_updates_an_existing_mapping_without_touching_its_name(client):
     make_location('loc1', 'Cool Breeze HVAC')
     make_client('loc1', client_name='Cool Breeze HVAC')
 
-    response = put_mapping(
-        client, 'loc1', {'twilio_subaccount_sid': OTHER_SID, 'retell_agent_ids': ['agent_2']}
-    )
+    response = put_mapping(client, 'loc1', {'twilio_subaccount_sid': OTHER_SID})
 
     assert response.status_code == 200
     mapping = ClientMapping.objects.get(location_id='loc1')
     assert mapping.client_name == 'Cool Breeze HVAC'
     assert mapping.twilio_subaccount_sid == OTHER_SID
-    assert mapping.retell_agent_ids == ['agent_2']
 
 
 def test_a_field_left_out_of_the_request_is_left_alone(client):
@@ -70,11 +66,23 @@ def test_a_field_left_out_of_the_request_is_left_alone(client):
     make_location('loc1', 'Cool Breeze HVAC')
     make_client('loc1', twilio_subaccount_sid=VALID_SID)
 
-    put_mapping(client, 'loc1', {'retell_agent_ids': ['agent_9']})
+    put_mapping(client, 'loc1', {'phone_numbers': ['+12135559999']})
 
     mapping = ClientMapping.objects.get(location_id='loc1')
     assert mapping.twilio_subaccount_sid == VALID_SID
-    assert mapping.retell_agent_ids == ['agent_9']
+    assert mapping.phone_numbers == ['+12135559999']
+
+
+def test_a_typed_agent_list_is_ignored_rather_than_honoured(client):
+    """The workspace is the authority on its own agents; a save must not contradict it."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_client('loc1', retell_agent_ids=['agent1'])
+
+    response = put_mapping(client, 'loc1', {'retell_agent_ids': ['agent_someone_else']})
+
+    assert response.status_code == 200
+    assert ClientMapping.objects.get(location_id='loc1').retell_agent_ids == ['agent1']
 
 
 def test_a_blank_twilio_sid_clears_it(client):
@@ -104,18 +112,13 @@ def test_the_stripe_customer_cannot_be_set_by_hand(client):
     assert ClientMapping.objects.get(location_id='loc1').stripe_customer_id == ''
 
 
-def test_agent_ids_and_phone_numbers_are_deduplicated(client):
+def test_phone_numbers_are_deduplicated(client):
     make_agency()
     make_location('loc1', 'Cool Breeze HVAC')
     make_client('loc1')
 
-    response = put_mapping(
-        client,
-        'loc1',
-        {'retell_agent_ids': ['agent_1', 'agent_1'], 'phone_numbers': ['+12135551234'] * 2},
-    )
+    response = put_mapping(client, 'loc1', {'phone_numbers': ['+12135551234'] * 2})
 
-    assert response.data['retell_agent_ids'] == ['agent_1']
     assert response.data['phone_numbers'] == ['+12135551234']
 
 
@@ -130,18 +133,6 @@ def test_a_malformed_twilio_sid_is_rejected(client):
 
     assert response.status_code == 400
     assert not ClientMapping.objects.filter(location_id='loc-new').exists()
-
-
-def test_a_blank_agent_id_is_rejected(client):
-    make_agency()
-    make_location('loc1', 'Cool Breeze HVAC')
-    make_client('loc1')
-
-    response = put_mapping(client, 'loc1', {'retell_agent_ids': ['agent_1', '  ']})
-
-    assert response.status_code == 400
-    # Nothing was half-applied: the existing agent list is untouched.
-    assert ClientMapping.objects.get(location_id='loc1').retell_agent_ids == ['agent1']
 
 
 def test_an_unusable_phone_number_is_rejected(client):

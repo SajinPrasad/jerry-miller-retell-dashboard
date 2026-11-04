@@ -6,8 +6,8 @@ import type {
 } from '../../types/admin'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
-import MappingEditor from './MappingEditor'
 import MonthPicker from './MonthPicker'
+import RetellKeyCard from './RetellKeyCard'
 import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
 
 /** The page chrome every state of the admin page shares: the title and who is viewing it. */
@@ -47,6 +47,8 @@ interface Props {
    * updates the bundled sample data. */
   preview: boolean
   onMappingSaved: (result: MappingResult) => void
+  /** Re-read everything: saving a Retell key is what sets a client up for billing at all. */
+  onKeySaved: () => void
   /** The client's whole refreshed detail, as the rates endpoint answered it. */
   onRatesSaved: (detail: Detail) => void
 }
@@ -68,6 +70,7 @@ export default function ClientBrowser({
   syncing,
   preview,
   onMappingSaved,
+  onKeySaved,
   onRatesSaved,
 }: Props) {
   const isSubAccount = shown?.scope === 'location'
@@ -93,12 +96,11 @@ export default function ClientBrowser({
           {openDetail ? (
             openDetail.mapped === false ? (
               canEdit ? (
-                <SetUpMapping
+                <SetUpClient
                   locationId={openDetail.location_id}
                   clientName={openDetail.client_name}
-                  twilioEnabled={openDetail.twilio_billing_enabled}
                   preview={preview}
-                  onSaved={onMappingSaved}
+                  onSaved={onKeySaved}
                 />
               ) : (
                 <UnmappedNotice clientName={openDetail.client_name} />
@@ -112,6 +114,7 @@ export default function ClientBrowser({
                 canEdit={canEdit}
                 preview={preview}
                 onMappingSaved={onMappingSaved}
+                onKeySaved={onKeySaved}
                 onRatesSaved={onRatesSaved}
               />
             )
@@ -149,39 +152,43 @@ export default function ClientBrowser({
   )
 }
 
-/** What an agency admin sees on a client's page before anyone has set it up for billing: the
- * mapping editor instead of usage, with nothing yet to read. */
-function SetUpMapping({
+/**
+ * What an agency admin sees on a client's page before anyone has set it up for billing.
+ *
+ * Setting a client up *is* giving them their Retell workspace key: it is what their calls
+ * arrive signed with, and saving it creates the client's billing record. Twilio, where it
+ * applies, is edited afterwards on the client's own page.
+ */
+function SetUpClient({
   locationId,
   clientName,
-  twilioEnabled,
   preview,
   onSaved,
 }: {
   locationId: string
   clientName: string
-  twilioEnabled: boolean
   preview: boolean
-  onSaved: (result: MappingResult) => void
+  onSaved: () => void
 }) {
   return (
-    <section className="card">
-      <h2>{clientName || 'This client'}</h2>
-      <p className="muted small">
-        {twilioEnabled
-          ? 'Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to start tracking usage.'
-          : 'Not set up for billing yet. Add its Retell agents to start tracking usage.'}
-      </p>
-      <MappingEditor
+    <>
+      <section className="card">
+        <h2>{clientName || 'This client'}</h2>
+        <p className="muted small">
+          Not set up for billing yet. Add this client&apos;s own Retell workspace key below to
+          start tracking their usage.
+        </p>
+      </section>
+      <RetellKeyCard
         locationId={locationId}
         clientName={clientName}
-        initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
-        agentNames={[]}
-        twilioEnabled={twilioEnabled}
+        workspace={null}
+        agents={[]}
+        canEdit
         preview={preview}
         onSaved={onSaved}
       />
-    </section>
+    </>
   )
 }
 

@@ -111,6 +111,13 @@ function ClientRow({
             Paused
           </span>
         )}
+        {!client.retell_connected && (
+          // Said out loud rather than left to the tooltip: a client with no working Retell
+          // key records no calls at all, which is a zero bill nobody would question.
+          <span className="pill warn" title="No working Retell workspace key">
+            No key
+          </span>
+        )}
         {usage.unbillable_calls > 0 && (
           <span className="pill warn" title="Calls that cannot be billed">
             {usage.unbillable_calls} unbillable
@@ -125,10 +132,10 @@ function ClientRow({
  * the Retell mapping is billed here, so naming Twilio would describe something nobody charges. */
 function mappingDetail(client: ClientSummary, twilioEnabled: boolean): string {
   if (!twilioEnabled) {
-    return client.retell_connected ? 'Retell AI mapped' : 'No Retell agents mapped'
+    return client.retell_connected ? 'Retell AI mapped' : 'No working Retell key'
   }
   if (client.retell_connected && client.twilio_connected) return 'Retell AI & Twilio mapped'
   if (client.retell_connected) return 'Retell AI mapped only'
-  if (client.twilio_connected) return 'Twilio mapped only'
-  return 'No Retell agents or Twilio subaccount mapped'
+  if (client.twilio_connected) return 'Twilio mapped only, no working Retell key'
+  return 'No Retell key or Twilio subaccount'
 }

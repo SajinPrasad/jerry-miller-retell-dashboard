@@ -25,6 +25,7 @@ import type {
   RateFields,
   RecentCall,
   RetellAgent,
+  RetellWorkspaceSummary,
   SsoSession,
   TwilioDay,
   TwilioSubaccount,
@@ -46,6 +47,13 @@ interface Spec {
   location_id: string
   client_name: string
   agents: string[]
+  /** The last four of this client's Retell workspace key. Absent means they have none yet,
+   * which is the state the page shows as "No key". */
+  key_last4?: string
+  /** Set on the sample client whose key Retell last refused, so the preview shows that too. */
+  key_invalid?: boolean
+  /** Absent on the sample client who is in the badge trap: active, and never heard from. */
+  last_webhook_hours_ago?: number
   numbers: string[]
   twilio_sid: string
   /** Read-only on the real page too: taken from the GHL sub-account owner, matched in Stripe. */
@@ -86,6 +94,8 @@ const SPECS: Spec[] = [
     location_id: 'demo_cool_breeze',
     client_name: 'Cool Breeze HVAC',
     agents: ['agent_cool_breeze'],
+    key_last4: '3a9f',
+    last_webhook_hours_ago: 1,
     numbers: ['+12137771234'],
     twilio_sid: 'ACdemocoolbreeze0000000000000001',
     owner_name: 'Dana Reyes',
@@ -110,6 +120,9 @@ const SPECS: Spec[] = [
     location_id: 'demo_branwynn',
     client_name: 'Branwynn Destinations',
     agents: ['agent_branwynn'],
+    // Saved, green, and silent: the sample client holding the wrong key of the right
+    // workspace. Nothing but the missing webhook can show it.
+    key_last4: 'b71c',
     numbers: ['+19545550111', '+18005550199'],
     twilio_sid: '',
     owner_name: 'Imogen Vale',
@@ -132,6 +145,9 @@ const SPECS: Spec[] = [
     location_id: 'demo_polar_peak',
     client_name: 'Polar Peak Heating & Air',
     agents: ['agent_polar_peak'],
+    key_last4: '55d2',
+    key_invalid: true,
+    last_webhook_hours_ago: 90,
     numbers: ['+16025550144'],
     twilio_sid: 'ACdemopolarpeak00000000000000002',
     owner_name: 'Marcus Hale',
@@ -218,6 +234,24 @@ export function resetPreviewMappings(): void {
   previewMappings.clear()
 }
 
+// And the same for a Retell workspace key. The preview never reaches Retell, so "saving" one
+// records the last four here and nothing leaves the browser - the key itself is not kept at
+// all, which is also what the real page does with it.
+const previewKeys = new Map<string, { key_last4: string; workspace_name: string }>()
+
+/** Stands in for `saveRetellKey` in the preview. */
+export function savePreviewRetellKey(
+  locationId: string,
+  apiKey: string,
+  workspaceName: string,
+): void {
+  previewKeys.set(locationId, { key_last4: apiKey.slice(-4), workspace_name: workspaceName })
+}
+
+export function resetPreviewKeys(): void {
+  previewKeys.clear()
+}
+
 // The same, for rates. Held here rather than in React state for the same reason, and never
 // sent anywhere - the standalone preview never calls the rates endpoint either.
 const previewRates = new Map<string, RateFields>()
@@ -277,26 +311,48 @@ function cardFor(spec: Spec | undefined): CardStatus {
   }
 }
 
+/**
+ * What the preview shows about one sample client's Retell workspace, or null for one that has
+ * no key yet. A key "saved" in the preview makes a workspace appear, the same way the real
+ * save does.
+ */
+function workspaceFor(
+  locationId: string,
+  spec: Spec | undefined,
+  clientName: string,
+): RetellWorkspaceSummary | null {
+  const saved = previewKeys.get(locationId)
+  if (!saved && !spec?.key_last4) return null
+  const hoursAgo = saved ? 0 : spec?.last_webhook_hours_ago
+  return {
+    workspace_name: saved?.workspace_name || clientName,
+    key_last4: saved?.key_last4 ?? spec?.key_last4 ?? '',
+    // A key just saved in the preview has only ever been checked, never heard from.
+    status: !saved && spec?.key_invalid ? 'key_invalid' : 'active',
+    last_checked_at: new Date().toISOString(),
+    last_webhook_at:
+      hoursAgo === undefined || saved
+        ? null
+        : new Date(Date.now() - hoursAgo * 3_600_000).toISOString(),
+    webhook_url: `https://surpro.example.com/api/rebilling/webhooks/retell/${locationId}/`,
+  }
+}
+
 /** `spec` with any preview edit to its mapping applied. Everything else - rates, call volume -
  * is untouched: the editor only ever writes the three mapping fields. */
 function withPreviewMapping(spec: Spec): Spec {
   const edit = previewMappings.get(spec.location_id)
   if (!edit) return spec
-  return {
-    ...spec,
-    agents: edit.retell_agent_ids,
-    numbers: edit.phone_numbers,
-    twilio_sid: edit.twilio_subaccount_sid,
-  }
+  return { ...spec, numbers: edit.phone_numbers, twilio_sid: edit.twilio_subaccount_sid }
 }
 
 /**
- * What the mapping editor's pickers offer in the preview, in place of a live call to Retell.
+ * What a key test finds in the preview, in place of a live call to Retell.
  *
- * The agents the sample clients already use, plus a spare apiece, so the unmapped sample client
- * can be set up here the same way a real one is.
+ * The agents the sample clients already use, plus a spare apiece - enough for the "check these
+ * belong to this client" step to read like the real one.
  */
-export function demoRetellAgents(): RetellAgent[] {
+export function previewRetellAgents(): RetellAgent[] {
   return [
     ...SPECS.flatMap((spec) =>
       spec.agents.map((agent_id) => ({ agent_id, agent_name: `${spec.client_name} — main line` })),
@@ -309,7 +365,7 @@ export function demoRetellAgents(): RetellAgent[] {
 /** The mapped agent ids, each carrying its own name - the same shape the real backend resolves
  * them to, so the preview's Mapping card shows a name rather than an id for the same reason. */
 function agentsWithNames(agentIds: string[]): RetellAgent[] {
-  const names = new Map(demoRetellAgents().map((agent) => [agent.agent_id, agent.agent_name]))
+  const names = new Map(previewRetellAgents().map((agent) => [agent.agent_id, agent.agent_name]))
   return agentIds.map((agent_id) => ({ agent_id, agent_name: names.get(agent_id) ?? '' }))
 }
 
@@ -340,17 +396,16 @@ const EMPTY_USAGE: UsageSummary = {
   twilio_stale: false,
 }
 
-/** The sample unmapped client, with a preview edit applied once an admin has set it up. */
+/** The sample unmapped client, once a preview key has set them up. */
 function unmappedOrSetUp(): ClientSummary {
-  const edit = previewMappings.get(UNMAPPED.location_id)
-  if (!edit) return UNMAPPED
+  if (!previewKeys.has(UNMAPPED.location_id)) return UNMAPPED
   return {
     ...UNMAPPED,
     mapped: true,
     active: true,
     billing_mode: 'auto_charge',
-    retell_connected: edit.retell_agent_ids.length > 0,
-    twilio_connected: Boolean(edit.twilio_subaccount_sid),
+    retell_connected: true,
+    twilio_connected: Boolean(previewMappings.get(UNMAPPED.location_id)?.twilio_subaccount_sid),
     rates: null,
     usage: EMPTY_USAGE,
   }
@@ -370,8 +425,8 @@ export function demoClients(month: string): ClientsResponse {
 
 export function demoDetail(locationId: string, month: string): ClientDetailResult | null {
   if (locationId === UNMAPPED.location_id) {
-    const edit = previewMappings.get(locationId)
-    if (!edit) {
+    // A key is what sets a client up: until one is saved there is no client to show.
+    if (!previewKeys.has(locationId)) {
       return {
         month,
         location_id: locationId,
@@ -380,6 +435,8 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
         twilio_billing_enabled: TWILIO_BILLING_ENABLED,
       }
     }
+    const edit = previewMappings.get(locationId)
+    const discovered = previewRetellAgents().map((agent) => agent.agent_id)
     return {
       month,
       location_id: locationId,
@@ -388,10 +445,11 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       twilio_billing_enabled: TWILIO_BILLING_ENABLED,
       active: true,
       billing_mode: 'auto_charge',
-      retell_agent_ids: edit.retell_agent_ids,
-      retell_agents: agentsWithNames(edit.retell_agent_ids),
-      phone_numbers: edit.phone_numbers,
-      twilio_subaccount_sid: edit.twilio_subaccount_sid,
+      retell_agent_ids: discovered,
+      retell_agents: agentsWithNames(discovered),
+      retell_workspace: workspaceFor(locationId, undefined, UNMAPPED.client_name),
+      phone_numbers: edit?.phone_numbers ?? [],
+      twilio_subaccount_sid: edit?.twilio_subaccount_sid ?? '',
       owner_name: 'Priya Nandakumar',
       billing_email: 'priya@summitair.test',
       stripe_customer_id: '',
@@ -424,6 +482,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     billing_mode: 'auto_charge',
     retell_agent_ids: spec.agents,
     retell_agents: agentsWithNames(spec.agents),
+    retell_workspace: workspaceFor(spec.location_id, spec, spec.client_name),
     phone_numbers: spec.numbers,
     twilio_subaccount_sid: spec.twilio_sid,
     owner_name: spec.owner_name,
