@@ -56,7 +56,8 @@ behind `TWILIO_BILLING_ENABLED`.
 **Nothing in Phase 7 or 8 has run against live GoHighLevel or Stripe.** Every call is mocked. The
 contact search and update shapes come from GHL's published v3 spec, not from a live call — §17 has
 what to check first. Both phases now wait on the same thing: the two field ids, and a
-re-authorisation for `contacts.write` (§17.1b).
+re-authorisation for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO
+bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
@@ -1019,6 +1020,19 @@ These cannot be answered from the docs.
 - Who receives **alert emails**? (Phase 6.)
 - If SMS ever comes into scope: does Twilio's `usage` count messages or **segments**?
 
+**Retell multi-location architecture (answered):**
+
+Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one App per sub-account, one agent per sub-account**, all provisioned by script. Attribution (the `agent_id` → `ClientMapping.retell_agent_ids` match) is untouched.
+
+- **Multiple concurrent connections, same provider:** Yes. The Integrations page's Available tab shows each provider with an "Add Account" button that works after connecting once. The underlying API is `/create-app` (creates a new app with its own `app_id`), `/list-apps`, `/update-app`, `/test-app-auth` — all returning distinct connections. A connection is scoped to one GHL Location ID, with its own Private Integration Token.
+- **Per-provider limit:** 20 apps per provider by default. At 50+ sub-accounts, request a custom limit from Retell before collecting tokens.
+- **Tool binding:** A tool in an agent is bound to one specific connection at config time (field `app_id`). Multiple tools in one agent can use different connections. Multiple agents can use the same connection.
+- **Workspace isolation (reject):** Retell offers workspaces, but they are hard-isolated: separate API keys, agents, phone numbers, and billing. This breaks our model — `services.py` pulls every call through `/v3/list-calls` with one `RETELL_API_KEY`, and `retell_cost_cents` is the basis of rebilling. Fifty workspaces = fifty keys, fifty audit passes, and costs split across fifty balances.
+- **One shared agent with dynamic variables (reject for this):** Tools bind to connections at config time, not call time. The calendar can be chosen mid-call, but the CRM connection cannot. This breaks attribution (every call carries the same `agent_id`, so `match_client()` returns the first mapping and bills one client for everyone).
+- **Contact sync limit (real constraint):** Only one CRM connection per workspace can drive contact sync at a time. Retell's native sync can serve one sub-account; the rest must use the per-client webhook path (custom GHL workflow → webhook to this app) instead. Integration tools (create opportunity, book calendar) work on every connection regardless.
+- **Private Integration Tokens:** No API exists to mint them. Each sub-account's token must be created by hand: Settings → Private Integrations → Create new Integration, scopes (Contacts, Opportunities, Custom Fields, Calendar), copy once. Collect all 50 at once, then script the rest.
+- **Verification before scaling:** (1) Call `GET /list-app-templates` to get the exact provider string for GoHighLevel. (2) Create a second app via `POST /create-app` with a different Location ID. (3) Both should appear in `GET /list-apps` with distinct `app_id` and `tenant_id`, both `connection_status: "connected"`. If the second call overwrites the first or a second row doesn't appear, it is genuinely 1:1 and this whole plan needs rethinking.
+
 ---
 
 ## 16. Known gaps and risks
@@ -1068,6 +1082,126 @@ These cannot be answered from the docs.
   own URL, not only GHL's outer page. A proxy or CDN in front may also cache `index.html`.
 - If a build fails partway, `dist/` can keep files from the previous build. Check the timestamps of the files under
   `dist/assets/` after every build.
+
+### 17.1a SSO bridge in Agency Custom JavaScript
+
+The embedded billing dashboard runs in a sidebar iframe and asks its parent window for the encrypted
+GHL session with a `REQUEST_USER_DATA` postMessage. GHL answers this for native Custom Pages, but
+not for sidebar menu links, so the bridge intercepts the message in the parent window, calls
+`window.exposeSessionDetails(APP_ID)`, and posts the encrypted session back to the iframe.
+
+**The script to paste:**
+
+Go to **GoHighLevel** → **Settings** → **Company** → **Whitelabel** → **Custom JavaScript** and paste
+the entire block below, replacing whatever is currently there (including any existing favicon code).
+
+```javascript
+<script>
+/* ---- Favicon (existing — unchanged) ------------------------------------- */
+var faviconURL = 'https://assets.cdn.filesafe.space/mDdwkGzgCnH4CYSQKWtQ/media/6adf8bf0f0438c2e5e0528b9.png' // Upload an image into a location funnel and then use the URL here.
+var link = document.querySelector("link[rel*='icon']") || document.createElement('link');
+link.type = 'image/x-icon';
+link.rel = 'shortcut icon';
+link.href = faviconURL
+document.getElementsByTagName('head')[0].appendChild(link);
+
+/* ---- SurPro Labs billing dashboard: SSO bridge -------------------------- */
+/* The dashboard runs in a sidebar iframe and asks its parent for the GHL     */
+/* session. GHL answers that question for marketplace Custom Pages but not    */
+/* for sidebar menu links, so we answer it here with the same message names.  */
+(function () {
+  'use strict';
+
+  var APP_ID = 'PASTE_GHL_APP_ID_HERE';                       // = GHL_APP_ID in backend/.env
+  var DASHBOARD_ORIGINS = ['https://dashboard.surprolabs.ai']; // add a staging origin here if needed
+
+  // Custom JS can be evaluated more than once as the app navigates; one listener is enough.
+  if (window.__surproSsoBridge) return;
+  window.__surproSsoBridge = true;
+
+  // The helper is defined by GHL's own bundle and may not exist the instant this runs.
+  // Bounded well under the dashboard's 10s wait so a slow load still gets an answer.
+  function helperReady() {
+    return new Promise(function (resolve, reject) {
+      var waited = 0;
+      (function check() {
+        if (typeof window.exposeSessionDetails === 'function') return resolve();
+        if (waited >= 8000) return reject(new Error('window.exposeSessionDetails is not available'));
+        waited += 250;
+        setTimeout(check, 250);
+      })();
+    });
+  }
+
+  window.addEventListener('message', function (event) {
+    try {
+      if (!event || !event.data || event.data.message !== 'REQUEST_USER_DATA') return;
+      // The session is a bearer credential, so it goes only to our own page.
+      if (DASHBOARD_ORIGINS.indexOf(event.origin) === -1) return;
+
+      var frame = event.source;
+      if (!frame) return;
+      var origin = event.origin;
+
+      function reply(payload) {
+        try {
+          frame.postMessage({ message: 'REQUEST_USER_DATA_RESPONSE', payload: payload }, origin);
+        } catch (err) {
+          console.error('[SurPro SSO] could not reply to the dashboard:', err);
+        }
+      }
+
+      helperReady()
+        .then(function () { return window.exposeSessionDetails(APP_ID); })
+        .then(function (session) {
+          // Documented to resolve to the encrypted string. Anything else is not a session.
+          reply(typeof session === 'string' && session ? session : null);
+        })
+        .catch(function (err) {
+          // Replying null makes the dashboard show its fallback at once instead of
+          // sitting on a 10-second timeout.
+          console.error('[SurPro SSO] could not read the session:', err);
+          reply(null);
+        });
+    } catch (err) {
+      console.error('[SurPro SSO] listener error:', err);
+    }
+  }, false);
+})();
+</script>
+```
+
+**What needs to change:**
+
+Replace the one placeholder `PASTE_GHL_APP_ID_HERE` with the marketplace app's id (the same string
+in `backend/.env` as `GHL_APP_ID`, also the id in the app's marketplace URL). No other edits needed
+unless the dashboard is hosted from a second domain, in which case add it to `DASHBOARD_ORIGINS`.
+
+**How it works:**
+
+- The script runs once per page load (the guard `if (window.__surproSsoBridge)` prevents re-registration).
+- When the iframe posts `{message: 'REQUEST_USER_DATA'}`, the listener checks the origin against
+  `DASHBOARD_ORIGINS` (the session is a bearer credential, so it only goes to our own domain).
+- It calls `window.exposeSessionDetails(APP_ID)`, waits up to 8 seconds for the GHL helper to
+  load if needed, and posts the encrypted result back to the iframe as
+  `{message: 'REQUEST_USER_DATA_RESPONSE', payload: <encrypted>}`.
+- If anything fails, it replies with `null`, which makes the dashboard show its fallback
+  immediately instead of waiting 10 seconds.
+- The favicon block is unchanged and remains functional.
+
+**Troubleshooting:**
+
+If the dashboard shows *"Open this page from inside GoHighLevel to see live billing data"* after
+the script is deployed:
+
+1. Open the page inside GHL, open the iframe's own URL in a new tab (check DevTools Network for the
+   iframe's `src`). If it loads there, the iframe is running.
+2. Open DevTools on the GHL page (where the iframe is embedded). Check the Console for
+   `[SurPro SSO]` messages. If none appear, the script is not loaded or the message listener never fired.
+3. Check the origin in DevTools. Post a message with `window.parent.postMessage({message: 'REQUEST_USER_DATA'}, '*')` and
+   look for a reply event. If there is no reply, the listener is not catching the message.
+4. If `window.exposeSessionDetails` exists in the console, call `window.exposeSessionDetails('PASTE_GHL_APP_ID_HERE')`
+   directly and check if it resolves to a non-empty string. If not, the app id is wrong or the app is not installed.
 
 ### 17.1b Before the card flow can work live (Phase 7)
 
@@ -1119,6 +1253,33 @@ Work outward from the data:
 2. Check the API directly, from the Django shell, for the same month: the detail's `recent_calls[].bill_status` should
    match the database.
 3. Check the served bundle (§17.1). If the API is right and the page is wrong, the browser or a cache is serving old JS.
+
+### 17.5 Retell provisioning for multi-location agencies (50+ GHL sub-accounts)
+
+**Before deploying at scale, verify the multi-location architecture (§15) by running the curl commands there.** Once confirmed, provisioning is scriptable end to end.
+
+**Manual steps — once, per sub-account:**
+
+1. In each GHL sub-account: Settings → Private Integrations → Create new Integration. Scopes: Contacts, Opportunities, Custom Fields, Calendar. Copy the token (shown once); save it.
+2. Collect all 50+ tokens and Location IDs in a CSV or similar.
+
+**Scriptable provisioning (with the Retell API):**
+
+3. For each client:
+   - `POST /create-app` with `provider`, `type: "crm"`, `tenant_id: <Location ID>`, `auth_config.api_key: <token>`, `name: "<client name>"`. Save the `app_id`.
+   - `POST /test-app-auth/{app_id}` to verify the credentials are live (check `connection_status` in response).
+   - `POST /create-agent` with the app's integration tools bound to that `app_id`, and capture the returned `agent_id`.
+   - Write the `agent_id` to `ClientMapping.retell_agent_ids` for that client via the mapping editor (existing flow).
+
+4. After provisioning: `GET /list-apps?limit=1000` to confirm all connections exist with `connection_status: "connected"`.
+
+**Known limits:**
+
+- **20 apps per provider:** Default limit in Retell. Request a custom higher limit if it blocks your client count.
+- **Contact sync is workspace-wide:** Only one CRM connection can drive Retell's native contact sync. Others use webhooks (custom GHL workflows posting call data back to this app).
+- **No workspace creation API:** Workspaces are dashboard-only and isolated; stick to one workspace (§15).
+
+**What changes in this app's code:** Nothing. The single `RETELL_API_KEY` pulls calls from all agents via `/v3/list-calls`, and attribution stays via `agent_id` → `ClientMapping.retell_agent_ids` matching.
 
 ---
 
@@ -1186,7 +1347,7 @@ Branch `feat/stripe-billing`, oldest first:
 | `654c927` | Twilio billing paused |
 | `a14e0a3` | Phase 7: the card on file, and asking for one |
 
-Uncommitted on top of `a14e0a3`: Phase 8, the rebilling status write (§0).
+Uncommitted on top of `a14e0a3`: Phase 8, the rebilling status write and SSO bridge (§0 and §17.1a).
 
 Other branches in the repository: `feat/ghl-billing-with-stripe-fallback` (the GHL one-off invoice attempt, with its own
 `0006` and the `ghl_invoice_*` columns), `main`, and a few older working branches (`frontend`, `maping`, `retell`, `stripe`).
