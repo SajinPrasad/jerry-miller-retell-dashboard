@@ -288,7 +288,17 @@ const REQUESTED: CardStatus = { ...NO_CARD, requested_at: `${THIS_MONTH}-10T14:2
 
 async function openClient(user: ReturnType<typeof userEvent.setup>, name = 'Cool Breeze HVAC') {
   await user.click(await screen.findByRole('button', { name }))
-  await screen.findByText('Retell workspace')
+  await screen.findByRole('tab', { name: 'Retell workspace' })
+}
+
+/**
+ * Switch the open client's page to its workspace tab.
+ *
+ * The key, the webhook URL and the agents live behind it: the page leads with the month's
+ * billing, and the one-off technical setup waits here.
+ */
+async function openWorkspace(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('tab', { name: 'Retell workspace' }))
 }
 
 describe('AdminPage', () => {
@@ -470,6 +480,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     // The agent's own name, not the raw Retell id behind it.
     expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
@@ -780,6 +791,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     expect(screen.getByText('••••3a9f')).toBeInTheDocument()
     expect(
@@ -796,6 +808,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     // The one instruction that cannot be enforced in code: any other key of the same
     // workspace passes the test below and then fails every webhook signature.
@@ -810,6 +823,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     expect(screen.getByText('No key')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Copy the webhook URL' })).not.toBeInTheDocument()
@@ -824,6 +838,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     expect(screen.getByText('Active')).toBeInTheDocument()
     expect(
@@ -842,6 +857,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     expect(screen.getByText('Key not working')).toBeInTheDocument()
     expect(screen.getByText(/Calls are not being recorded/)).toBeInTheDocument()
@@ -854,6 +870,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     await user.type(screen.getByLabelText('Retell workspace API key'), 'key_new_abcd')
     await user.click(screen.getByRole('button', { name: 'Test' }))
@@ -873,6 +890,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     expect(screen.getByRole('button', { name: 'Save key' })).toBeDisabled()
 
@@ -892,6 +910,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     const field = screen.getByLabelText('Retell workspace API key')
     await user.type(field, 'key_new_abcd')
@@ -912,6 +931,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     await user.type(screen.getByLabelText('Retell workspace API key'), 'key_new_abcd')
     await user.clear(screen.getByLabelText('Retell workspace name'))
@@ -935,6 +955,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openWorkspace(user)
 
     await user.type(screen.getByLabelText('Retell workspace API key'), 'key_wrong')
     await user.click(screen.getByRole('button', { name: 'Test' }))
@@ -949,9 +970,10 @@ describe('AdminPage', () => {
   it('shows a sub-account its workspace status and nothing it could change', async () => {
     parentAnswers()
     mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+    const user = userEvent.setup()
 
     render(<AdminPage />)
-    await screen.findByText('Retell workspace')
+    await openWorkspace(user)
 
     expect(screen.getByText('Active')).toBeInTheDocument()
     expect(screen.queryByLabelText('Retell workspace API key')).not.toBeInTheDocument()
@@ -1007,8 +1029,10 @@ describe('AdminPage', () => {
   it('shows a sub-account its mapped agents by name, same as the agency admin does', async () => {
     parentAnswers()
     mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+    const user = userEvent.setup()
 
     render(<AdminPage />)
+    await openWorkspace(user)
 
     expect(await screen.findByText('Cool Breeze front desk')).toBeInTheDocument()
     expect(screen.queryByText('agent_1')).not.toBeInTheDocument()
@@ -1893,18 +1917,21 @@ describe('AdminPage', () => {
         perMonth: pausedMonth,
         session: { ...agencySession, active_location: 'loc1', scope: 'location' },
       })
+      const user = userEvent.setup()
 
       render(<AdminPage />)
-      await screen.findByText('Retell workspace')
+      await screen.findByRole('tab', { name: 'Retell workspace' })
 
-      // The Retell card keeps the one thing that is billed here.
-      expect(screen.getByText('Agents')).toBeInTheDocument()
-      expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
       expect(screen.queryByText('Phone numbers')).not.toBeInTheDocument()
       expect(screen.queryByText('Twilio subaccount')).not.toBeInTheDocument()
       expect(screen.queryByText('+15551234567')).not.toBeInTheDocument()
       // And the read-only rates lose their call-minute row with it.
       expect(screen.queryByText('Call minute')).not.toBeInTheDocument()
+
+      // The workspace tab keeps the one thing that is billed here.
+      await openWorkspace(user)
+      expect(screen.getByText('Agents')).toBeInTheDocument()
+      expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
     })
 
     it('sends the stored call rate back unchanged when the field is hidden', async () => {

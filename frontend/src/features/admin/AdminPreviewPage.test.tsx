@@ -49,10 +49,12 @@ describe('AdminPreviewPage', () => {
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
 
+    expect(await screen.findByText('Rates')).toBeInTheDocument()
+
     // The agent's own name, not its raw Retell id.
-    expect(await screen.findByText('Polar Peak Heating & Air — main line')).toBeInTheDocument()
+    await user.click(screen.getByRole('tab', { name: 'Retell workspace' }))
+    expect(screen.getByText('Polar Peak Heating & Air — main line')).toBeInTheDocument()
     expect(screen.queryByText('agent_polar_peak')).not.toBeInTheDocument()
-    expect(screen.getByText('Rates')).toBeInTheDocument()
   })
 
   it('filters the preview by period, without calling the API', async () => {
@@ -88,7 +90,7 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
-    await screen.findByText('Retell workspace')
+    await screen.findByRole('tab', { name: 'Retell workspace' })
 
     // The sample data still carries this client's SID, its phone numbers and its daily Twilio
     // rows - the preview simply does not show them while rebilling is paused.
@@ -100,6 +102,7 @@ describe('AdminPreviewPage', () => {
     expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
     // Still the one thing an admin sets up here.
+    await user.click(screen.getByRole('tab', { name: 'Retell workspace' }))
     expect(screen.getByLabelText('Retell workspace API key')).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -205,6 +208,7 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+    await user.click(await screen.findByRole('tab', { name: 'Retell workspace' }))
 
     await user.type(screen.getByLabelText('Retell workspace API key'), 'key_sample')
     await user.click(screen.getByRole('button', { name: 'Test' }))
@@ -219,7 +223,7 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Branwynn Destinations' }))
-    await screen.findByText('Retell workspace')
+    await user.click(await screen.findByRole('tab', { name: 'Retell workspace' }))
 
     // Saved, green, and never heard from: the one failure nothing automatic can catch.
     expect(screen.getByText('Active')).toBeInTheDocument()
@@ -240,6 +244,7 @@ describe('AdminPreviewPage', () => {
 
     // The setup card is gone: it is a mapped client's page now, with the last four of the key
     // it was given and the agents its workspace turned out to hold.
+    await user.click(await screen.findByRole('tab', { name: 'Retell workspace' }))
     expect(await screen.findByText('••••9c40')).toBeInTheDocument()
     expect(
       screen.queryByText('Not set up for billing yet.', { exact: false }),

@@ -15,6 +15,8 @@ interface Props {
   canEdit: boolean
   /** The standalone preview never reaches the admin API or Retell. */
   preview: boolean
+  /** False inside the client page's own tab, where the tab is already the heading. */
+  heading?: boolean
   onSaved: () => void
 }
 
@@ -45,6 +47,7 @@ export default function RetellKeyCard({
   agents,
   canEdit,
   preview,
+  heading = true,
   onSaved,
 }: Props) {
   const [apiKey, setApiKey] = useState('')
@@ -91,111 +94,117 @@ export default function RetellKeyCard({
   }
 
   return (
-    <section className="card">
-      <h2>Retell workspace</h2>
-
-      <dl className="facts">
-        <dt>Status</dt>
-        <dd>
-          <StatusPill workspace={workspace} />
-          {workspace && <WorkspaceNote workspace={workspace} />}
-        </dd>
-        {workspace && (
-          <>
-            <dt>API key</dt>
-            <dd>
-              <code>{`••••${workspace.key_last4}`}</code>
-              {workspace.last_checked_at && (
-                <span className="muted small">
-                  {` Last checked ${formatDateTime(workspace.last_checked_at)} UTC.`}
-                </span>
-              )}
-            </dd>
-            {workspace.workspace_name && (
-              <>
-                <dt>Workspace</dt>
-                <dd>{workspace.workspace_name}</dd>
-              </>
-            )}
-            <dt>Webhook URL</dt>
-            <dd>
-              <CopyField value={workspace.webhook_url} label="Copy the webhook URL" />
-            </dd>
-          </>
-        )}
-        <dt>Agents</dt>
-        <dd>
-          {agents.length > 0 ? (
-            agents.map((agent) => agent.agent_name || agent.agent_id).join(', ')
-          ) : (
-            <span className="muted">
-              {workspace ? 'None in this workspace yet' : 'No key, so nothing to read'}
-            </span>
-          )}
-        </dd>
-      </dl>
+    <section className="card workspace-card">
+      <header className="ws-head">
+        {heading && <h2>Retell workspace</h2>}
+        <StatusPill workspace={workspace} />
+      </header>
+      {workspace ? (
+        <p className="muted small ws-status-note">
+          <WorkspaceNote workspace={workspace} />
+        </p>
+      ) : (
+        <p className="muted small ws-status-note">
+          Nothing is recorded for this client until their workspace key is saved.
+        </p>
+      )}
 
       {workspace && (
-        <p className="muted small">
-          Paste the webhook URL into this workspace in Retell, under{' '}
-          <strong>Settings → Webhooks</strong>. Agents are read from the workspace itself, not
-          set here.
-        </p>
+        <>
+          <div className="ws-grid">
+            <Field label="API key">
+              <code className="ws-key">{`••••${workspace.key_last4}`}</code>
+              {workspace.last_checked_at && (
+                <span className="muted small">
+                  {` checked ${formatDateTime(workspace.last_checked_at)} UTC`}
+                </span>
+              )}
+            </Field>
+            <Field label="Workspace">
+              {workspace.workspace_name || <span className="muted">Unnamed</span>}
+            </Field>
+          </div>
+
+          <Field label="Webhook URL" block>
+            <CopyField value={workspace.webhook_url} label="Copy the webhook URL" />
+            <p className="muted small ws-hint">
+              Paste this into this workspace in Retell under <strong>Settings → Webhooks</strong>.
+            </p>
+          </Field>
+        </>
       )}
 
+      <Field label="Agents" block>
+        {agents.length > 0 ? (
+          <ul className="chip-list">
+            {agents.map((agent) => (
+              <li className="chip static" key={agent.agent_id}>
+                {agent.agent_name || agent.agent_id}
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="muted small">
+            {workspace ? 'None in this workspace yet.' : 'No key, so nothing to read.'}
+          </p>
+        )}
+      </Field>
+
       {canEdit && (
-        <div className="key-editor">
-          <label className="key-field">
-            <span className="tile-label">{workspace ? 'Replace the key' : 'Workspace API key'}</span>
-            <input
-              type="password"
-              value={apiKey}
-              autoComplete="off"
-              placeholder="key_…"
-              aria-label="Retell workspace API key"
-              aria-describedby="retell-key-note"
-              onChange={(event) => {
-                setApiKey(event.target.value)
-                setFound(null)
-              }}
-            />
-          </label>
-          <label className="key-field">
-            <span className="tile-label">Workspace name</span>
-            <input
-              type="text"
-              value={workspaceName}
-              placeholder={clientName}
-              aria-label="Retell workspace name"
-              onChange={(event) => setWorkspaceName(event.target.value)}
-            />
-          </label>
-          <button
-            type="button"
-            className="button ghost"
-            onClick={handleTest}
-            disabled={!apiKey.trim() || busy !== null}
-          >
-            {busy === 'testing' ? 'Testing…' : 'Test'}
-          </button>
-          <button
-            type="button"
-            className="button"
-            onClick={handleSave}
-            disabled={found === null || busy !== null}
-          >
-            {busy === 'saving' ? 'Saving…' : 'Save key'}
-          </button>
+        <div className="ws-setup">
+          <div className="key-editor">
+            <label className="key-field">
+              <span className="field-label">
+                {workspace ? 'Replace the key' : 'Workspace API key'}
+              </span>
+              <input
+                type="password"
+                value={apiKey}
+                autoComplete="off"
+                placeholder="key_…"
+                aria-label="Retell workspace API key"
+                aria-describedby="retell-key-note"
+                onChange={(event) => {
+                  setApiKey(event.target.value)
+                  setFound(null)
+                }}
+              />
+            </label>
+            <label className="key-field">
+              <span className="field-label">Workspace name</span>
+              <input
+                type="text"
+                value={workspaceName}
+                placeholder={clientName}
+                aria-label="Retell workspace name"
+                onChange={(event) => setWorkspaceName(event.target.value)}
+              />
+            </label>
+            <div className="key-actions">
+              <button
+                type="button"
+                className="button ghost"
+                onClick={handleTest}
+                disabled={!apiKey.trim() || busy !== null}
+              >
+                {busy === 'testing' ? 'Testing…' : 'Test'}
+              </button>
+              <button
+                type="button"
+                className="button"
+                onClick={handleSave}
+                disabled={found === null || busy !== null}
+              >
+                {busy === 'saving' ? 'Saving…' : 'Save key'}
+              </button>
+            </div>
+          </div>
+          <p className="muted small" id="retell-key-note">
+            In Retell: <strong>Settings → API Keys</strong> —{' '}
+            <strong>copy the key with the webhook badge</strong>. Any other key tests fine here
+            and then rejects every call silently.
+          </p>
         </div>
-      )}
-
-      {canEdit && (
-        <p className="muted small" id="retell-key-note">
-          In Retell, open this client&apos;s workspace and go to{' '}
-          <strong>Settings → API Keys</strong> — <strong>copy the key with the webhook badge</strong>
-          . Retell signs that workspace&apos;s webhooks with that key and no other, so any other
-          key will test fine here and then silently reject every call.
-        </p>
       )}
 
       {found && (
@@ -207,8 +216,8 @@ export default function RetellKeyCard({
           </strong>{' '}
           {found.length > 0 && found.map((agent) => agent.agent_name || agent.agent_id).join(', ')}{' '}
           Check {found.length > 0 ? 'these belong' : 'this is the right workspace'} to{' '}
-          {clientName || 'this client'} before saving — another client&apos;s key would work here
-          too, and bill them for someone else&apos;s calls.
+          {clientName || 'this client'} before saving — another client&apos;s key bills them for
+          someone else&apos;s calls.
         </div>
       )}
 
@@ -218,6 +227,25 @@ export default function RetellKeyCard({
         </div>
       )}
     </section>
+  )
+}
+
+/** A labelled value, with the label as a quiet micro-caption above whatever it names. */
+function Field({
+  label,
+  block,
+  children,
+}: {
+  label: string
+  /** Full width, for things that are read or pasted rather than scanned in a pair. */
+  block?: boolean
+  children: React.ReactNode
+}) {
+  return (
+    <div className={block ? 'ws-field block' : 'ws-field'}>
+      <span className="field-label">{label}</span>
+      <div className="ws-value">{children}</div>
+    </div>
   )
 }
 
@@ -237,25 +265,17 @@ function StatusPill({ workspace }: { workspace: RetellWorkspaceSummary | null })
  */
 function WorkspaceNote({ workspace }: { workspace: RetellWorkspaceSummary }) {
   if (workspace.status === 'key_invalid') {
-    return (
-      <span className="muted">
-        {' '}
-        Retell would not accept this key on the last check. Calls are not being recorded.
-      </span>
-    )
+    return <>Retell refused this key on the last check. Calls are not being recorded.</>
   }
   if (!workspace.last_webhook_at) {
     return (
-      <span className="muted">
-        {' '}
-        No webhook has arrived from this workspace yet. If this client is taking calls, the saved
-        key is probably not the one with the webhook badge.
-      </span>
+      <>
+        No webhook has arrived yet. If this client is taking calls, the saved key is probably not
+        the one with the webhook badge.
+      </>
     )
   }
-  return (
-    <span className="muted">{` Last webhook ${formatDateTime(workspace.last_webhook_at)} UTC.`}</span>
-  )
+  return <>{`Last webhook ${formatDateTime(workspace.last_webhook_at)} UTC.`}</>
 }
 
 /** A value to be pasted somewhere else, with the one button that matters next to it. */
@@ -275,10 +295,32 @@ function CopyField({ value, label }: { value: string; label: string }) {
 
   return (
     <span className="copy-field">
-      <code>{value}</code>
-      <button type="button" className="button ghost" onClick={copy} aria-label={label}>
-        {copied ? 'Copied' : 'Copy'}
+      <code className="copy-value">{value}</code>
+      <button type="button" className="icon-button" onClick={copy} aria-label={label}>
+        {copied ? <CheckIcon /> : <ClipboardIcon />}
       </button>
+      {copied && (
+        <span className="copy-flag" role="status">
+          Copied
+        </span>
+      )}
     </span>
+  )
+}
+
+function ClipboardIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+      <rect x="9" y="9" width="11" height="12" rx="2" />
+      <path d="M5 15H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v1" />
+    </svg>
+  )
+}
+
+function CheckIcon() {
+  return (
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" focusable="false">
+      <path d="m4 12.5 5 5L20 6.5" />
+    </svg>
   )
 }

@@ -119,6 +119,10 @@ export default function ClientDetail({
   const [saved, setSaved] = useState<RateFields | null>(null)
   const [saving, setSaving] = useState(false)
   const [rateError, setRateError] = useState<string | null>(null)
+  // Which half of the page is open. Billing is what this page is opened for day to day; the
+  // workspace key is set once, so it waits behind its own tab rather than sitting between the
+  // figures and the calls they came from.
+  const [tab, setTab] = useState<'overview' | 'workspace'>('overview')
 
   const voiceRate = centsFromInput(voiceInput)
   // The rates endpoint requires both rates whatever is on screen - they share one `RateHistory`
@@ -171,279 +175,323 @@ export default function ClientDetail({
 
   return (
     <>
-      <section className="card">
-        <h2>{detail.client_name}</h2>
-        <p className="muted">
-          <code>{detail.location_id}</code>
-          {!detail.active && <span className="pill">Billing paused</span>}
-        </p>
+      {/* Day-to-day billing on one tab, the one-off technical setup on the other. */}
+      <div className="tabs" role="tablist" aria-label="Client sections">
+        <button
+          type="button"
+          role="tab"
+          id="tab-overview"
+          aria-selected={tab === 'overview'}
+          aria-controls="panel-overview"
+          className={tab === 'overview' ? 'tab active' : 'tab'}
+          onClick={() => setTab('overview')}
+        >
+          Overview &amp; billing
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-workspace"
+          aria-selected={tab === 'workspace'}
+          aria-controls="panel-workspace"
+          className={tab === 'workspace' ? 'tab active' : 'tab'}
+          onClick={() => setTab('workspace')}
+        >
+          Retell workspace
+        </button>
+      </div>
 
-        <div className="tiles">
-          <Tile label="AI minutes" value={formatMinutes(usage.ai_minutes)} />
-          {twilioEnabled && (
-            <Tile
-              label="Call minutes"
-              value={
-                detail.twilio_subaccount_sid || usage.has_twilio_usage
-                  ? formatMinutes(usage.call_minutes)
-                  : DASH
-              }
-            />
-          )}
-          <Tile
-            label={bill ? BILL_LABELS[bill.status] : 'Estimated'}
-            tone={bill ? BILL_TONES[bill.status] : undefined}
-            value={formatCents(headline)}
-            accent
-          />
-          <Tile label="Cost" value={formatCents(cost)} />
-          <Tile
-            label="Margin"
-            value={formatCents(marginCents(headline, usage.ai_cost_cents, callCost))}
+      {tab === 'workspace' ? (
+        <div role="tabpanel" id="panel-workspace" aria-labelledby="tab-workspace">
+          <RetellKeyCard
+            locationId={detail.location_id}
+            clientName={detail.client_name}
+            workspace={detail.retell_workspace}
+            agents={detail.retell_agents}
+            canEdit={canEdit}
+            preview={preview}
+            heading={false}
+            onSaved={onKeySaved}
           />
         </div>
-        <p className="muted small">
-          {bill ? (
-            <BillNote bill={bill} />
-          ) : adjusted ? (
-            <>
-              At the adjusted rates below, which are not saved yet. The billing run applies the
-              rate in effect on each call&apos;s own day.
-            </>
-          ) : (
-            <>
-              Estimated at the rate in effect now. The billing run applies the rate in effect on
-              each call&apos;s own day.
-            </>
-          )}
-        </p>
-        {bill?.failure_reason && (
-          // A retry is still on its way, so the reason is shown in the amber of a notice rather
-          // than the red of a failure.
-          <div className={bill.status === 'retrying' ? 'banner warn' : 'banner error'} role="alert">
-            {bill.failure_reason}
-          </div>
-        )}
-      </section>
+      ) : (
+        <div role="tabpanel" id="panel-overview" aria-labelledby="tab-overview">
+          <section className="card">
+            <h2>{detail.client_name}</h2>
+            <p className="muted">
+              <code>{detail.location_id}</code>
+              {!detail.active && <span className="pill">Billing paused</span>}
+            </p>
 
-      <section className="card">
-        <h2>Rates</h2>
-        {canEdit ? (
-          <>
-            <div className="rate-editor">
-              <RateField
-                label="AI minute"
-                value={voiceInput}
-                onChange={setVoiceInput}
-                describedBy="rate-note"
-              />
+            <div className="tiles">
+              <Tile label="AI minutes" value={formatMinutes(usage.ai_minutes)} />
               {twilioEnabled && (
-                <RateField
-                  label="Call minute"
-                  value={callInput}
-                  onChange={setCallInput}
-                  describedBy="rate-note"
+                <Tile
+                  label="Call minutes"
+                  value={
+                    detail.twilio_subaccount_sid || usage.has_twilio_usage
+                      ? formatMinutes(usage.call_minutes)
+                      : DASH
+                  }
                 />
               )}
-              <button
-                type="button"
-                className="button"
-                onClick={handleSaveRates}
-                disabled={saving}
-              >
-                {saving ? 'Saving…' : 'Save rates'}
-              </button>
-              <button type="button" className="button ghost" onClick={resetToDefaults}>
-                Reset to defaults
-              </button>
+              <Tile
+                label={bill ? BILL_LABELS[bill.status] : 'Estimated'}
+                tone={bill ? BILL_TONES[bill.status] : undefined}
+                value={formatCents(headline)}
+                accent
+              />
+              <Tile label="Cost" value={formatCents(cost)} />
+              <Tile
+                label="Margin"
+                value={formatCents(marginCents(headline, usage.ai_cost_cents, callCost))}
+              />
             </div>
-            {rateError && (
-              <div className="banner error" role="alert">
-                {rateError}
+            <p className="muted small">
+              {bill ? (
+                <BillNote bill={bill} />
+              ) : adjusted ? (
+                <>
+                  At the adjusted rates below, which are not saved yet. The billing run applies
+                  the rate in effect on each call&apos;s own day.
+                </>
+              ) : (
+                <>
+                  Estimated at the rate in effect now. The billing run applies the rate in effect
+                  on each call&apos;s own day.
+                </>
+              )}
+            </p>
+            {bill?.failure_reason && (
+              // A retry is still on its way, so the reason is shown in the amber of a notice
+              // rather than the red of a failure.
+              <div
+                className={bill.status === 'retrying' ? 'banner warn' : 'banner error'}
+                role="alert"
+              >
+                {bill.failure_reason}
               </div>
             )}
-          </>
-        ) : (
-          <dl className="facts">
-            <dt>AI minute</dt>
-            <dd>{rates ? formatRate(rates.voice_rate_cents) : <span className="muted">Not set</span>}</dd>
-            {twilioEnabled && (
+          </section>
+
+          <BillingContact detail={detail} canEdit={canEdit} preview={preview} />
+
+          <section className="card">
+            <h2>Recent AI calls</h2>
+            {detail.recent_calls.length > 0 ? (
               <>
-                <dt>Call minute</dt>
-                <dd>
-                  {rates ? formatRate(rates.call_rate_cents) : <span className="muted">Not set</span>}
-                </dd>
+                <p className="muted small">
+                  Times are UTC, the same day the call is billed under. Cost is what Retell
+                  charges for the call.
+                </p>
+                <table className="calls-table">
+                  <thead>
+                    <tr>
+                      <th>Date &amp; time</th>
+                      <th>Phone number</th>
+                      <th>Direction</th>
+                      <th className="num">Duration</th>
+                      <th className="num">Cost</th>
+                      <th className="num">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {detail.recent_calls.map((call) => (
+                      <tr key={call.call_id}>
+                        <td>{formatDateTime(call.started_at)}</td>
+                        <td>{formatPhone(customerNumber(call))}</td>
+                        <td className="direction">{call.direction || DASH}</td>
+                        <td className="num">{formatMinutes(durationMinutes(call))}</td>
+                        <td className="num muted">{formatCents(call.retell_cost_cents)}</td>
+                        <td className="num">
+                          {call.billing_status === 'billable' ? (
+                            <span className="pill ok">{billableLabel(call)}</span>
+                          ) : (
+                            <span className="pill warn" title={call.unbillable_reason}>
+                              {unbillableLabel(call)}
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </>
-            )}
-          </dl>
-        )}
-        <p className="muted small" id="rate-note">
-          {rates ? (
-            <>In effect since {formatDate(rates.start_date)}. </>
-          ) : (
-            <>No rate has been set for this client yet. </>
-          )}
-          {canEdit &&
-            (adjusted ? (
-              <>Changing a rate only re-estimates this page until it is saved.</>
             ) : (
+              <p className="muted">No AI calls recorded this month.</p>
+            )}
+          </section>
+
+          <section className="card">
+            <h2>Rates</h2>
+            {canEdit ? (
               <>
-                A saved rate starts today. Months that have already ended keep the rate that was
-                in effect then.
+                <div className="rate-editor">
+                  <RateField
+                    label="AI minute"
+                    value={voiceInput}
+                    onChange={setVoiceInput}
+                    describedBy="rate-note"
+                  />
+                  {twilioEnabled && (
+                    <RateField
+                      label="Call minute"
+                      value={callInput}
+                      onChange={setCallInput}
+                      describedBy="rate-note"
+                    />
+                  )}
+                  <button
+                    type="button"
+                    className="button"
+                    onClick={handleSaveRates}
+                    disabled={saving}
+                  >
+                    {saving ? 'Saving…' : 'Save rates'}
+                  </button>
+                  <button type="button" className="button ghost" onClick={resetToDefaults}>
+                    Reset to defaults
+                  </button>
+                </div>
+                {rateError && (
+                  <div className="banner error" role="alert">
+                    {rateError}
+                  </div>
+                )}
               </>
-            ))}
-        </p>
-
-        {detail.rate_history.length > 1 && (
-          <table className="rate-history-table">
-            <thead>
-              <tr>
-                <th>From</th>
-                <th className="num">AI minute</th>
-                {twilioEnabled && <th className="num">Call minute</th>}
-              </tr>
-            </thead>
-            <tbody>
-              {detail.rate_history.map((rate) => (
-                <tr key={rate.start_date}>
-                  <td>{formatDate(rate.start_date)}</td>
-                  <td className="num">{formatRate(rate.voice_rate_cents)}</td>
-                  {twilioEnabled && <td className="num">{formatRate(rate.call_rate_cents)}</td>}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-      </section>
-
-      <RetellKeyCard
-        locationId={detail.location_id}
-        clientName={detail.client_name}
-        workspace={detail.retell_workspace}
-        agents={detail.retell_agents}
-        canEdit={canEdit}
-        preview={preview}
-        onSaved={onKeySaved}
-      />
-
-      {/* Everything Twilio is hidden while rebilling is paused, and with Retell moved to its
-          own card there is nothing else left in here - so the card goes rather than sitting
-          empty. It comes back whole the moment the setting does. */}
-      {twilioEnabled && (
-        <section className="card">
-          <h2>Twilio</h2>
-          {canEdit ? (
-            <MappingEditor
-              locationId={detail.location_id}
-              clientName={detail.client_name}
-              initial={{
-                twilio_subaccount_sid: detail.twilio_subaccount_sid,
-                phone_numbers: detail.phone_numbers,
-              }}
-              preview={preview}
-              onSaved={onMappingSaved}
-            />
-          ) : (
-            <dl className="facts">
-              <dt>Phone numbers</dt>
-              <dd>
-                {detail.phone_numbers.length > 0 ? (
-                  detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
-                ) : (
-                  <span className="muted">None mapped</span>
-                )}
-              </dd>
-              <dt>Twilio subaccount</dt>
-              <dd>
-                {detail.twilio_subaccount_sid ? (
-                  <code>{detail.twilio_subaccount_sid}</code>
-                ) : (
-                  <span className="muted">Not billed for regular calls</span>
-                )}
-              </dd>
-            </dl>
-          )}
-        </section>
-      )}
-
-      <BillingContact detail={detail} canEdit={canEdit} preview={preview} />
-
-      {twilioEnabled && detail.twilio_days.length > 0 && (
-        <section className="card">
-          <h2>Twilio calls by day</h2>
-          <p className="muted small">
-            Minutes as Twilio billed them, already rounded per call.
-            {usage.twilio_as_of && <> Current through {formatDate(usage.twilio_as_of)}.</>}
-            {usage.twilio_stale && <span className="pill warn">Stale</span>}
-          </p>
-          <table className="twilio-table">
-            <thead>
-              <tr>
-                <th>Day</th>
-                <th className="num">Calls</th>
-                <th className="num">Minutes</th>
-                <th className="num">Twilio charges</th>
-              </tr>
-            </thead>
-            <tbody>
-              {detail.twilio_days.map((day) => (
-                <tr key={day.usage_date}>
-                  <td>{formatDate(day.usage_date)}</td>
-                  <td className="num">{day.call_count}</td>
-                  <td className="num">{formatMinutes(day.usage_minutes)}</td>
-                  <td className="num muted">{formatCents(day.twilio_price_cents)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
-      )}
-
-      <section className="card">
-        <h2>Recent AI calls</h2>
-        {detail.recent_calls.length > 0 ? (
-          <>
-            <p className="muted small">
-              Times are UTC, the same day the call is billed under. Cost is what Retell charges for
-              the call.
-            </p>
-            <table className="calls-table">
-              <thead>
-                <tr>
-                  <th>Date &amp; time</th>
-                  <th>Phone number</th>
-                  <th>Direction</th>
-                  <th className="num">Duration</th>
-                  <th className="num">Cost</th>
-                  <th className="num">Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {detail.recent_calls.map((call) => (
-                  <tr key={call.call_id}>
-                    <td>{formatDateTime(call.started_at)}</td>
-                    <td>{formatPhone(customerNumber(call))}</td>
-                    <td className="direction">{call.direction || DASH}</td>
-                    <td className="num">{formatMinutes(durationMinutes(call))}</td>
-                    <td className="num muted">{formatCents(call.retell_cost_cents)}</td>
-                    <td className="num">
-                      {call.billing_status === 'billable' ? (
-                        <span className="pill ok">{billableLabel(call)}</span>
+            ) : (
+              <dl className="facts">
+                <dt>AI minute</dt>
+                <dd>
+                  {rates ? formatRate(rates.voice_rate_cents) : <span className="muted">Not set</span>}
+                </dd>
+                {twilioEnabled && (
+                  <>
+                    <dt>Call minute</dt>
+                    <dd>
+                      {rates ? (
+                        formatRate(rates.call_rate_cents)
                       ) : (
-                        <span className="pill warn" title={call.unbillable_reason}>
-                          {unbillableLabel(call)}
-                        </span>
+                        <span className="muted">Not set</span>
                       )}
-                    </td>
-                  </tr>
+                    </dd>
+                  </>
+                )}
+              </dl>
+            )}
+            <p className="muted small" id="rate-note">
+              {rates ? (
+                <>In effect since {formatDate(rates.start_date)}. </>
+              ) : (
+                <>No rate has been set for this client yet. </>
+              )}
+              {canEdit &&
+                (adjusted ? (
+                  <>Changing a rate only re-estimates this page until it is saved.</>
+                ) : (
+                  <>
+                    A saved rate starts today. Months that have already ended keep the rate that
+                    was in effect then.
+                  </>
                 ))}
-              </tbody>
-            </table>
-          </>
-        ) : (
-          <p className="muted">No AI calls recorded this month.</p>
-        )}
-      </section>
+            </p>
+
+            {detail.rate_history.length > 1 && (
+              <table className="rate-history-table">
+                <thead>
+                  <tr>
+                    <th>From</th>
+                    <th className="num">AI minute</th>
+                    {twilioEnabled && <th className="num">Call minute</th>}
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.rate_history.map((rate) => (
+                    <tr key={rate.start_date}>
+                      <td>{formatDate(rate.start_date)}</td>
+                      <td className="num">{formatRate(rate.voice_rate_cents)}</td>
+                      {twilioEnabled && (
+                        <td className="num">{formatRate(rate.call_rate_cents)}</td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </section>
+
+          {/* Everything Twilio is hidden while rebilling is paused, and with Retell moved to
+              its own tab there is nothing else left in here - so the card goes rather than
+              sitting empty. It comes back whole the moment the setting does. */}
+          {twilioEnabled && (
+            <section className="card">
+              <h2>Twilio</h2>
+              {canEdit ? (
+                <MappingEditor
+                  locationId={detail.location_id}
+                  clientName={detail.client_name}
+                  initial={{
+                    twilio_subaccount_sid: detail.twilio_subaccount_sid,
+                    phone_numbers: detail.phone_numbers,
+                  }}
+                  preview={preview}
+                  onSaved={onMappingSaved}
+                />
+              ) : (
+                <dl className="facts">
+                  <dt>Phone numbers</dt>
+                  <dd>
+                    {detail.phone_numbers.length > 0 ? (
+                      detail.phone_numbers.map((number) => <code key={number}>{number}</code>)
+                    ) : (
+                      <span className="muted">None mapped</span>
+                    )}
+                  </dd>
+                  <dt>Twilio subaccount</dt>
+                  <dd>
+                    {detail.twilio_subaccount_sid ? (
+                      <code>{detail.twilio_subaccount_sid}</code>
+                    ) : (
+                      <span className="muted">Not billed for regular calls</span>
+                    )}
+                  </dd>
+                </dl>
+              )}
+            </section>
+          )}
+
+          {twilioEnabled && detail.twilio_days.length > 0 && (
+            <section className="card">
+              <h2>Twilio calls by day</h2>
+              <p className="muted small">
+                Minutes as Twilio billed them, already rounded per call.
+                {usage.twilio_as_of && <> Current through {formatDate(usage.twilio_as_of)}.</>}
+                {usage.twilio_stale && <span className="pill warn">Stale</span>}
+              </p>
+              <table className="twilio-table">
+                <thead>
+                  <tr>
+                    <th>Day</th>
+                    <th className="num">Calls</th>
+                    <th className="num">Minutes</th>
+                    <th className="num">Twilio charges</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.twilio_days.map((day) => (
+                    <tr key={day.usage_date}>
+                      <td>{formatDate(day.usage_date)}</td>
+                      <td className="num">{day.call_count}</td>
+                      <td className="num">{formatMinutes(day.usage_minutes)}</td>
+                      <td className="num muted">{formatCents(day.twilio_price_cents)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </section>
+          )}
+        </div>
+      )}
     </>
   )
 }
