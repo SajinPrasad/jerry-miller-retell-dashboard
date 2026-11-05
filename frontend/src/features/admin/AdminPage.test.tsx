@@ -277,7 +277,12 @@ const REQUESTED: CardStatus = { ...NO_CARD, requested_at: `${THIS_MONTH}-10T14:2
 
 async function openClient(user: ReturnType<typeof userEvent.setup>, name = 'Cool Breeze HVAC') {
   await user.click(await screen.findByRole('button', { name }))
-  await screen.findByText('Mapping')
+  await screen.findByRole('tab', { name: 'Overview & billing' })
+}
+
+/** Switch into the Agent mapping tab, where MappingEditor and its provider pickers live. */
+async function openMappingTab(user: ReturnType<typeof userEvent.setup>) {
+  await user.click(await screen.findByRole('tab', { name: 'Agent mapping' }))
 }
 
 describe('AdminPage', () => {
@@ -446,7 +451,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
 
-    await screen.findByText('Mapping')
+    await screen.findByRole('tab', { name: 'Overview & billing' })
     expect(screen.queryByRole('button', { name: /Refresh/ })).not.toBeInTheDocument()
   })
 
@@ -459,6 +464,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
 
     // The agent's own name, not the raw Retell id behind it.
     expect(screen.getByText('Cool Breeze front desk')).toBeInTheDocument()
@@ -733,6 +739,7 @@ describe('AdminPage', () => {
     expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(0)
     expect(listCalls(fetchMock, '/rebilling/admin/twilio-subaccounts/')).toBe(0)
 
+    await openMappingTab(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
     await screen.findByText('Cool Breeze after hours')
@@ -747,6 +754,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
     await screen.findByText('Polar Peak service calls')
 
@@ -783,6 +791,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
     // `agent_1` is already mapped to Cool Breeze, so it cannot be added a second time. Scoped to
@@ -803,6 +812,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
     await user.click(await screen.findByRole('button', { name: /Cool Breeze after hours/ }))
 
@@ -869,8 +879,10 @@ describe('AdminPage', () => {
   it('shows a sub-account its mapped agents by name, same as the agency admin does', async () => {
     parentAnswers()
     mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
+    const user = userEvent.setup()
 
     render(<AdminPage />)
+    await openMappingTab(user)
 
     expect(await screen.findByText('Cool Breeze front desk')).toBeInTheDocument()
     expect(screen.queryByText('agent_1')).not.toBeInTheDocument()
@@ -883,6 +895,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
 
     // The trigger reads the SID this client is on today, not an empty text box.
     await user.click(screen.getByRole('button', { name: 'ACchild' }))
@@ -907,6 +920,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
 
     await user.click(screen.getByRole('button', { name: 'ACchild' }))
     await user.click(await screen.findByRole('button', { name: 'No Twilio subaccount' }))
@@ -950,6 +964,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
     expect(
@@ -976,7 +991,9 @@ describe('AdminPage', () => {
     await user.click(await screen.findByRole('button', { name: /Polar Peak service calls/ }))
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
-    // Now a real client page, not the setup card - the mapping it just saved is on it.
+    // Now a real client page, not the setup card - the mapping it just saved is on the
+    // Agent mapping tab.
+    await openMappingTab(user)
     await screen.findByText('agent_9')
     expect(
       screen.queryByText('Not set up for billing yet.', { exact: false }),
@@ -990,6 +1007,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
     await openClient(user)
+    await openMappingTab(user)
 
     const phoneInput = screen.getByLabelText('Add a phone number')
     await user.type(phoneInput, '12')
@@ -1011,7 +1029,7 @@ describe('AdminPage', () => {
 
     render(<AdminPage />)
 
-    expect(await screen.findByText('Mapping')).toBeInTheDocument()
+    expect(await screen.findByRole('tab', { name: 'Agent mapping' })).toBeInTheDocument()
     // No way back to a list that this session is not allowed to see.
     expect(screen.queryByRole('button', { name: '← All clients' })).not.toBeInTheDocument()
     // The period filter is still there, because this client's own figures still need one.
@@ -1303,7 +1321,7 @@ describe('AdminPage', () => {
     mockApi({ session: { ...agencySession, active_location: 'loc1', scope: 'location' } })
 
     render(<AdminPage />)
-    await screen.findByText('Mapping')
+    await screen.findByRole('tab', { name: 'Overview & billing' })
 
     // Read-only: a client sees what it is charged, and nothing to change it with.
     expect(screen.getByText('$0.25')).toBeInTheDocument()
@@ -1719,6 +1737,7 @@ describe('AdminPage', () => {
 
       render(<AdminPage />)
       await openClient(user)
+      await openMappingTab(user)
 
       expect(screen.queryByRole('button', { name: 'ACchild' })).not.toBeInTheDocument()
       expect(screen.queryByLabelText('Add a phone number')).not.toBeInTheDocument()
@@ -1761,9 +1780,15 @@ describe('AdminPage', () => {
         perMonth: pausedMonth,
         session: { ...agencySession, active_location: 'loc1', scope: 'location' },
       })
+      const user = userEvent.setup()
 
       render(<AdminPage />)
-      await screen.findByText('Mapping')
+      await screen.findByRole('tab', { name: 'Overview & billing' })
+
+      // The read-only rates lose their call-minute row.
+      expect(screen.queryByText('Call minute')).not.toBeInTheDocument()
+
+      await openMappingTab(user)
 
       // The read-only mapping keeps the one thing that is billed here.
       expect(screen.getByText('Retell agents')).toBeInTheDocument()
@@ -1771,8 +1796,6 @@ describe('AdminPage', () => {
       expect(screen.queryByText('Phone numbers')).not.toBeInTheDocument()
       expect(screen.queryByText('Twilio subaccount')).not.toBeInTheDocument()
       expect(screen.queryByText('+15551234567')).not.toBeInTheDocument()
-      // And the read-only rates lose their call-minute row with it.
-      expect(screen.queryByText('Call minute')).not.toBeInTheDocument()
     })
 
     it('sends the stored call rate back unchanged when the field is hidden', async () => {
@@ -1862,18 +1885,21 @@ describe('AdminPage', () => {
       render(<AdminPage />)
       await openClient(user)
 
-      // Nothing was deleted: the tile, the rate field, the picker, the phone numbers and the
-      // daily table are all exactly where they were.
+      // Nothing was deleted: the tile, the rate field and the daily table are all exactly
+      // where they were.
       expect(tile('Call minutes').getByText('100.00')).toBeInTheDocument()
       expect(screen.getByLabelText('Call minute rate')).toBeInTheDocument()
-      expect(screen.getByRole('button', { name: 'ACchild' })).toBeInTheDocument()
-      expect(screen.getByLabelText('Add a phone number')).toBeInTheDocument()
       expect(screen.getByText('Twilio calls by day')).toBeInTheDocument()
       expect(screen.getByText('Stale')).toBeInTheDocument()
       expect(screen.getByText(/Current through/)).toBeInTheDocument()
       // And the money counts both halves again: $55.00 less $18.00 to Retell and $4.20 to Twilio.
       expect(tile('Cost').getByText('$22.20')).toBeInTheDocument()
       expect(tile('Margin').getByText('$32.80')).toBeInTheDocument()
+
+      // The picker and the phone numbers are on the Agent mapping tab, and are also back.
+      await openMappingTab(user)
+      expect(screen.getByRole('button', { name: 'ACchild' })).toBeInTheDocument()
+      expect(screen.getByLabelText('Add a phone number')).toBeInTheDocument()
     })
   })
 

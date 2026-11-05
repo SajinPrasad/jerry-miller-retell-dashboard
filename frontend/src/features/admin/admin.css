@@ -161,6 +161,35 @@
   text-decoration: underline;
 }
 
+/* --- tabs --- */
+
+.admin .tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-top: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.admin .tab {
+  padding: 0.6rem 1rem;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: none;
+  font: inherit;
+  font-weight: 600;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.admin .tab:hover {
+  color: var(--text);
+}
+
+.admin .tab.active {
+  color: var(--accent-strong);
+  border-bottom-color: var(--accent);
+}
+
 /* --- tables --- */
 
 .admin table {

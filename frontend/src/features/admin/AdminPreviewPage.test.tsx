@@ -43,10 +43,12 @@ describe('AdminPreviewPage', () => {
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
 
-    // The agent's own name, not its raw Retell id.
-    expect(await screen.findByText('Polar Peak Heating & Air — main line')).toBeInTheDocument()
+    expect(await screen.findByText('Rates')).toBeInTheDocument()
+
+    // The agent's own name, not its raw Retell id - on the Agent mapping tab.
+    await user.click(screen.getByRole('tab', { name: 'Agent mapping' }))
+    expect(screen.getByText('Polar Peak Heating & Air — main line')).toBeInTheDocument()
     expect(screen.queryByText('agent_polar_peak')).not.toBeInTheDocument()
-    expect(screen.getByText('Rates')).toBeInTheDocument()
   })
 
   it('filters the preview by period, without calling the API', async () => {
@@ -82,17 +84,22 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
-    await screen.findByText('Mapping')
+    await screen.findByRole('tab', { name: 'Overview & billing' })
 
-    // The sample data still carries this client's SID, its phone numbers and its daily Twilio
-    // rows - the preview simply does not show them while rebilling is paused.
+    // The sample data still carries this client's daily Twilio rows - the preview simply does
+    // not show them while rebilling is paused.
+    expect(screen.queryByText('Twilio calls by day')).not.toBeInTheDocument()
+    expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: 'Agent mapping' }))
+
+    // The sample data still carries this client's SID and its phone numbers too - hidden here
+    // for the same reason.
     expect(
       screen.queryByRole('button', { name: 'ACdemopolarpeak00000000000000002' }),
     ).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Add a phone number')).not.toBeInTheDocument()
-    expect(screen.queryByText('Twilio calls by day')).not.toBeInTheDocument()
-    expect(screen.queryByText('Call minutes', { selector: '.tile-label' })).not.toBeInTheDocument()
-    expect(screen.queryByLabelText('Call minute rate')).not.toBeInTheDocument()
     // Still the one thing an admin can map here.
     expect(screen.getByRole('button', { name: 'Add a Retell agent' })).toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
@@ -199,6 +206,7 @@ describe('AdminPreviewPage', () => {
 
     render(<AdminPreviewPage />)
     await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+    await user.click(await screen.findByRole('tab', { name: 'Agent mapping' }))
     await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
 
     await user.type(screen.getByLabelText('Search Retell agents'), 'after-hours')
@@ -220,7 +228,8 @@ describe('AdminPreviewPage', () => {
     await user.click(screen.getByRole('button', { name: 'Save mapping' }))
 
     // The setup card is gone: it is a mapped client's page now, with the agent it was given -
-    // by name, not by its raw Retell id.
+    // by name, not by its raw Retell id - on the Agent mapping tab.
+    await user.click(await screen.findByRole('tab', { name: 'Agent mapping' }))
     expect(await screen.findByText('Summit Air Solutions — main line')).toBeInTheDocument()
 
     await user.click(screen.getByRole('button', { name: '← All clients' }))
