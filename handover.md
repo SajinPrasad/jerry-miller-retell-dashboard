@@ -19,7 +19,7 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `d91b450`. Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `ee98a0b`. Do not commit or push unless asked.
 
 > ### This branch is not the Phase 9 redesign
 >
@@ -34,8 +34,41 @@ Companion docs:
 > (`/webhooks/retell/<location_id>/`), or "no agent picker" change applies here. If a task
 > references that design, confirm with the user which branch it belongs to before touching code.
 
+> ### The dark brand theme is not on `main` either
+>
+> The admin page's styling (dark plum-black background, mint-green accent, Audiowide/DM Sans
+> fonts, per `local_folder/SurPro-Labs-AI-Brand-Guidelines.md`) was built and committed on a
+> separate branch, **`feat/admin-brand-theme`** (one commit, `97d9d59`, on top of this branch's
+> `ee98a0b`) — **not merged into `main`**. `main`'s `frontend/src/features/admin/admin.css`,
+> `frontend/index.html` and `ClientDetail.tsx`'s Request-card button are still the original light
+> theme described in §9. If a task references the dark theme, or a screenshot shows it, confirm
+> which branch it belongs to before touching admin CSS — the two will conflict on the same file.
+
 **Already committed, newest first:**
 
+- `ee98a0b` — **Retell on/off toggle, back as a sub-account custom value, alongside the contact
+  field.** `sync_rebilling_status` now writes *two* things on every outcome that matters:
+  the existing contact field (§6.10b, for Jerry's dunning workflows, which trigger on a contact
+  field changing) and a **new** custom value in the client's own sub-account (`off` on exhausted
+  retries, `on` on paid-with-no-other-failed-bill), read directly by an If/Else condition in the
+  client's call-routing workflow — evaluated per call, not watched as a trigger, so the limitation
+  that killed the custom-value approach in §6.10b does not apply to this one. New setting
+  `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` (blank skips the write, same pattern as the other field ids).
+  Reinstates `GHLOAuthService.set_custom_value()` (removed in `6f0e544`) and the
+  `locations/customValues.readonly`/`.write` scopes. The toggle write does not depend on
+  `billing_email` (it's per-location, not per-contact), so it still fires for a client GHL has no
+  owner email for, unlike the contact field write next to it. Best effort, same as the contact
+  field: a `GHLError` is logged, never raised.
+- `1d28c35` — **A card GHL attached but never made the invoice default is now promoted, not
+  reported as no card.** `_promote_attached_card()` (`stripe_billing.py`): when a Stripe customer
+  has no `invoice_settings.default_payment_method` and no legacy `default_source`, it lists the
+  customer's attached card `PaymentMethod`s and, if one exists, sets it as the invoice default via
+  `Customer.modify`. Both `customer_facts()` (the card-facts lookup behind §6.11's status pill —
+  now reports `card_on_file` with the real brand/last4 instead of `no_card`) and
+  `_assert_chargeable()` (the check `charge_bills` makes before raising an invoice, §6.10) call it
+  before falling back to `no_card` / raising. A transient Stripe error while promoting (network,
+  rate limit) is caught, logged, and treated as "nothing to promote" rather than raised — it must
+  not read as Stripe's own answer about the card.
 - `d91b450` — **Clients list badge fix.** `ClientsTable.tsx`'s status pill only ever read
   `retell_connected`/`twilio_connected` for the pill's *tooltip*, never for which pill to show: a
   client whose `ClientMapping` row still exists but has had every Retell agent and phone number
@@ -63,7 +96,7 @@ Companion docs:
 
 **Test status (last run, this state):**
 
-- Backend: `pytest`: **355 passed**.
+- Backend: `pytest`: **367 passed**.
 - Frontend: `npm test -- --run`: **96 passed** in 3 files.
 - `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
@@ -78,6 +111,9 @@ GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
 The most important open question is in §15: which Stripe account the charges go through.
+
+**Not merged into `main`:** the dark brand theme (`feat/admin-brand-theme`, see the callout above)
+and the Phase 9 Retell-workspace-per-subaccount redesign (`feat/retell-workspace-per-subaccount`).
 
 ---
 
@@ -265,8 +301,11 @@ scopes = `GHL_SCOPES`; target user = Agency; auto-install on future sub-accounts
 **Default scopes** (`GHL_SCOPES`): `oauth.readonly`, `oauth.write`, `locations.readonly`,
 `contacts.readonly`, `opportunities.readonly`, `calendars.readonly`, `calendars/events.readonly`,
 `conversations.readonly`, `conversations/message.readonly`, `saas/company.read`,
-`saas/location.read`. The `oauth.*` pair is needed to mint sub-account tokens. The spec doesn't
-call it out (CriticalFindings G1).
+`saas/location.read`, `contacts.write` (Phase 7, §6.11 — the card request and rebilling-status
+writes), `locations/customValues.readonly` and `locations/customValues.write` (back as of
+`ee98a0b`, for the Retell on/off toggle, §6.10b). The `oauth.*` pair is needed to mint sub-account
+tokens. The spec doesn't call it out (CriticalFindings G1). **Every scope added after the app's
+first install needs a re-authorisation** — see §17.1b.
 
 **Frontend:** `features/onboarding/OnboardingPage.tsx`, with a vitest test. `src/api/ghl.ts` and
 `src/api/client.ts` form the API layer.
@@ -578,6 +617,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
 | `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `failed` on a final failure and `active` on payment. Blank until Jerry creates the field; the write fails and is logged until then |
+| `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` | none | The custom value in each client's own sub-account, set to `off`/`on` alongside the field above, read by an If/Else condition in the call-routing workflow. Blank skips the write (§6.10b) |
 | `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
 | `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
 
@@ -662,7 +702,11 @@ artifact, with one line per source.
 
 **Card check** (`_assert_chargeable(customer)`): the customer must have an invoice default payment method,
 or the legacy `default_source`. Without that check, an invoice finalises and then fails at the card, which
-looks exactly like a decline.
+looks exactly like a decline. **If neither is set, `_promote_attached_card()` gets one chance before this
+gives up:** GHL attaches a card to the customer without making it the invoice default, so the customer's
+attached `PaymentMethod`s are listed and the first one found is set as the default (`Customer.modify`)
+before the check fails. Only if there is truly no attached card either does this raise. A Stripe error
+while promoting is logged and treated the same as "nothing to promote", never raised from here.
 
 **Charging** (`charge_bills(month)`, `_charge_one(bill)`):
 
@@ -712,28 +756,48 @@ unfaked call by name), and `test_billing_email.py` (who pays, and the cached-cus
 theirs is still `failed`, since paying one month must not switch the agents back on while an earlier
 month is unpaid. Any other status leaves GHL alone, so a bill still being retried pauses nobody.
 
-**It wrote a custom value in the client's own sub-account, and nothing ever happened.** GoHighLevel
-workflows have no trigger for a custom value changing; they trigger on a *contact* changing. So the
-status was written faithfully, every month, into a field no workflow could watch.
+**It first wrote a custom value in the client's own sub-account, and nothing ever happened.**
+GoHighLevel workflows have no trigger for a custom value changing; they trigger on a *contact*
+changing. So the status was written faithfully, every month, into a field no workflow could watch.
 
-It now writes to a custom field on the client's **billing contact in the main account**
+It moved to a custom field on the client's **billing contact in the main account**
 (`AGENCY_LOCATION_ID`), found by `billing_email` — the same contact and the same
-`GHLOAuthService.set_contact_field()` the card request uses (§6.11), so there is one way a client's
-status reaches GHL, not two.
+`GHLOAuthService.set_contact_field()` the card request uses (§6.11).
 
 - **Setting:** `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, replacing `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME`.
   An id rather than a name, which works for the same reason the card field's does: every billing
   contact is in the one sub-account, so there is one field and one id.
-- **Still best effort.** The bill's own outcome is already saved, and a GHL failure must not undo it
+- **Best effort.** The bill's own outcome is already saved, and a GHL failure must not undo it
   or stop the webhook or the retry run, so `GHLError` is logged rather than raised. That is the one
   difference from the card request, which raises because a human is waiting on the answer.
 - **A client with no `billing_email` has no contact to write to**, so the write is skipped and
   logged. Nothing is invented: a guessed contact would tell a workflow about the wrong client.
-- **Gone with it:** `GHLOAuthService.set_custom_value()`, its four tests, and the
-  `locations/customValues.readonly` / `.write` scopes — nothing reads or writes a custom value any
-  more, so the re-authorisation asks for less than it did.
 - **Tests:** `test_retries.py` asserts the `(email, field_id, value)` triples recorded by the autouse
-  `ghl_contact_writes` fixture, which is now the only GoHighLevel seam in the rebilling package.
+  `ghl_contact_writes` fixture.
+
+**The sub-account custom value is back too (`ee98a0b`), for a different job than the one that failed
+above.** The contact field drives Jerry's dunning/notification workflows, which trigger on the
+field changing. The custom value drives the client's **call-routing workflow** instead: an If/Else
+condition reads it directly when a call comes in, which is an evaluation, not a change trigger — the
+limitation that killed the custom value for the contact field's job does not apply here. Both are
+written by `sync_rebilling_status`, in the same run, for the same bill.
+
+- **Setting:** `GHL_RETELL_STATUS_CUSTOM_VALUE_ID`. Blank skips the write, same as the other field
+  ids. Values written are `'off'` / `'on'` (`RETELL_TOGGLE_OFF` / `RETELL_TOGGLE_ON`), not
+  `'failed'` / `'active'` — a different vocabulary for a different reader.
+- **`GHLOAuthService.set_custom_value(location_id, custom_value_id, value)`** is back
+  (`apps/ghl/services.py`), reinstated from before `6f0e544` removed it, simplified: the id is
+  given directly (`PUT /locations/{id}/customValues/{id}`), not looked up by name, because the
+  same id is pushed to every sub-account via a GHL snapshot. Needs **that sub-account's own
+  token**, unlike the contact field, which is read through the main account's token — reinstates
+  the `locations/customValues.readonly`/`.write` scopes `6f0e544` had removed.
+- **Does not depend on `billing_email`.** The write is per-location, not per-contact, so it still
+  fires for a client GHL has no owner email for — unlike the contact field write right next to it
+  in the same function.
+- **Best effort**, like the contact field: `GHLError` is logged, never raised.
+- **Tests:** `test_retries.py`'s `ghl_custom_value_writes` fixture (parallel to
+  `ghl_contact_writes`) asserts the `(location_id, custom_value_id, value)` triples; new
+  `set_custom_value` tests in `apps/ghl/tests/test_services.py`.
 
 ---
 
@@ -752,16 +816,19 @@ the customer's name — and returns the name, the id and `{status, brand, last4}
 
 | Status | What Stripe said | On the page |
 |---|---|---|
-| `card_on_file` | A default payment method, or the legacy `default_source` | Green pill, `Visa •••• 4242` |
-| `no_card` | A customer, but nothing Stripe would collect against | Amber pill, **Request card** |
+| `card_on_file` | A default payment method, the legacy `default_source`, or an attached card just promoted to the default (`1d28c35`) | Green pill, `Visa •••• 4242` |
+| `no_card` | A customer, with no default, no legacy source, and **no attached card either** | Amber pill, **Request card** |
 | `no_customer` | No Stripe customer matches `billing_email` | Amber pill, **Request card** |
 | `no_billing_email` | Nothing was looked up — GHL has no owner email | Amber pill, no button |
 | `unknown` | Stripe could not be reached | Muted "could not check", no button |
 
-Two of these are worth knowing about. **A card attached but not set as the invoice default reads as
-`no_card`**, because that is what `charge_bills` would hit — the test is `_assert_chargeable`'s, so the
-page and the charge can never disagree. And **`unknown` is never shown as `no_card`**: chasing a client
-who has a perfectly good card is worse than admitting Stripe was unreachable.
+Two of these are worth knowing about. **A card GHL attached but never made the invoice default no
+longer reads as `no_card`** (`1d28c35`): `_promote_attached_card()` lists the customer's attached
+`PaymentMethod`s and sets the first one as the invoice default before either `customer_facts()` or
+`_assert_chargeable()` gives up — the same promotion either one would otherwise need, done once, so
+the page and the charge still can never disagree. `no_card` now means Stripe truly has nothing
+attached at all. And **`unknown` is never shown as `no_card`**: chasing a client who has a perfectly
+good card is worse than admitting Stripe was unreachable.
 
 The page now **matches the Stripe customer on first view** rather than on first charge, since answering the
 card question needs one. That is `customer_id()` unchanged, including its refusal to create a customer that
@@ -855,6 +922,10 @@ These are enforced in code, or are explicit requirements.
   tabs, **Overview & billing** and **Agent mapping** (§5.4/§5.7); `.tabs`/`.tab`/`.tab.active` in
   `admin.css` style them.
 - Not built: the agency dashboard and the client dashboard (empty folders).
+- **Theme:** white background, green accent, system-ui font — all of it CSS custom properties
+  (`--text`, `--muted`, `--bg`, `--card`, `--border`, `--accent`, …) set once in `index.css`'s
+  `:root` and consumed throughout `admin.css`/`onboarding.css`. A dark SurPro Labs AI brand restyle
+  of the admin page exists but is **not on `main`** — see the `feat/admin-brand-theme` note in §0.
 - `frontend/dist/` is build output and is gitignored.
 - **Type checking:** the root `tsconfig.json` is solution-style (`"files": []`), so `npx tsc --noEmit` checks
   nothing. Use `./node_modules/.bin/tsc -b` from `frontend/`. Plain `npx tsc -b` may try to install an unrelated
@@ -1104,6 +1175,11 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
   still succeeds at Stripe while every bill here reads `charging` forever. No reconciliation pass exists; Phase 6 should
   alert on bills stuck in `charging` for N days.
 - **`failed` is not final.** Stripe's Smart Retries can later flip a failed invoice to `paid`, and the webhook handles that.
+- **The Retell on/off toggle is two independent GHL writes now, not one.** `sync_rebilling_status` writes the
+  contact field and the sub-account custom value separately, each best effort; one can fail while the other
+  succeeds (a stale call-routing toggle with a correct dunning status on the contact, or the reverse), and
+  nothing surfaces that divergence yet beyond the two log lines. Phase 6 should alert on both. Like Phase 7/8,
+  this has not run against a live GoHighLevel — see §17.1b step 6.
 - **Django admin** has `ClientMapping` and `Bill` registered. The GHL tokens and OAuth history cannot be inspected through
   the admin yet.
 - **The install check is weaker** (see §4). Any agency that satisfies the "Company" type can install. A private marketplace
@@ -1262,10 +1338,9 @@ In this order, because each step is useless without the one before it:
 1. **Create both custom fields** on contacts in the main account — the card status and the
    rebilling status — and put their ids in `GHL_CARD_STATUS_CUSTOM_FIELD_ID` and
    `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. Field ids, not names — the lookup is by id.
-2. **Re-authorise the marketplace app**, which now asks for `contacts.write`. The
-   `locations/customValues.*` scopes the retry work added are gone, since nothing reads or writes
-   a custom value any more. Until the re-auth, every card request 502s and every status write is
-   logged as a failure.
+2. **Re-authorise the marketplace app**, which now asks for `contacts.write`, and, as of `ee98a0b`,
+   `locations/customValues.readonly`/`.write` again too (§6.10b's on/off toggle). Until the
+   re-auth, every card request 502s and every status write is logged as a failure.
 3. **Check the first search and write by hand** before trusting the button. `GET
    /contacts/search/duplicate?locationId=<main>&email=<owner>` should answer `{"contact": {...}}` —
    the response shape is not in GHL's published spec, and `set_contact_field()` reads `contact.id`.
@@ -1275,10 +1350,17 @@ In this order, because each step is useless without the one before it:
    form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/` with
    `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`. The
    **pause/resume workflow** triggers the same way, off the rebilling status field changing to
-   `failed` or `active` — the point of moving it off the custom value.
+   `failed` or `active`.
 5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
    writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
    keep saying no card — the one failure here that looks like a bug and is not.
+6. **Create the Retell on/off custom value** in each sub-account (same name, pushed by snapshot so
+   it gets the same id everywhere), put that id in `GHL_RETELL_STATUS_CUSTOM_VALUE_ID`, and point
+   the client's call-routing workflow's If/Else condition at it. Verify the write by hand first:
+   `PUT /locations/{location_id}/customValues/{id}` with `{"value": "off"}`, `Version: v3`, on
+   that sub-account's own token (`set_custom_value()`, §6.10b) — this is a different token and a
+   different GHL call than the contact field write above, so confirming one working says nothing
+   about the other.
 
 ### 17.2 Migrations on the server
 
@@ -1402,12 +1484,16 @@ Merged into `main`. Oldest first:
 | `867f963` | Handover doc update: SSO bridge script (§17.1a), answered Retell multi-location research (§15) |
 | `5fd30f1` | Client detail page split into Overview & billing / Agent mapping tabs (§5.4, §5.7) |
 | `d91b450` | Clients list status pill reverts to Not mapped once every Retell agent is removed (§5.7) |
+| `2ffe3f1` | Handover doc update: brought current with `5fd30f1`/`d91b450`, the Phase 9 not-merged note |
+| `1d28c35` | A card attached but not defaulted is promoted and charged, not reported as `no_card` (§6.10, §6.11) |
+| `ee98a0b` | Retell on/off toggle restored as a sub-account custom value, alongside the contact field (§6.10b) |
 
 Other branches in the repository: `feat/retell-workspace-per-subaccount` (the parked Phase 9 redesign,
 one Retell workspace per sub-account — **not merged, not in use**, see §0), `feat/ghl-billing-with-stripe-fallback`
 (the GHL one-off invoice attempt, with its own `0006` and the `ghl_invoice_*` columns), `feat/stripe-billing`
-(now merged into `main`), and a couple of older working branches (`retell`, `twillio-retell`,
-`versionone-singleworkspace-backup`).
+(now merged into `main`), `feat/admin-brand-theme` (the dark brand restyle of the admin page, one commit,
+`97d9d59`, on top of this branch's `ee98a0b` — **not merged, not in use**, see §0), and a couple of older
+working branches (`retell`, `twillio-retell`, `versionone-singleworkspace-backup`).
 
 ---
 
@@ -1429,11 +1515,11 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`, if they exist on the machine.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **355 passed**. From `frontend/`, run `npm test -- --run` and expect **96 passed**. Also run `ruff check .`,
+   **367 passed**. From `frontend/`, run `npm test -- --run` and expect **96 passed**. Also run `ruff check .`,
    `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
    `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. `main` should be clean at
-   `d91b450` (§0) unless new work is in flight.
+   `ee98a0b` (§0) unless new work is in flight.
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and most of 4 are built. Still open: the unassigned-call mapping UI, the bills
    table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started. Don't start any of these
    without an explicit request. Ask first if the request is ambiguous. **Never make live API calls.**
@@ -1441,4 +1527,7 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
    (§6.4), not the parked per-sub-account workspace redesign on `feat/retell-workspace-per-subaccount` (§0).
    If a request describes a per-client Retell workspace, a pasted API key per client, or a webhook URL
    carrying `location_id`, stop and confirm which branch it belongs to before writing code.
-7. Before the first live charge, answer the Stripe account question in §15.
+7. **This branch is not the dark brand theme either.** The admin page's styling on `main` is still the
+   original light theme (§9); the dark restyle is on `feat/admin-brand-theme` (§0), not merged. Confirm
+   which branch before editing admin CSS.
+8. Before the first live charge, answer the Stripe account question in §15.
