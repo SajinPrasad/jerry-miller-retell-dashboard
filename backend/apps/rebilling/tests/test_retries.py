@@ -2,9 +2,10 @@
 
 A first decline puts the bill into `retrying` on a schedule rather than leaving it failed. Each
 due retry is made by `retry_due_bills`, and the bill is `failed` for a person once the schedule
-is used up. Every outcome that matters to Jerry's GHL workflows is written to a custom field on
-the client's billing contact, which these tests record instead of sending (see
-`ghl_contact_writes`).
+is used up. Every outcome that matters to GoHighLevel is written twice: to a custom field on the
+client's billing contact, which drives Jerry's dunning workflows, and to a custom value in the
+client's own sub-account, which gates call routing directly. These tests record both instead of
+sending them (see `ghl_contact_writes` and `ghl_custom_value_writes`).
 
 Stripe is faked by `FakeStripe` and the guard in `test_stripe_billing` still stops anything
 unfaked from going out, so these tests make no network calls.
@@ -18,6 +19,7 @@ import pytest
 import stripe
 from django.conf import settings
 from django.core.management import call_command
+from django.test import override_settings
 from django.utils import timezone
 
 from apps.ghl.exceptions import GHLError
@@ -35,6 +37,8 @@ NOW = datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
 # sub-account, found by the client's billing email.
 BILLING_EMAIL = 'ops@coolbreeze.test'
 STATUS_FIELD = settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID
+# The other write: the call-routing toggle in the client's own sub-account.
+TOGGLE_VALUE_ID = settings.GHL_RETELL_STATUS_CUSTOM_VALUE_ID
 INTERVAL = timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
 DECLINED = stripe.CardError('Your card was declined.', None, 'card_declined')
 
@@ -307,6 +311,71 @@ def test_a_client_with_no_billing_email_has_no_contact_to_write_the_status_to(
     bill.refresh_from_db()
     assert bill.status == PAID
     assert ghl_contact_writes == []
+
+
+# --- the Retell call-routing toggle, alongside the contact field -------------------------------
+
+
+def test_a_retry_that_collects_also_flips_the_toggle_on(fake, ghl_custom_value_writes):
+    bill = retrying_bill(retry_count=1)
+
+    retry_due_bills(NOW)
+
+    assert ghl_custom_value_writes == [(bill.client.location_id, TOGGLE_VALUE_ID, 'on')]
+
+
+def test_the_schedule_used_up_also_flips_the_toggle_off(fake, ghl_custom_value_writes):
+    fake.pay_error = DECLINED
+    bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
+
+    retry_due_bills(NOW)
+
+    assert ghl_custom_value_writes == [(bill.client.location_id, TOGGLE_VALUE_ID, 'off')]
+
+
+def test_a_bill_still_retrying_does_not_flip_the_toggle_either(fake, ghl_custom_value_writes):
+    fake.pay_error = DECLINED
+    retrying_bill(retry_count=0)
+
+    retry_due_bills(NOW)
+
+    assert ghl_custom_value_writes == []
+
+
+def test_the_toggle_is_flipped_even_without_a_billing_email(fake, ghl_custom_value_writes):
+    """Unlike the contact field, the toggle is per sub-account - there is nothing to find by
+    email, so a missing billing email does not stop it."""
+    client = make_billable_client(billing_email='', stripe_customer_id='cus_known')
+    bill = retrying_bill(client=client, retry_count=1)
+
+    retry_due_bills(NOW)
+
+    assert ghl_custom_value_writes == [(client.location_id, TOGGLE_VALUE_ID, 'on')]
+    bill.refresh_from_db()
+    assert bill.status == PAID
+
+
+@override_settings(GHL_RETELL_STATUS_CUSTOM_VALUE_ID='')
+def test_a_blank_custom_value_id_skips_the_toggle_write(fake, ghl_custom_value_writes):
+    """Blank means the custom value has not been created in GHL yet - nothing to write to."""
+    retrying_bill(retry_count=1)
+
+    retry_due_bills(NOW)
+
+    assert ghl_custom_value_writes == []
+
+
+def test_a_failed_toggle_write_is_logged_and_does_not_undo_the_outcome(
+    fake, ghl_custom_value_writes
+):
+    ghl_custom_value_writes.fails_with = GHLError('GHL is down')
+    bill = retrying_bill(retry_count=1)
+
+    result = retry_due_bills(NOW)
+
+    assert result['paid'] == 1
+    bill.refresh_from_db()
+    assert bill.status == PAID
 
 
 # --- the task, the command and the schedule ----------------------------------------------------

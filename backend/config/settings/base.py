@@ -117,6 +117,8 @@ GHL_SCOPES = env(
             'saas/company.read',
             'saas/location.read',
             'contacts.write',
+            'locations/customValues.readonly',
+            'locations/customValues.write',
         ]
     ),
 )
@@ -186,6 +188,12 @@ BILLING_RETRY_INTERVAL_HOURS = env.int('BILLING_RETRY_INTERVAL_HOURS', default=1
 # nothing ever ran. Every billing contact lives in the one main sub-account, so one id serves
 # all of them.
 GHL_RETELL_STATUS_CUSTOM_FIELD_ID = env('GHL_RETELL_STATUS_CUSTOM_FIELD_ID', default='')
+
+# The custom value in each client's own sub-account that gates Retell call routing (`on`/`off`),
+# read directly by an If/Else condition in the client's call-routing workflow when a call comes
+# in. Unlike the contact field above, this one is evaluated per call rather than watched for a
+# change, which is why a sub-account custom value can do this job. Blank skips the write.
+GHL_RETELL_STATUS_CUSTOM_VALUE_ID = env('GHL_RETELL_STATUS_CUSTOM_VALUE_ID', default='')
 
 # The custom field on the same contact that carries their card status. Writing `card not found`
 # to it is what starts the GoHighLevel workflow emailing them a card form.

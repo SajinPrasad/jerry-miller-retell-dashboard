@@ -86,6 +86,13 @@ GHL_STATUS_ACTIVE = 'active'
 # triggers the GoHighLevel workflow that emails them a card collection form.
 GHL_CARD_NOT_FOUND = 'card not found'
 
+# The values written to the Retell on/off custom value in the client's own sub-account. Unlike
+# the contact field above, this one is read directly by an If/Else condition in the client's
+# call-routing workflow - evaluated when a call comes in, not watched as a trigger - which is
+# why a sub-account custom value works for this and did not for the contact field (§6.10b).
+RETELL_TOGGLE_OFF = 'off'
+RETELL_TOGGLE_ON = 'on'
+
 # Whether Stripe holds a card we could charge this client with. A card GHL attached without
 # making it the invoice default is promoted to the default the first time either is asked
 # (`_promote_attached_card`), so `no_card` means Stripe truly has nothing to collect against.
@@ -553,32 +560,40 @@ def _retry_interval() -> timedelta:
 
 
 def sync_rebilling_status(bill: Bill) -> None:
-    """Write the client's rebilling status onto their billing contact in GoHighLevel.
+    """Write the client's rebilling status to GoHighLevel: the billing contact, and the toggle.
 
     `failed` once a bill has used up its retries, so Jerry's GHL workflows can pause the client's
     Retell agents. `active` once a bill is paid, unless another bill for the same client has still
     failed: paying one month must not switch the agents back on while an earlier month is unpaid.
     Any other status leaves GoHighLevel alone, so a bill still being retried does not pause anyone.
 
-    **On the contact, not on the client's sub-account.** This was a custom value in the
-    sub-account until GoHighLevel's own triggers settled it: a workflow fires on a contact field
-    changing and has no trigger at all for a custom value, so the status was written faithfully
-    and nothing downstream ever ran. The contact is the same one `request_card` writes to - the
-    billing email's contact in the main sub-account.
+    **Two writes, for two different jobs.** The contact field (`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`)
+    is what GoHighLevel's dunning/notification workflows trigger on - a workflow fires on a
+    contact field changing, which is why this moved off a sub-account custom value in the first
+    place (§6.10b: a workflow has no trigger at all for a custom value changing). The sub-account
+    custom value (`GHL_RETELL_STATUS_CUSTOM_VALUE_ID`) is back for a different reason: it is read
+    directly by an If/Else condition in the client's call-routing workflow, evaluated on each
+    incoming call rather than watched for a change, so the thing that made a custom value useless
+    for the contact field's job does not apply to this one.
 
-    Best effort. The outcome is already on the bill, and a failed write to GoHighLevel must not
-    undo it or stop the webhook or the retry run, so a GHL error is logged rather than raised.
+    Both are best effort. The outcome is already on the bill, and a failed write to GoHighLevel
+    must not undo it or stop the webhook or the retry run, so a GHL error is logged rather than
+    raised for either.
     """
     if bill.status == FAILED:
         value = GHL_STATUS_FAILED
+        toggle = RETELL_TOGGLE_OFF
     elif bill.status == PAID:
         if bill.client.bills.exclude(pk=bill.pk).filter(status=FAILED).exists():
             return
         value = GHL_STATUS_ACTIVE
+        toggle = RETELL_TOGGLE_ON
     else:
         return
 
     location_id = bill.client.location_id
+    _set_retell_toggle(location_id, toggle)
+
     if not bill.client.billing_email:
         # Nothing to find a contact by. Logged for the same reason a GHL failure is: the bill's
         # own outcome stands either way, and this is the only trace that the workflow was
@@ -597,6 +612,27 @@ def sync_rebilling_status(bill: Bill) -> None:
     except GHLError:
         logger.exception(
             'billing: could not set the rebilling status to %s for %s', value, location_id
+        )
+
+
+def _set_retell_toggle(location_id: str, value: str) -> None:
+    """Flip the client's own sub-account custom value that gates Retell call routing.
+
+    Blank `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` means the setting has not been created in GHL yet,
+    so there is nothing to write - the same way a blank card or rebilling-status field id leaves
+    those writes skipped elsewhere in this module. Best effort, like the contact field write this
+    runs alongside: logged rather than raised, since the bill's own outcome does not depend on it.
+    """
+    custom_value_id = settings.GHL_RETELL_STATUS_CUSTOM_VALUE_ID
+    if not custom_value_id:
+        return
+    try:
+        GHLOAuthService().set_custom_value(location_id, custom_value_id, value)
+    except GHLError:
+        logger.exception(
+            'billing: could not set the Retell call-routing toggle to %s for %s',
+            value,
+            location_id,
         )
 
 

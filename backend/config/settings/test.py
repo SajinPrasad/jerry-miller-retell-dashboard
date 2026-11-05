@@ -30,3 +30,4 @@ TWILIO_BILLING_ENABLED = False
 GHL_RETELL_STATUS_CUSTOM_FIELD_ID = 'cf_retell_status'
 GHL_CARD_STATUS_CUSTOM_FIELD_ID = 'cf_card_status'
 GHL_CARD_WEBHOOK_TOKEN = 'card-webhook-token'
+GHL_RETELL_STATUS_CUSTOM_VALUE_ID = 'cv_retell_onoff'

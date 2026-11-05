@@ -185,3 +185,30 @@ def ghl_contact_writes(monkeypatch):
 
     monkeypatch.setattr(GHLOAuthService, 'set_contact_field', record)
     return writes
+
+
+class _CustomValueWrites(list):
+    """The recorded custom value writes, with a switch for making the next one fail."""
+
+    fails_with = None
+
+
+@pytest.fixture(autouse=True)
+def ghl_custom_value_writes(monkeypatch):
+    """Record every write to a client's Retell on/off custom value instead of sending it.
+
+    This one lives in the client's own sub-account rather than the main account's billing
+    contact, and reaching it for real would additionally need a `GHLOAuthToken` row for that
+    sub-account, which most rebilling tests never create. Autouse for the same reason
+    `ghl_contact_writes` is: a write a test forgot to fake must not reach the real API. The
+    recorded `(location_id, custom_value_id, value)` triples are what the tests assert on.
+    """
+    writes = _CustomValueWrites()
+
+    def record(self, location_id, custom_value_id, value):
+        if writes.fails_with is not None:
+            raise writes.fails_with
+        writes.append((location_id, custom_value_id, value))
+
+    monkeypatch.setattr(GHLOAuthService, 'set_custom_value', record)
+    return writes

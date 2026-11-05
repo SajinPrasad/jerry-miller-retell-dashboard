@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 # the duplicate search and the update.
 CONTACT_VERSION = 'v3'
 
+# So do the custom value endpoints.
+CUSTOM_VALUE_VERSION = 'v3'
+
 
 class GHLOAuthService:
     def __init__(self, client: httpx.Client | None = None):
@@ -149,6 +152,30 @@ class GHLOAuthService:
             # one sub-account - which is why this one can be configured and the per-sub-account
             # custom values cannot.
             json={'customFields': [{'id': field_id, 'fieldValue': value}]},
+        )
+
+    def set_custom_value(self, location_id: str, custom_value_id: str, value: str) -> None:
+        """Set one custom value, by id, in a client's own sub-account.
+
+        Unlike `set_contact_field`, which writes to one contact shared by every client in the
+        agency's main account, a custom value lives in the client's own sub-account - so this
+        needs that sub-account's own token, and the id is configured once because the same id is
+        pushed to every sub-account the same way (a snapshot-templated custom value), not looked
+        up per location.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/locations/update-custom-value
+        """
+        try:
+            token = self.get_location_token(location_id)
+        except GHLOAuthToken.DoesNotExist as exc:
+            raise GHLError(f'No GHL token for sub-account {location_id}.') from exc
+
+        self._request(
+            'PUT',
+            f'/locations/{location_id}/customValues/{custom_value_id}',
+            token=token,
+            version=CUSTOM_VALUE_VERSION,
+            json={'value': value},
         )
 
     def sync_locations(self, agency: GHLOAuthToken) -> None:

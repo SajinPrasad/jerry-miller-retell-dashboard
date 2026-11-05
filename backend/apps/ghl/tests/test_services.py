@@ -460,3 +460,42 @@ def test_the_main_account_token_is_minted_fresh_and_never_stored(service):
 def test_a_contact_write_before_the_agency_installed_the_app_is_an_error(service):
     with pytest.raises(GHLNotConnectedError):
         service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+
+
+# --- the client's own Retell on/off custom value --------------------------------------------
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_set_custom_value_writes_to_the_clients_own_sub_account(service):
+    make_location('loc1')
+    update = respx.put(f'{BASE}/locations/loc1/customValues/cv_retell_onoff').mock(
+        return_value=httpx.Response(200, json={'customValue': {'id': 'cv_retell_onoff'}})
+    )
+
+    service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
+
+    # The custom value lives in the client's own sub-account, so this is that sub-account's own
+    # token - unlike the billing contact field, which only the main account's token may reach.
+    sent = update.calls.last.request
+    assert sent.headers['Authorization'] == 'Bearer loc1-access'
+    assert sent.headers['Version'] == 'v3'
+    assert json.loads(sent.content) == {'value': 'off'}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_rejected_custom_value_write_says_why(service):
+    make_location('loc1')
+    respx.put(f'{BASE}/locations/loc1/customValues/cv_retell_onoff').mock(
+        return_value=httpx.Response(404, json={'message': 'custom value not found'})
+    )
+
+    with pytest.raises(GHLError, match='custom value not found'):
+        service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
+
+
+@pytest.mark.django_db
+def test_a_custom_value_write_for_a_sub_account_with_no_token_is_an_error(service):
+    with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
+        service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
