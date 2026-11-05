@@ -19,45 +19,61 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `a14e0a3`. Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `d91b450`. Do not commit or push unless asked.
 
-**Uncommitted work (Phase 8, the rebilling status write — §6.10b):** `sync_rebilling_status` now
-writes `failed` / `active` to a custom field on the client's **billing contact in the main
-account**, not to the `retell_rebilling_status` custom value in their own sub-account.
+> ### This branch is not the Phase 9 redesign
+>
+> A later session explored **one Retell workspace per GHL sub-account** (its own encrypted key,
+> its own webhook URL, no shared account) on a separate, **parked** branch,
+> `feat/retell-workspace-per-subaccount`. That work is real but is **not merged into `main`** and
+> is not in use. `main` still runs the model described in §6.4 below: **one shared
+> `RETELL_API_KEY`**, one account-level webhook, and a call matched to a client by `agent_id` then
+> by phone number (`match_client()`). Agents are picked for a client by hand, in the **Agent
+> mapping** tab (§5.4), via the agent picker — there is no per-client workspace key to paste.
+> Do not assume the Phase 9 branch's per-client `RetellWorkspace` model, URL shape
+> (`/webhooks/retell/<location_id>/`), or "no agent picker" change applies here. If a task
+> references that design, confirm with the user which branch it belongs to before touching code.
 
-- **Why:** GoHighLevel workflows have no trigger for a custom value changing. The status was
-  written faithfully every month into a field nothing could watch, so Jerry's pause/resume
-  workflow never ran. A contact custom field is what "Contact Changed" fires on.
-- It reuses Phase 7's `set_contact_field()`, so there is one way a client's status reaches GHL.
-- `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` is replaced by `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, blank
+**Already committed, newest first:**
+
+- `d91b450` — **Clients list badge fix.** `ClientsTable.tsx`'s status pill only ever read
+  `retell_connected`/`twilio_connected` for the pill's *tooltip*, never for which pill to show: a
+  client whose `ClientMapping` row still exists but has had every Retell agent and phone number
+  removed kept the green **Mapped** badge, because the pill was otherwise driven only by `mapped`
+  (does a row exist) and `active`. `!client.retell_connected` is now checked first and falls back
+  to the same gray **Not mapped** pill an unmapped client gets, ahead of the `active`-driven
+  Mapped/Paused choice. The row stays clickable either way — it is still a real mapping, just one
+  with nothing assigned to bill against.
+- `5fd30f1` — **Client detail page split into two tabs.** See §5.4/§5.7.
+- `867f963` — Handover doc update: the SSO bridge script for GHL's Agency Custom JavaScript
+  (§17.1a) and the answered Retell multi-location research (§15), both doc-only.
+- `6f0e544` — **Phase 8**, the rebilling status write (§6.10b): `sync_rebilling_status` now writes
+  `failed` / `active` to a custom field on the client's **billing contact in the main account**,
+  not to the `retell_rebilling_status` custom value in their own sub-account, because GoHighLevel
+  workflows have no trigger for a custom value changing. Reuses Phase 7's `set_contact_field()`.
+  `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` is replaced by `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, blank
   until Jerry creates the field. `GHLOAuthService.set_custom_value()` and the
-  `locations/customValues.*` scopes are gone — nothing reads or writes a custom value any more.
-- A client with no `billing_email` has no contact to write to: logged and skipped, never guessed.
-- Still best effort — a GHL failure is logged, and the bill's own outcome stands.
-- Files: `backend/apps/ghl/services.py`, `backend/apps/rebilling/stripe_billing.py`,
-  `backend/config/settings/{base,test}.py`, `backend/.env.example`,
-  `backend/apps/rebilling/tests/{conftest,test_retries}.py`, `backend/apps/ghl/tests/test_services.py`,
-  `CLAUDE.md`, `handover.md`, `local_folder/plan.md`. No migration, no frontend change.
-
-**Already committed:** Phase 7, the card on file (`a14e0a3`, §6.11) — the live Stripe card check on
-every detail view, the **Request card** button, and the webhook back. Before it, the automated retry
-schedule and the first GHL rebilling-status write (`bcd48b9`, the custom value Phase 8 replaces),
-and the Twilio billing pause (`654c927`) — Twilio minutes are no longer billed or shown anywhere,
-behind `TWILIO_BILLING_ENABLED`.
+  `locations/customValues.*` scopes are gone. A client with no `billing_email` has no contact to
+  write to: logged and skipped, never guessed. Still best effort — a GHL failure is logged, never
+  raised, so it cannot undo the bill's own outcome.
+- `a14e0a3` — Phase 7, the card on file (§6.11) — the live Stripe card check on every detail view,
+  the **Request card** button, and the webhook back.
+- Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
+  — Twilio minutes are no longer billed or shown anywhere, behind `TWILIO_BILLING_ENABLED`.
 
 **Test status (last run, this state):**
 
-- Backend: `pytest`: **355 passed** (four custom-value tests gone, one new one for a client with no billing email).
-- Frontend: `npm test`: **96 passed** in 3 files.
-- `npx tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
+- Backend: `pytest`: **355 passed**.
+- Frontend: `npm test -- --run`: **96 passed** in 3 files.
+- `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
 - `manage.py makemigrations --check --dry-run`: "No changes detected".
 
 **Nothing in Phase 7 or 8 has run against live GoHighLevel or Stripe.** Every call is mocked. The
 contact search and update shapes come from GHL's published v3 spec, not from a live call — §17 has
-what to check first. Both phases now wait on the same thing: the two field ids, and a
-re-authorisation for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO
-bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script).
+what to check first. Both phases wait on the same thing: the two field ids, and a re-authorisation
+for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO bridge injected into
+GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
@@ -115,7 +131,7 @@ Retell AI minutes only.**
 | 1b | Agency admin page: client list, usage, rates, mapping, bill status | — | **Built.** `/admin` is live (GHL SSO). `/admin/preview` is sample data and never calls the API |
 | 2 | Agency dashboard: MRR, live clients, leads by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (the `client-dashboard` feature folder is empty) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5 built.** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8 built.** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -331,6 +347,18 @@ credential. It is opened per request, with no cookie, no JWT and no session stor
 
 ### 5.4 The client page, as an agency admin sees it
 
+The page (`ClientDetail.tsx`) is a `role="tablist"` of two tabs. State is local to the component
+and remounts per client and per period, so a tab chosen on one client never follows the viewer
+into another's page — every page opens on **Overview & billing**.
+
+- **Overview & billing** (default): the metric tiles, the billing contact card (Stripe customer,
+  card status, billing email, sub-account owner), the Recent AI calls table, the Rates card, and
+  (when `TWILIO_BILLING_ENABLED`) the Twilio calls-by-day table, in that order.
+- **Agent mapping**: the whole Mapping card — the agent picker and chips, the phone number list,
+  and the Twilio subaccount picker (all three hidden behind one `MappingEditor.tsx`), plus the
+  "Billing mode" line underneath it. Separates one-off technical setup from the figures an admin
+  checks day to day.
+
 - **Headline tile.** Before a bill exists it is labelled **Estimated** (`minutes × current rate`).
   Once the month has a bill, the tile is labelled with the bill's status (**Uncharged**, **Charging**,
   **Paid**, **Failed**) and shows the amount the client was actually charged. The margin is then
@@ -362,9 +390,10 @@ credential. It is opened per request, with no cookie, no JWT and no session stor
 
 ### 5.5 As a sub-account sees it
 
-The same page, read-only. Usage, bills, and the calls table are shown. The rates appear as text, with no
-inputs and no buttons. The mapping appears as text, with agent names. The billing contact card is shown.
-A sub-account's own page never reaches the client list, and has no "All clients" button.
+The same two tabs, read-only. **Overview & billing** shows usage, bills, the calls table, rates (as
+text), and the billing contact card. **Agent mapping** shows the mapping as text — agent names,
+phone numbers, the Twilio subaccount — with no inputs and no buttons. A sub-account's own page
+never reaches the client list, and has no "All clients" button.
 
 ### 5.6 Period filter
 
@@ -372,9 +401,29 @@ A sub-account's own page never reaches the client list, and has no "All clients"
 future billing) and at the oldest listed month, so the selected value always exists. It drives both the
 detail request and the list request, through `?month=`.
 
+### 5.7 The clients list status pill
+
+`ClientsTable.tsx`'s one pill per row, decided in this order:
+
+1. **Not set up for billing yet** (gray, `Not mapped`) — no `ClientMapping` row at all. Tooltip is
+   literally "Not set up for billing yet".
+2. **Not mapped** (gray) — a mapping row exists but `!client.retell_connected`: no Retell agent and
+   no backup phone number can reach this client, so it bills nothing whatever `active` says. This
+   is also where a client lands after every agent is removed from it — the same gray pill an
+   unmapped client gets, with a tooltip naming what is missing (e.g. "No Retell agents mapped").
+3. **Mapped** (green) — `retell_connected` and `active`.
+4. **Paused** (gray) — `retell_connected` but `!active`: an admin turned billing off on purpose.
+
+`retell_connected` / `twilio_connected` come from `_client_row()` (`apps/rebilling/services.py`):
+`bool(mapping.retell_agent_ids or mapping.phone_numbers)` and `bool(mapping.twilio_subaccount_sid)`.
+The tooltip text (`mappingDetail()`) differs by these two flags and by `TWILIO_BILLING_ENABLED`
+(naming Twilio at all would describe something nobody currently bills). A row stays clickable in
+every case except the first: a client that is mapped but empty still opens its own full page
+(Agent mapping tab) to be filled back in, rather than the unmapped-client "set it up" card.
+
 ---
 
-## 6. Task 4: voice rebilling (Phases 1, 2, 2b, 3, 5 built; Phase 4 mostly built; Phase 6 pending)
+## 6. Task 4: voice rebilling (Phases 1, 2, 2b, 3, 5, 7, 8 built; Phase 4 mostly built; Phase 6 pending)
 
 ### 6.1 The business rule
 
@@ -580,9 +629,10 @@ endpoint is covered by `test_admin_rates.py`.
 deduplicated; phone numbers 7 to 15 digits, deduplicated, normalised; Twilio SID matches `^AC[0-9a-fA-F]{32}$`
 (blank allowed). `set_mapping()` writes only the fields sent.
 
-**Mapping editor** (`MappingEditor.tsx`): one component for the live page and the preview. On save: preview
-writes to an in-memory store in `demoData.ts` (`savePreviewMapping`); live calls `saveMapping`. An unmapped
-client gets the same editor in its "Set up for billing" card.
+**Mapping editor** (`MappingEditor.tsx`): one component for the live page and the preview, shown in the
+client detail page's **Agent mapping** tab (§5.4). On save: preview writes to an in-memory store in
+`demoData.ts` (`savePreviewMapping`); live calls `saveMapping`. An unmapped client gets the same editor
+in its "Set up for billing" card, outside the tabbed page entirely.
 
 **Rates editor** (`ClientDetail.tsx`, `saveRates` in `api/admin.ts`): see §5.4. The preview writes rates to an
 in-memory store (`savePreviewRates`, `resetPreviewRates`) and never calls the API.
@@ -801,7 +851,9 @@ These are enforced in code, or are explicit requirements.
 
 - `frontend/src/App.tsx` holds the routes and `main.tsx` mounts them. The Vite config proxies `/api` to `:8000`.
 - Built: the `/onboarding` page (connect button, a status banner, the sub-account list, a sync button), and
-  the `/admin` and `/admin/preview` pages (§5, §6.9).
+  the `/admin` and `/admin/preview` pages (§5, §6.9). The client detail page (`ClientDetail.tsx`) is two
+  tabs, **Overview & billing** and **Agent mapping** (§5.4/§5.7); `.tabs`/`.tab`/`.tab.active` in
+  `admin.css` style them.
 - Not built: the agency dashboard and the client dashboard (empty folders).
 - `frontend/dist/` is build output and is gitignored.
 - **Type checking:** the root `tsconfig.json` is solution-style (`"files": []`), so `npx tsc --noEmit` checks
@@ -1316,7 +1368,7 @@ These were each chosen on purpose. Revisit them only with new information.
 
 ## 19. Git history
 
-Branch `feat/stripe-billing`, oldest first:
+Merged into `main`. Oldest first:
 
 | Commit | Message (abridged) |
 |---|---|
@@ -1346,11 +1398,16 @@ Branch `feat/stripe-billing`, oldest first:
 | `bcd48b9` | Automated retry schedule and the first GHL rebilling-status write |
 | `654c927` | Twilio billing paused |
 | `a14e0a3` | Phase 7: the card on file, and asking for one |
+| `6f0e544` | Phase 8: rebilling status write moved to a contact custom field (§6.10b) |
+| `867f963` | Handover doc update: SSO bridge script (§17.1a), answered Retell multi-location research (§15) |
+| `5fd30f1` | Client detail page split into Overview & billing / Agent mapping tabs (§5.4, §5.7) |
+| `d91b450` | Clients list status pill reverts to Not mapped once every Retell agent is removed (§5.7) |
 
-Uncommitted on top of `a14e0a3`: Phase 8, the rebilling status write and SSO bridge (§0 and §17.1a).
-
-Other branches in the repository: `feat/ghl-billing-with-stripe-fallback` (the GHL one-off invoice attempt, with its own
-`0006` and the `ghl_invoice_*` columns), `main`, and a few older working branches (`frontend`, `maping`, `retell`, `stripe`).
+Other branches in the repository: `feat/retell-workspace-per-subaccount` (the parked Phase 9 redesign,
+one Retell workspace per sub-account — **not merged, not in use**, see §0), `feat/ghl-billing-with-stripe-fallback`
+(the GHL one-off invoice attempt, with its own `0006` and the `ghl_invoice_*` columns), `feat/stripe-billing`
+(now merged into `main`), and a couple of older working branches (`retell`, `twillio-retell`,
+`versionone-singleworkspace-backup`).
 
 ---
 
@@ -1375,8 +1432,13 @@ Other branches in the repository: `feat/ghl-billing-with-stripe-fallback` (the G
    **355 passed**. From `frontend/`, run `npm test -- --run` and expect **96 passed**. Also run `ruff check .`,
    `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
    `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
-4. Check `git status` and `git log --oneline | head` before changing anything. Expect Phase 8 (§0) to be uncommitted.
+4. Check `git status` and `git log --oneline | head` before changing anything. `main` should be clean at
+   `d91b450` (§0) unless new work is in flight.
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and most of 4 are built. Still open: the unassigned-call mapping UI, the bills
    table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started. Don't start any of these
    without an explicit request. Ask first if the request is ambiguous. **Never make live API calls.**
-6. Before the first live charge, answer the Stripe account question in §15.
+6. **This branch is not Phase 9.** `main` uses one shared `RETELL_API_KEY` and agent-id/phone matching
+   (§6.4), not the parked per-sub-account workspace redesign on `feat/retell-workspace-per-subaccount` (§0).
+   If a request describes a per-client Retell workspace, a pasted API key per client, or a webhook URL
+   carrying `location_id`, stop and confirm which branch it belongs to before writing code.
+7. Before the first live charge, answer the Stripe account question in §15.
