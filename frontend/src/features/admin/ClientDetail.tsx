@@ -696,7 +696,7 @@ function BillingContact({
       </dl>
       {canRequest && (
         <p className="actions">
-          <button type="button" onClick={handleRequestCard} disabled={requesting}>
+          <button className="button" type="button" onClick={handleRequestCard} disabled={requesting}>
             {requesting ? 'Requesting…' : 'Request card'}
           </button>
           {card.requested_at && (
