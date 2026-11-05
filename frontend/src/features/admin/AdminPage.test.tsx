@@ -1869,9 +1869,12 @@ describe('AdminPage', () => {
       })
 
       render(<AdminPage />)
-      await screen.findByText('Cool Breeze HVAC')
+      const row = within((await screen.findByText('Cool Breeze HVAC')).closest('tr')!)
 
-      expect(screen.getByText('Mapped')).toHaveAttribute('title', 'No Retell agents mapped')
+      // A client with no Retell agents left bills nothing, whatever `active` says - the list
+      // reverts to the same gray pill an unmapped client gets.
+      expect(row.getByText('Not mapped')).toHaveAttribute('title', 'No Retell agents mapped')
+      expect(row.queryByText('Mapped')).not.toBeInTheDocument()
     })
 
     it('brings the whole Twilio half back the moment the flag is on again', async () => {

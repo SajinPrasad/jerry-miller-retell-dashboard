@@ -102,7 +102,13 @@ function ClientRow({
         </button>
       </td>
       <td>
-        {client.active ? (
+        {!client.retell_connected ? (
+          // No agent and no backup phone number can reach this client any more, so it bills
+          // nothing whatever `active` says - the same gray pill an unmapped client gets.
+          <span className="pill" title={detail}>
+            Not mapped
+          </span>
+        ) : client.active ? (
           <span className="pill ok" title={detail}>
             Mapped
           </span>
