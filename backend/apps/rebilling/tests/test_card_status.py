@@ -108,6 +108,42 @@ def test_a_customer_with_no_card_at_all_reports_no_card(fake):
     assert customer_facts(client)['card']['status'] == NO_CARD
 
 
+def test_an_attached_card_not_set_as_default_is_promoted_and_reported(fake):
+    """GoHighLevel attaches a card to the customer without making it the invoice default.
+
+    Reporting `no_card` about a client who has a perfectly good card, attached, would send
+    someone chasing them for nothing - so the first attached card becomes the default instead.
+    """
+    client = make_client('loc1', billing_email=EMAIL, stripe_customer_id='cus_known')
+    fake.customer_records['cus_known'] = CARDLESS
+    fake.attached_cards['cus_known'] = [
+        SimpleNamespace(id='pm_attached1', card=SimpleNamespace(brand='mastercard', last4='1111'))
+    ]
+
+    facts = customer_facts(client)
+
+    assert facts['card'] == {'status': CARD_ON_FILE, 'brand': 'mastercard', 'last4': '1111'}
+    assert fake.of('Customer.modify') == [
+        {
+            'customer_id': 'cus_known',
+            'invoice_settings': {'default_payment_method': 'pm_attached1'},
+        }
+    ]
+
+
+def test_a_failed_promotion_attempt_reports_no_card_rather_than_raising(fake):
+    """A rate limit or network error while promoting a card is not Stripe's answer about it.
+
+    It must not surface as an exception, or as `unknown` either - the customer read already
+    succeeded; only the promotion attempt failed, and the caller has nothing to promote.
+    """
+    client = make_client('loc1', billing_email=EMAIL, stripe_customer_id='cus_known')
+    fake.customer_records['cus_known'] = CARDLESS
+    fake.fail_on = 'PaymentMethod.list'
+
+    assert customer_facts(client)['card']['status'] == NO_CARD
+
+
 def test_a_card_held_the_older_way_still_counts_as_a_card(fake):
     """Stripe collects against `default_source`, so claiming there is no card would be wrong."""
     client = make_client('loc1', billing_email=EMAIL, stripe_customer_id='cus_known')

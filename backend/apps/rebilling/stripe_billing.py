@@ -86,9 +86,9 @@ GHL_STATUS_ACTIVE = 'active'
 # triggers the GoHighLevel workflow that emails them a card collection form.
 GHL_CARD_NOT_FOUND = 'card not found'
 
-# Whether Stripe holds a card we could charge this client with. `no_card` is what Stripe would
-# do, not what it holds: a card attached without being made the invoice default is one the
-# charge cannot reach, and saying "card on file" about it would promise a charge that fails.
+# Whether Stripe holds a card we could charge this client with. A card GHL attached without
+# making it the invoice default is promoted to the default the first time either is asked
+# (`_promote_attached_card`), so `no_card` means Stripe truly has nothing to collect against.
 CARD_ON_FILE = 'card_on_file'
 NO_CARD = 'no_card'
 NO_CUSTOMER = 'no_customer'
@@ -175,7 +175,7 @@ def customer_facts(client: ClientMapping) -> dict:
         logger.exception('stripe: could not read customer %s', customer)
         return _facts(customer, '', CARD_UNKNOWN)
 
-    status, brand, last4 = _card(record)
+    status, brand, last4 = _card(record, customer)
     return _facts(customer, getattr(record, 'name', None) or '', status, brand, last4)
 
 
@@ -187,18 +187,46 @@ def _facts(customer: str, name: str, status: str, brand: str = '', last4: str = 
     }
 
 
-def _card(record) -> tuple[str, str, str]:
+def _card(record, customer: str) -> tuple[str, str, str]:
     """The card Stripe would collect against, tested exactly as `_assert_chargeable` tests it."""
     invoice_settings = getattr(record, 'invoice_settings', None)
     method = getattr(invoice_settings, 'default_payment_method', None)
     if method is None:
         # The older way a card is held. Stripe still collects against it, so it counts - there
         # is just no payment method object behind it to read a brand and last four off.
-        has_source = bool(getattr(record, 'default_source', None))
-        return (CARD_ON_FILE if has_source else NO_CARD), '', ''
+        if getattr(record, 'default_source', None):
+            return CARD_ON_FILE, '', ''
+        method = _promote_attached_card(customer)
+        if method is None:
+            return NO_CARD, '', ''
 
     card = getattr(method, 'card', None)
     return CARD_ON_FILE, getattr(card, 'brand', '') or '', getattr(card, 'last4', '') or ''
+
+
+def _promote_attached_card(customer: str):
+    """A card GoHighLevel attached to the customer without making it the invoice default.
+
+    `charge_automatically` only ever collects against the invoice default (or the legacy
+    `default_source`), so a card sitting on the customer unattached to either is one Stripe
+    would not actually charge. GoHighLevel attaches a card this way, so refusing to charge, or
+    reporting no card, would be wrong about a client who has a perfectly good one - the first
+    attached card becomes the invoice default here, the one time either caller needs to know
+    about it, and every read after this one finds it as the default already.
+    """
+    try:
+        found = stripe.PaymentMethod.list(customer=customer, type='card', limit=1)
+        if not found.data:
+            return None
+        method = found.data[0]
+        stripe.Customer.modify(customer, invoice_settings={'default_payment_method': method.id})
+    except stripe.StripeError:
+        # A transient network error or rate limit, not Stripe's answer about the card. Logged
+        # and swallowed rather than raised, so it degrades to whatever the caller already does
+        # when there is nothing to promote - the same way a down Stripe degrades elsewhere here.
+        logger.warning('stripe: could not promote an attached card for %s', customer, exc_info=True)
+        return None
+    return method
 
 
 def request_card(client: ClientMapping) -> None:
@@ -241,22 +269,22 @@ def clear_card_request(client: ClientMapping) -> bool:
 
 
 def _assert_chargeable(customer: str) -> None:
-    """Refuse to raise an invoice for a customer Stripe has no card to charge.
+    """Refuse to raise an invoice for a customer Stripe still has no card to charge.
 
     `charge_automatically` collects against the customer's default payment method, falling back
     to the legacy `default_source`. With neither set, the invoice still finalises and the
     payment then fails at once - and that failure reads exactly like a decline, when the real
-    answer is that no card was ever attached. GHL can attach a card without making it the
-    invoice default, so this is not a rare case on a shared account.
-
-    Nothing is chosen or written here. The card Stripe would pick is still the card Stripe
-    picks; this only asks whether one exists, before a doomed invoice is created.
+    answer is that no card was ever made the default. GHL attaches a card without making it the
+    invoice default, so `_promote_attached_card` is given the chance to fix exactly that before
+    this gives up: only when no attached card exists either is there truly nothing to charge.
     """
     _configure()
     record = stripe.Customer.retrieve(customer)
     invoice_settings = getattr(record, 'invoice_settings', None)
     default_method = getattr(invoice_settings, 'default_payment_method', None)
     if default_method or getattr(record, 'default_source', None):
+        return
+    if _promote_attached_card(customer) is not None:
         return
     raise StripeBillingError(
         f'Stripe customer {customer} has no default payment method, so nothing can be charged.'

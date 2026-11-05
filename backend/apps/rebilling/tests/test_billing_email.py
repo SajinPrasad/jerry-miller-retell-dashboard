@@ -157,6 +157,7 @@ def test_the_detail_view_shows_who_pays_and_that_stripe_matched_them(monkeypatch
     monkeypatch.setattr(
         stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name='Cool Breeze HVAC LLC')
     )
+    monkeypatch.setattr(stripe.PaymentMethod, 'list', lambda **k: SimpleNamespace(data=[]))
 
     detail = client_detail(client, MONTH_START, MONTH_END)
 

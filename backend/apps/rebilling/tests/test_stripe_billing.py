@@ -595,6 +595,28 @@ def test_a_card_held_the_older_way_still_counts_as_chargeable(fake):
     assert stripe_billing.charge_bills(MONTH)['charged'] == 1
 
 
+def test_a_card_attached_but_not_defaulted_is_promoted_and_charged(fake):
+    """GHL attaches a card without making it the invoice default - this is not a rare case.
+
+    Refusing to charge a client who has a perfectly good card attached would read exactly like
+    a decline for a reason nobody could act on, so the card is promoted and billing proceeds.
+    """
+    client = make_billable_client(stripe_customer_id='cus_attached')
+    make_bill(client)
+    fake.customer_records = {'cus_attached': CARDLESS}
+    fake.attached_cards = {'cus_attached': [SimpleNamespace(id='pm_attached1')]}
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['charged'] == 1
+    assert fake.of('Customer.modify') == [
+        {
+            'customer_id': 'cus_attached',
+            'invoice_settings': {'default_payment_method': 'pm_attached1'},
+        }
+    ]
+
+
 # --- what the webhook may and may not do ------------------------------------------------------
 
 

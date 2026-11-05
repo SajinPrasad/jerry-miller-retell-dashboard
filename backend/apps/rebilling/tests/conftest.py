@@ -69,6 +69,9 @@ class FakeStripe:
         self.fail_customers = set()
         # What `Customer.retrieve` answers, per id. Anything unlisted is chargeable.
         self.customer_records = {}
+        # Payment methods `PaymentMethod.list` answers with, per customer id. Anything unlisted
+        # has no attached card at all.
+        self.attached_cards = {}
         # What Invoice.retrieve answers for the status of an invoice, and whether Invoice.pay
         # collects. Retries start from an open invoice that Stripe has not collected yet.
         self.invoice_status = 'open'
@@ -95,6 +98,15 @@ class FakeStripe:
     def payment_intent_retrieve(self, intent_id, **kwargs):
         self._record('PaymentIntent.retrieve', {'intent_id': intent_id, **kwargs})
         return SimpleNamespace(last_payment_error=self.payment_error)
+
+    def payment_method_list(self, **kwargs):
+        self._record('PaymentMethod.list', kwargs)
+        cards = self.attached_cards.get(kwargs.get('customer'), [])
+        return SimpleNamespace(data=list(cards))
+
+    def customer_modify(self, customer_id, **kwargs):
+        self._record('Customer.modify', {'customer_id': customer_id, **kwargs})
+        return SimpleNamespace(id=customer_id)
 
     def invoice_create(self, **kwargs):
         self._record('Invoice.create', kwargs)
@@ -136,7 +148,9 @@ def fake(monkeypatch):
     faked = FakeStripe()
     monkeypatch.setattr(stripe.Customer, 'list', faked.customer_list)
     monkeypatch.setattr(stripe.Customer, 'retrieve', faked.customer_retrieve)
+    monkeypatch.setattr(stripe.Customer, 'modify', faked.customer_modify)
     monkeypatch.setattr(stripe.PaymentIntent, 'retrieve', faked.payment_intent_retrieve)
+    monkeypatch.setattr(stripe.PaymentMethod, 'list', faked.payment_method_list)
     monkeypatch.setattr(stripe.Invoice, 'create', faked.invoice_create)
     monkeypatch.setattr(stripe.InvoiceItem, 'create', faked.invoice_item_create)
     monkeypatch.setattr(stripe.Invoice, 'finalize_invoice', faked.invoice_finalize)

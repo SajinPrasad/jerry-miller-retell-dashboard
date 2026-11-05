@@ -653,6 +653,7 @@ def test_detail_reports_the_stripe_customer_by_name(client, monkeypatch, default
     monkeypatch.setattr(
         stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name='Cool Breeze HVAC LLC')
     )
+    monkeypatch.setattr(stripe.PaymentMethod, 'list', lambda **k: SimpleNamespace(data=[]))
 
     body = get_detail(client, 'loc1').json()
 
@@ -666,6 +667,7 @@ def test_a_stripe_customer_with_no_name_on_file_reports_none(
     make_agency()
     make_client('loc1', stripe_customer_id='cus_known')
     monkeypatch.setattr(stripe.Customer, 'retrieve', lambda *a, **k: SimpleNamespace(name=None))
+    monkeypatch.setattr(stripe.PaymentMethod, 'list', lambda **k: SimpleNamespace(data=[]))
 
     assert get_detail(client, 'loc1').json()['stripe_customer_name'] == ''
 
