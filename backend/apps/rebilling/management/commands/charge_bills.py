@@ -16,7 +16,8 @@ class Command(BaseCommand):
             raise CommandError(str(exc)) from exc
 
         self.stdout.write(
-            'Charging {period}: {charged} bill(s) sent to Stripe, {skipped} skipped, '
-            '{too_small} under the minimum, {twilio_paused} holding Twilio minutes, '
-            '{failed} failed, {total_cents}¢ charging.'.format(**result)
+            'Charging {period}: {charged} bill(s) sent to Stripe ({paid} paid, '
+            '{declined} declined), {skipped} skipped, {too_small} under the minimum, '
+            '{twilio_paused} holding Twilio minutes, {failed} failed, '
+            '{total_cents}¢ charging.'.format(**result)
         )

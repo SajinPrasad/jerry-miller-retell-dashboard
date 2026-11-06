@@ -276,6 +276,15 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     to finalise a part-built invoice an hour later and undercharge the client for the month.
     `pending_invoice_items_behavior='exclude'` is sent for the same reason the account is shared:
     a pending invoice item sitting on the customer must never ride along on a voice invoice.
+  - **Finalising queues the charge; `_collect_now()` makes it.** Stripe's own first attempt on a
+    finalised `charge_automatically` invoice is about an hour later (55 minutes, seen live on
+    6 Nov 2026), which left every bill reading `charging` for that hour. `stripe.Invoice.pay` is
+    called straight after finalising, so the run ends with each bill `paid` or `retrying`.
+    `auto_advance` stays on: this brings one attempt forward rather than taking the schedule
+    back, so a `CardError` records the decline now (`record_failure`), any other Stripe error
+    leaves the bill `charging` for Stripe and the webhook - the card may well have been taken -
+    and the bill is re-read before either is written, since `invoice.paid` can arrive before
+    `Invoice.pay` returns.
   - **A bill under `MINIMUM_CHARGE_CENTS` (50) is never sent.** Stripe will not charge a card for
     less, so attempting it produces a failure that reads like a decline, that no retry can clear
     and that nobody can act on. It is counted in `too_small` and left `uncharged` for a human.

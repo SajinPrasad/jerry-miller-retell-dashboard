@@ -76,6 +76,9 @@ class FakeStripe:
         # collects. Retries start from an open invoice that Stripe has not collected yet.
         self.invoice_status = 'open'
         self.pay_error = None
+        # Whether `Invoice.pay` collects when it does not raise. False is how Stripe answers a
+        # payment the client has to act on themselves: no error, invoice still open.
+        self.pay_collects = True
         # What the payment intent behind a failed invoice says went wrong.
         self.payment_error = SimpleNamespace(code='card_declined')
 
@@ -128,6 +131,8 @@ class FakeStripe:
         self._record('Invoice.pay', {'invoice_id': invoice_id, **kwargs})
         if self.pay_error is not None:
             raise self.pay_error
+        if not self.pay_collects:
+            return SimpleNamespace(id=invoice_id, status=self.invoice_status)
         self.invoice_status = 'paid'
         return SimpleNamespace(id=invoice_id, status='paid')
 

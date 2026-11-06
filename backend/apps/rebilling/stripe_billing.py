@@ -13,9 +13,11 @@ Nothing here charges twice. Every write carries an idempotency key derived from 
 re-run of the monthly command re-reaches the same Stripe objects instead of making new ones, and
 only bills still `uncharged` are picked up at all.
 
-The charge is started here and answered somewhere else: Stripe attempts payment when the invoice
-is finalised and tells us how it went by webhook. That is why `charging` is a real state rather
-than a moment.
+The charge is made here and confirmed somewhere else. Finalising the invoice hands collection to
+Stripe, but Stripe's own first attempt is about an hour later, so the card is taken immediately
+afterwards (`_collect_now`) and the webhook remains the authority on what happened. That is why
+`charging` is still a real state rather than a moment: it is now what a bill Stripe did not
+answer for during the run sits in.
 
 Docs: https://docs.stripe.com/invoicing/integration
       https://docs.stripe.com/invoicing/automatic-charging
@@ -323,13 +325,22 @@ def charge_bills(month: str | None = None) -> dict:
 
     A bill under Stripe's minimum is counted in `too_small` and left `uncharged`: there is
     nothing to retry and nothing to fix - see `MINIMUM_CHARGE_CENTS`.
+
+    Each card is attempted during the run rather than an hour afterwards (`_collect_now`), so
+    most bills are `paid` or `retrying` by the time this returns. A bill still `charging` is one
+    Stripe did not answer for in the run, and the webhook is what settles it.
     """
     start, _ = month_window(month)
     period = f'{start.year:04d}-{start.month:02d}'
 
     result = {
         'period': period,
+        # `charged` counts cards attempted. The card answers during the run now, so what it
+        # answered is counted too: `paid` and `declined` are both subsets of `charged`, and a
+        # charged bill in neither is one Stripe has not finished answering for.
         'charged': 0,
+        'paid': 0,
+        'declined': 0,
         'skipped': 0,
         'too_small': 0,
         'twilio_paused': 0,
@@ -389,16 +400,23 @@ def charge_bills(month: str | None = None) -> dict:
             continue
         result['charged'] += 1
         result['total_cents'] += bill.total_cents
+        if bill.status == PAID:
+            result['paid'] += 1
+        elif bill.status in (RETRYING, FAILED):
+            result['declined'] += 1
 
     return result
 
 
 def _charge_one(bill: Bill) -> None:
-    """Put one bill on a Stripe invoice and finalise it, which is what starts the charge.
+    """Put one bill on a Stripe invoice, finalise it, and take the card now.
 
     The invoice id is saved the moment it exists, before the lines are added, so a failure
     halfway through leaves a bill that can be traced to a real Stripe object rather than an
     orphan nobody can find.
+
+    Finalising is what hands collection to Stripe; `_collect_now` is what stops the client's
+    money waiting on Stripe's queue for it. See that function for why both happen.
     """
     customer = customer_id(bill.client)
     _assert_chargeable(customer)
@@ -436,15 +454,17 @@ def _charge_one(bill: Bill) -> None:
             idempotency_key=f'{key}-{line.line_type}',
         )
 
-    # Finalising a `charge_automatically` invoice is what makes Stripe attempt the card, and
-    # `auto_advance` is what hands the retry schedule to Stripe from this point on.
+    # Finalising a `charge_automatically` invoice is what puts it in Stripe's hands to collect,
+    # and `auto_advance` is what hands the retry schedule over with it.
     stripe.Invoice.finalize_invoice(
         invoice.id, auto_advance=True, idempotency_key=f'{key}-finalize'
     )
 
+    # `charging` before the card is attempted rather than after, so that a crash or a timeout
+    # during the attempt below leaves the bill in the state the webhook can still answer for,
+    # and never in `uncharged` with a finalised invoice already out at Stripe.
     bill.status = CHARGING
-    # The card has now been attempted. Only the webhook moves this bill on from here, so this
-    # stamp is what makes a webhook that never arrives visible as a bill stuck in `charging`.
+    # The clock a bill nothing ever answers for is measured against.
     bill.charged_at = timezone.now()
     bill.failure_reason = ''
     bill.save(update_fields=['status', 'charged_at', 'failure_reason'])
@@ -454,6 +474,73 @@ def _charge_one(bill: Bill) -> None:
         bill.billing_period,
         invoice.id,
     )
+
+    _collect_now(bill, invoice.id, key)
+
+
+def _collect_now(bill: Bill, invoice_id: str, key: str) -> None:
+    """Take the card for a finalised invoice now instead of when Stripe's queue reaches it.
+
+    Finalising a `charge_automatically` invoice does not charge it there and then: Stripe
+    schedules the first attempt for about an hour later (seen live on 6 Nov 2026, 55 minutes),
+    which left every bill reading `charging` for that hour with nothing to tell a stuck bill
+    from one simply waiting. Paying here is the same attempt Stripe would have made by itself -
+    off-session, against the same default card, on the same invoice - only now, so the month's
+    outcome is on the bills by the time the command finishes.
+
+    `auto_advance` is deliberately left on. This brings one attempt forward; it does not take
+    the schedule back off Stripe, so an attempt that cannot be made here still gets made there.
+    """
+    try:
+        invoice = stripe.Invoice.pay(invoice_id, idempotency_key=f'{key}-pay')
+    except stripe.CardError as exc:
+        # The card was reached and refused. That is an outcome, not a failure of the run: the
+        # bill goes onto the retry schedule now rather than when `invoice.payment_failed`
+        # arrives, and the webhook that follows finds it already there (`apply_event`).
+        if _still_charging(bill):
+            record_failure(bill, _stripe_reason(exc))
+        return
+    except stripe.StripeError:
+        # Stripe was not reached, or would not answer. Whether the card was charged is not known
+        # here, so nothing is written over `charging`: the webhook and Stripe's own schedule
+        # settle this bill, exactly as they did before the card was taken immediately.
+        logger.warning(
+            'billing: %s for %s was finalised but could not be paid immediately; left to Stripe',
+            bill.client.location_id,
+            bill.billing_period,
+            exc_info=True,
+        )
+        return
+
+    if invoice.status == 'paid':
+        if _still_charging(bill):
+            _mark_paid(bill, paid_at=timezone.now())
+        return
+
+    # Stripe took the request without an error and the invoice is still not paid, which is how a
+    # payment the client has to act on themselves comes back. Recorded the same way the retry
+    # sweep records it (`_retry_one`), so both read alike on the bill.
+    if _still_charging(bill):
+        record_failure(bill, NOT_COLLECTED_REASON)
+
+
+def _still_charging(bill: Bill) -> bool:
+    """True if this bill is still waiting on the attempt just made, re-read from the database.
+
+    Stripe can deliver `invoice.paid` before `Invoice.pay` has returned, so by now the webhook
+    may already have settled this bill with Stripe's own timestamp and reason. An outcome that
+    came from Stripe is never overwritten with one inferred here.
+    """
+    bill.refresh_from_db()
+    if bill.status == CHARGING:
+        return True
+    logger.info(
+        'billing: %s for %s was already %s by the time the charge returned',
+        bill.client.location_id,
+        bill.billing_period,
+        bill.status,
+    )
+    return False
 
 
 def read_event(payload: bytes, signature: str):

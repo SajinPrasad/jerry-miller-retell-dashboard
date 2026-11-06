@@ -717,13 +717,24 @@ while promoting is logged and treated the same as "nothing to promote", never ra
 - For the rest: `Invoice.create(collection_method='charge_automatically', auto_advance=True)`, then one
   `InvoiceItem` per `BillLine` (integer cents, with a description of what was bought), then
   `finalize_invoice`. The invoice id is saved as soon as it exists, before the lines.
-- After finalising, the bill is `charging`, `charged_at` is set to now, and `failure_reason` is cleared.
+- After finalising, the bill is `charging`, `charged_at` is set to now, and `failure_reason` is cleared —
+  then `_collect_now()` pays the invoice in the same run.
+- **The card is taken during the run** (`_collect_now`, `stripe.Invoice.pay`). Finalising only queues
+  Stripe's own attempt, which is about an hour later (55 minutes, seen live 6 Nov 2026). Paid invoice →
+  the bill is `paid`; a `CardError` → `record_failure`, so the bill is `retrying` immediately; no error but
+  still unpaid → `retrying` with `not_collected`; **any other Stripe error leaves the bill `charging`**,
+  because whether the card was taken is unknown and Stripe's own schedule still has the invoice. The bill
+  is re-read from the database before any of those is written: `invoice.paid` can arrive before
+  `Invoice.pay` returns, and the webhook's outcome (Stripe's own timestamp) wins.
 - **Idempotency:** every Stripe call carries a key derived from `Bill.pk`: `bill-{pk}-invoice`,
-  `bill-{pk}-{line_type}`, `bill-{pk}-finalize`. A re-run re-reaches the same objects. Only `uncharged`
-  bills are picked up at all, so a re-run cannot charge a bill twice.
-- A per-client failure (`StripeBillingError`, or a Stripe error) is logged and counted as `failed`. The
-  reason is written to `failure_reason`, and the bill **stays `uncharged`**. Only the webhook sets `failed`.
-- Returns `{period, charged, skipped, too_small, failed, total_cents}`.
+  `bill-{pk}-{line_type}`, `bill-{pk}-finalize`, `bill-{pk}-pay`. A re-run re-reaches the same objects.
+  Only `uncharged` bills are picked up at all, so a re-run cannot charge a bill twice.
+- A per-client failure (`StripeBillingError`, or a Stripe error before the invoice is finalised) is logged
+  and counted as `failed`. The reason is written to `failure_reason`, and the bill **stays `uncharged`**.
+  A card that was reached and declined is not this: it is counted in `declined`, not `failed`.
+- Returns `{period, charged, paid, declined, skipped, too_small, twilio_paused, failed, total_cents}`.
+  `paid` and `declined` are subsets of `charged` (cards attempted); a charged bill in neither is one
+  Stripe did not answer for during the run.
 
 **Webhook** (`POST /api/rebilling/webhooks/stripe/`, `StripeWebhookView`):
 

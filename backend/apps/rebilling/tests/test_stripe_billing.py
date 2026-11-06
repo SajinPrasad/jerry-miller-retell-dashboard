@@ -187,6 +187,8 @@ def test_an_uncharged_bill_becomes_a_finalised_stripe_invoice(fake):
     assert result == {
         'period': MONTH,
         'charged': 1,
+        'paid': 1,
+        'declined': 0,
         'skipped': 0,
         'too_small': 0,
         'twilio_paused': 0,
@@ -202,10 +204,11 @@ def test_an_uncharged_bill_becomes_a_finalised_stripe_invoice(fake):
     assert invoice['metadata'] == {'bill_id': str(bill.pk), 'location_id': 'loc1'}
 
     bill.refresh_from_db()
-    assert bill.status == CHARGING
     assert bill.stripe_invoice_id == 'in_test1'
-    assert bill.paid_at is None
-    # The clock a bill stuck in `charging` is measured against.
+    # The card was taken in the same run, so this bill never sat in `charging` (see
+    # `test_the_card_is_taken_during_the_run_not_an_hour_later`).
+    assert bill.status == PAID
+    # The clock a bill nothing answers for is measured against, set either way.
     assert bill.charged_at is not None
 
 
@@ -225,23 +228,27 @@ def test_each_bill_line_becomes_an_invoice_item_in_the_same_integer_cents(fake):
     assert items[1]['description'] == 'Call minutes (30.00 min)'
 
 
-def test_the_invoice_is_finalised_which_is_what_charges_the_card(fake):
+def test_the_invoice_is_finalised_and_then_paid_in_that_order(fake):
     client = make_billable_client(stripe_customer_id='cus_known')
     make_bill(client)
 
     stripe_billing.charge_bills(MONTH)
 
-    # The lines have to be on the invoice before it is finalised, or they are not billed.
+    # The lines have to be on the invoice before it is finalised, or they are not billed, and
+    # an invoice cannot be paid before it is finalised.
     assert fake.names() == [
         'Customer.retrieve',
         'Invoice.create',
         'InvoiceItem.create',
         'Invoice.finalize_invoice',
+        'Invoice.pay',
     ]
     finalise = fake.of('Invoice.finalize_invoice')[0]
     assert finalise['invoice_id'] == 'in_test1'
-    # Collection, and the retry schedule with it, is handed to Stripe only at this point.
+    # The retry schedule is handed to Stripe here and stays with it: paying immediately brings
+    # the first attempt forward, it does not take the schedule back.
     assert finalise['auto_advance'] is True
+    assert fake.of('Invoice.pay')[0]['invoice_id'] == 'in_test1'
 
 
 def test_every_write_carries_an_idempotency_key_derived_from_the_bill(fake):
@@ -255,6 +262,7 @@ def test_every_write_carries_an_idempotency_key_derived_from_the_bill(fake):
         f'bill-{bill.pk}-invoice',
         f'bill-{bill.pk}-retell',
         f'bill-{bill.pk}-finalize',
+        f'bill-{bill.pk}-pay',
     ]
 
 
@@ -308,7 +316,7 @@ def test_one_clients_failure_does_not_cost_the_others_their_charge(fake):
     bill_one.refresh_from_db()
     bill_two.refresh_from_db()
     assert bill_one.status == UNCHARGED
-    assert bill_two.status == CHARGING
+    assert bill_two.status == PAID
 
 
 def test_a_client_stripe_cannot_match_fails_only_its_own_bill(fake):
@@ -335,6 +343,129 @@ def test_the_invoice_id_survives_a_failure_after_the_invoice_exists(fake):
     assert bill.stripe_invoice_id == 'in_test1'
     # And why it stopped, on the bill rather than only in the log.
     assert bill.failure_reason
+
+
+# --- taking the card during the run ---------------------------------------------------------
+
+
+# What Stripe raises when the card is reached and refused.
+DECLINED = stripe.CardError('Your card was declined.', None, 'card_declined')
+
+
+def test_the_card_is_taken_during_the_run_not_an_hour_later(fake):
+    """Finalising only queues Stripe's own attempt, which is ~55 minutes later (seen live).
+
+    Paying the invoice in the same run is what makes the month's outcome readable when the
+    command finishes instead of an hour after it.
+    """
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['charged'] == 1
+    assert result['paid'] == 1
+    assert result['declined'] == 0
+    bill.refresh_from_db()
+    assert bill.status == PAID
+    assert bill.paid_at is not None
+    assert bill.failure_reason == ''
+
+
+def test_a_card_refused_in_the_run_goes_straight_onto_the_retry_schedule(fake):
+    """A decline is an outcome, not a failure of the run: the same place the webhook puts it."""
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+    fake.pay_error = DECLINED
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    # Counted as charged - the card was attempted - and as declined, not as a `failed` run.
+    assert result['charged'] == 1
+    assert result['declined'] == 1
+    assert result['failed'] == 0
+    bill.refresh_from_db()
+    assert bill.status == RETRYING
+    assert bill.retry_count == 0
+    assert bill.next_retry_at is not None
+    # Stripe's own code, which is what separates "send a new card" from "confirm this one".
+    assert bill.failure_reason == 'card_declined'
+
+
+def test_the_webhook_for_a_charge_already_declined_does_not_reschedule_it(fake, api):
+    """`invoice.payment_failed` still arrives afterwards. It must not move the retry again."""
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+    fake.pay_error = DECLINED
+    stripe_billing.charge_bills(MONTH)
+    bill.refresh_from_db()
+    scheduled_for = bill.next_retry_at
+
+    response = post(api, event_body('invoice.payment_failed'))
+
+    assert response.status_code == 204
+    bill.refresh_from_db()
+    assert bill.status == RETRYING
+    assert bill.retry_count == 0
+    assert bill.next_retry_at == scheduled_for
+
+
+def test_a_charge_stripe_cannot_answer_for_is_left_in_charging_for_the_webhook(fake):
+    """Not a decline: whether the card was taken is unknown, so nothing is written over it.
+
+    Stripe still has the invoice with `auto_advance` on, so its own attempt and the webhook
+    settle this bill the way they did before the card was taken immediately.
+    """
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+    fake.pay_error = stripe.APIConnectionError('Stripe is unreachable.')
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['charged'] == 1
+    assert result['paid'] == 0
+    assert result['declined'] == 0
+    bill.refresh_from_db()
+    assert bill.status == CHARGING
+    assert bill.failure_reason == ''
+
+
+def test_a_payment_stripe_takes_but_does_not_collect_is_recorded_as_not_collected(fake):
+    """No error and still unpaid is how a payment the client has to confirm comes back."""
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+    fake.pay_collects = False
+
+    result = stripe_billing.charge_bills(MONTH)
+
+    assert result['declined'] == 1
+    bill.refresh_from_db()
+    assert bill.status == RETRYING
+    assert bill.failure_reason == stripe_billing.NOT_COLLECTED_REASON
+
+
+def test_an_outcome_the_webhook_got_to_first_is_not_overwritten(fake, monkeypatch):
+    """Stripe can deliver `invoice.paid` before `Invoice.pay` has returned.
+
+    The webhook carries Stripe's own timestamp, so the bill keeps that rather than the clock
+    reading taken here when the two race.
+    """
+    client = make_billable_client(stripe_customer_id='cus_known')
+    bill = make_bill(client)
+    stripes_time = datetime(2026, 3, 1, tzinfo=UTC)
+    paying = stripe.Invoice.pay
+
+    def pay_and_let_the_webhook_land_first(invoice_id, **kwargs):
+        Bill.objects.filter(pk=bill.pk).update(status=PAID, paid_at=stripes_time)
+        return paying(invoice_id, **kwargs)
+
+    monkeypatch.setattr(stripe.Invoice, 'pay', pay_and_let_the_webhook_land_first)
+
+    stripe_billing.charge_bills(MONTH)
+
+    bill.refresh_from_db()
+    assert bill.status == PAID
+    assert bill.paid_at == stripes_time
 
 
 def test_the_command_reports_what_it_charged(fake):
@@ -514,7 +645,7 @@ def test_a_bill_exactly_at_the_minimum_is_charged(fake):
     assert result['charged'] == 1
     assert result['too_small'] == 0
     bill.refresh_from_db()
-    assert bill.status == CHARGING
+    assert bill.status == PAID
 
 
 def test_a_bill_too_small_to_charge_does_not_stop_the_others(fake):
@@ -559,7 +690,7 @@ def test_the_same_bill_is_charged_once_twilio_billing_is_turned_back_on(fake):
     assert result['charged'] == 1
     assert result['twilio_paused'] == 0
     bill.refresh_from_db()
-    assert bill.status == CHARGING
+    assert bill.status == PAID
 
 
 # --- there has to be a card before an invoice is raised -------------------------------------
