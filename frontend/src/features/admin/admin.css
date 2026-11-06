@@ -1,7 +1,50 @@
+/* SurPro Labs AI brand (local_folder/SurPro-Labs-AI-Brand-Guidelines.md), scoped to this page
+   only: the surrounding GoHighLevel chrome stays its own light theme, this page does not. Every
+   rule below already reads these variables rather than a literal colour, so overriding them
+   here is the whole theme - nothing past this block names a colour that isn't one of these. */
 .admin {
+  --text: #f7f4f7;
+  --muted: #b2a6b1;
+  --bg: #1a0f0f;
+  --card: #20151c;
+  --card-raised: #2a2035;
+  --border: rgb(255 255 255 / 12%);
+
+  /* Brand Green is the one accent for action: buttons, links, active states. Brand rule: dark
+     text on green, never white - `--accent-text` is that dark text, not a second accent. */
+  --accent: #7bc394;
+  --accent-strong: #93d9a8;
+  --accent-soft: rgb(123 195 148 / 16%);
+  --accent-text: #1a0f0f;
+
+  /* Purple is depth, not action: used only for the card glow below. */
+  --purple-glow: rgb(127 65 137 / 45%);
+
+  --ok-bg: rgb(123 195 148 / 14%);
+  --ok-border: #7bc394;
+  --ok-text: #9fe3b4;
+  --warn-bg: rgb(217 119 6 / 14%);
+  --warn-border: #d97706;
+  --warn-text: #f3b764;
+  --err-bg: rgb(231 0 11 / 14%);
+  --err-border: #e7000b;
+  --err-text: #ff8f8f;
+
+  --font-display: 'Audiowide', system-ui, sans-serif;
+  --font-body: 'DM Sans', system-ui, sans-serif;
+
   max-width: 1120px;
   margin: 0 auto;
   padding: 2rem 16px 4rem;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-body);
+}
+
+.admin h1,
+.admin h2 {
+  font-family: var(--font-display);
+  font-weight: 400;
 }
 
 .admin-header {
@@ -15,7 +58,7 @@
 .admin h1 {
   margin: 0 0 0.25rem;
   font-size: 1.5rem;
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .admin h2 {
@@ -42,10 +85,10 @@
 .admin .card {
   background: var(--card);
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 16px;
   padding: 1.25rem;
   margin-top: 1.25rem;
-  box-shadow: 0 1px 2px rgb(16 24 40 / 4%);
+  box-shadow: 0 12px 32px -16px var(--purple-glow);
 }
 
 .admin .card-header {
@@ -81,7 +124,7 @@
   padding: 0.1rem 0.55rem;
   border-radius: 999px;
   border: 1px solid var(--border);
-  background: #f9fafb;
+  background: var(--card-raised);
   color: var(--muted);
   font-size: 0.78rem;
   white-space: nowrap;
@@ -120,14 +163,16 @@
   /* The onboarding page's own unscoped `.button` adds a top margin. Here it would push the
      back button off the line it shares with the period filter. */
   margin: 0;
-  padding: 0.5rem 1rem;
+  padding: 0.5rem 1.1rem;
   border: 1px solid transparent;
-  border-radius: 8px;
+  border-radius: 999px;
   background: var(--accent);
   color: var(--accent-text);
   font: inherit;
+  font-weight: 700;
   text-decoration: none;
   cursor: pointer;
+  box-shadow: 0 0 16px -4px rgb(123 195 148 / 55%);
 }
 
 .admin .button:hover {
@@ -137,6 +182,7 @@
 .admin .button.ghost {
   background: transparent;
   border-color: var(--border);
+  box-shadow: none;
   color: var(--text);
 }
 
@@ -307,7 +353,7 @@
 
 .admin code {
   font-size: 0.82em;
-  background: #f9fafb;
+  background: var(--card-raised);
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 0.05rem 0.3rem;
@@ -328,7 +374,7 @@
   border: 1px solid var(--border);
   border-radius: 10px;
   padding: 0.75rem 0.9rem;
-  background: #fff;
+  background: var(--card-raised);
 }
 
 .admin .tile.accent {
@@ -395,7 +441,7 @@
   /* Green-tinted base with a brighter green sweep, so the wait reads as the same product as
      the loaded page rather than as generic grey boxes. The band is wide and the track only
      twice the width, so the highlight is visible on short bars too. */
-  background: linear-gradient(90deg, #eef5f1 0%, #cbebd9 50%, #eef5f1 100%);
+  background: linear-gradient(90deg, #241a28 0%, #335642 50%, #241a28 100%);
   background-size: 200% 100%;
   animation: sk-shimmer 1.4s ease-in-out infinite;
 }
@@ -611,8 +657,10 @@
 .admin .mapping-field input[type='text'] {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: 0.75rem;
   padding: 0.45rem 0.6rem;
+  background: var(--card-raised);
+  color: var(--text);
   font: inherit;
 }
 
@@ -677,9 +725,10 @@
   gap: 0.5rem;
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: 0.75rem;
   padding: 0.45rem 0.6rem;
-  background: #fff;
+  background: var(--card-raised);
+  color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
@@ -710,17 +759,19 @@
   left: 0;
   right: 0;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
-  background: #fff;
-  box-shadow: 0 8px 24px rgb(15 23 42 / 12%);
+  border-radius: 0.75rem;
+  background: var(--card-raised);
+  box-shadow: 0 12px 32px -12px var(--purple-glow);
   padding: 0.4rem;
 }
 
 .admin .select-search {
   width: 100%;
   border: 1px solid var(--border);
-  border-radius: 0.375rem;
+  border-radius: 0.75rem;
   padding: 0.4rem 0.55rem;
+  background: var(--card);
+  color: var(--text);
   font: inherit;
 }
 
@@ -747,6 +798,7 @@
   border-radius: 0.3rem;
   padding: 0.4rem 0.5rem;
   background: none;
+  color: var(--text);
   font: inherit;
   text-align: left;
   cursor: pointer;
