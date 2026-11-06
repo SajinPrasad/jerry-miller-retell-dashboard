@@ -8,3 +8,7 @@ class TwilioError(Exception):
 
 class StripeBillingError(Exception):
     """A bill cannot be charged for a reason on our side, before Stripe is ever asked."""
+
+
+class ManualRetryUnavailable(Exception):
+    """This bill is in no state to be retried by hand. The message says which state."""

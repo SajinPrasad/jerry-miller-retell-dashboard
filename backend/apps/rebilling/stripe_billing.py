@@ -34,7 +34,7 @@ from django.utils import timezone
 from apps.ghl.exceptions import GHLError
 from apps.ghl.services import GHLOAuthService
 
-from .exceptions import StripeBillingError
+from .exceptions import ManualRetryUnavailable, StripeBillingError
 from .models import (
     AUTO_CHARGE,
     CHARGING,
@@ -87,13 +87,6 @@ GHL_STATUS_ACTIVE = 'active'
 # The same, for the card status field on that same contact. Writing `card not found` is what
 # triggers the GoHighLevel workflow that emails them a card collection form.
 GHL_CARD_NOT_FOUND = 'card not found'
-
-# The values written to the Retell on/off custom value in the client's own sub-account. Unlike
-# the contact field above, this one is read directly by an If/Else condition in the client's
-# call-routing workflow - evaluated when a call comes in, not watched as a trigger - which is
-# why a sub-account custom value works for this and did not for the contact field (§6.10b).
-RETELL_TOGGLE_OFF = 'off'
-RETELL_TOGGLE_ON = 'on'
 
 # Whether Stripe holds a card we could charge this client with. A card GHL attached without
 # making it the invoice default is promoted to the default the first time either is asked
@@ -245,7 +238,7 @@ def request_card(client: ClientMapping) -> None:
     they enter a card on. Nothing about the card itself happens here - the form and the card
     entry both live in GoHighLevel and Stripe.
 
-    **Not best effort**, unlike `sync_rebilling_status`: an admin pressed a button, so a
+    **Not best effort**, unlike `sync_voice_routing`: an admin pressed a button, so a
     GoHighLevel failure is raised for them to see rather than logged, or they would walk away
     believing a client had been asked who never was.
     """
@@ -603,7 +596,7 @@ def _mark_paid(bill: Bill, paid_at: datetime) -> None:
     bill.failure_reason = ''
     bill.next_retry_at = None
     bill.save(update_fields=['status', 'paid_at', 'failure_reason', 'next_retry_at'])
-    sync_rebilling_status(bill)
+    sync_voice_routing(bill)
 
 
 def record_failure(bill: Bill, reason: str, now: datetime | None = None) -> None:
@@ -639,87 +632,175 @@ def record_failure(bill: Bill, reason: str, now: datetime | None = None) -> None
         )
     bill.save(update_fields=['status', 'failure_reason', 'next_retry_at'])
     if bill.status == FAILED:
-        sync_rebilling_status(bill)
+        sync_voice_routing(bill)
 
 
 def _retry_interval() -> timedelta:
     return timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
 
 
-def sync_rebilling_status(bill: Bill) -> None:
-    """Write the client's rebilling status to GoHighLevel: the billing contact, and the toggle.
+def sync_voice_routing(bill: Bill) -> None:
+    """Pause or resume the client's voice calls in GoHighLevel, from the bill's own state.
 
-    `failed` once a bill has used up its retries, so Jerry's GHL workflows can pause the client's
-    Retell agents. `active` once a bill is paid, unless another bill for the same client has still
-    failed: paying one month must not switch the agents back on while an earlier month is unpaid.
-    Any other status leaves GoHighLevel alone, so a bill still being retried does not pause anyone.
+    Paused once a bill has used up its retries, resumed once it is paid - unless another bill
+    for the same client is still failed, because paying one month must not switch the agent back
+    on while an earlier month is unpaid. Any other status leaves GoHighLevel alone, so a bill
+    still being retried pauses nobody.
 
-    **Two writes, for two different jobs.** The contact field (`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`)
-    is what GoHighLevel's dunning/notification workflows trigger on - a workflow fires on a
-    contact field changing, which is why this moved off a sub-account custom value in the first
-    place (§6.10b: a workflow has no trigger at all for a custom value changing). The sub-account
-    custom value (`GHL_RETELL_STATUS_CUSTOM_VALUE_ID`) is back for a different reason: it is read
-    directly by an If/Else condition in the client's call-routing workflow, evaluated on each
-    incoming call rather than watched for a change, so the thing that made a custom value useless
-    for the contact field's job does not apply to this one.
+    **What pauses a client is now the agent id itself** (`pause_voice`): the custom value their
+    call-routing workflow reads to know which Retell agent answers is emptied, so there is no
+    agent for a call to reach whatever the workflow does. The status word this used to write was
+    indirect - it needed a correctly-built workflow at the other end to turn `failed` into "do
+    not route this call", and one client whose workflow was built before that convention kept
+    taking calls unpaid.
 
-    Both are best effort. The outcome is already on the bill, and a failed write to GoHighLevel
-    must not undo it or stop the webhook or the retry run, so a GHL error is logged rather than
-    raised for either.
+    **The contact field is still written when one is configured**
+    (`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`), because it is the only thing a GoHighLevel workflow
+    can *trigger* on, and a client in arrears is still meant to hear about it. Blank means no
+    dunning field has been created yet and the write is skipped in silence - the pause does not
+    depend on it.
+
+    Every write here is best effort. The bill's outcome is already saved, and GoHighLevel being
+    down must not undo it or stop the webhook, the sweep or the retry button.
     """
     if bill.status == FAILED:
-        value = GHL_STATUS_FAILED
-        toggle = RETELL_TOGGLE_OFF
+        paused, status_word = True, GHL_STATUS_FAILED
     elif bill.status == PAID:
         if bill.client.bills.exclude(pk=bill.pk).filter(status=FAILED).exists():
             return
-        value = GHL_STATUS_ACTIVE
-        toggle = RETELL_TOGGLE_ON
+        paused, status_word = False, GHL_STATUS_ACTIVE
     else:
         return
 
-    location_id = bill.client.location_id
-    _set_retell_toggle(location_id, toggle)
+    if paused:
+        pause_voice(bill.client)
+    else:
+        resume_voice(bill.client)
 
-    if not bill.client.billing_email:
-        # Nothing to find a contact by. Logged for the same reason a GHL failure is: the bill's
-        # own outcome stands either way, and this is the only trace that the workflow was
-        # never told.
+    _set_dunning_status(bill.client, status_word)
+
+
+def pause_voice(client: ClientMapping) -> None:
+    """Empty the client's Retell agent custom value, so no call can reach a paid agent.
+
+    The live value is captured into `retell_routing_agent_id` before it is cleared: clearing
+    destroys it, and what was actually routing their calls is a better answer than what we
+    believe should be. An empty live value leaves whatever was already captured alone.
+
+    `voice_paused_at` is stamped only once GoHighLevel has taken the write, so a bill that reads
+    `failed` beside a null `voice_paused_at` is a client who was *not* paused - which is the
+    thing to alert on, and the thing a log line alone would hide.
+    """
+    try:
+        custom_value = _agent_custom_value(client.location_id)
+        live = str(custom_value.get('value') or '').strip()
+        if live and live != client.retell_routing_agent_id:
+            client.retell_routing_agent_id = live
+            client.save(update_fields=['retell_routing_agent_id'])
+
+        GHLOAuthService().set_custom_value(
+            client.location_id, custom_value['id'], '', name=custom_value.get('name') or ''
+        )
+    except GHLError as exc:
+        logger.exception('billing: could not pause voice for %s', client.location_id)
+        _record_voice_sync(client, paused_at=client.voice_paused_at, error=str(exc))
+        return
+
+    logger.info('billing: voice paused for %s', client.location_id)
+    _record_voice_sync(client, paused_at=timezone.now(), error='')
+
+
+def resume_voice(client: ClientMapping) -> None:
+    """Put the client's Retell agent id back, so their calls route again.
+
+    The id comes from what was captured when they were paused, falling back to their mapping.
+    A client with neither is left alone and logged: writing a guessed agent id would route a
+    client's calls to an agent nobody chose, which is worse than leaving the pause in place for
+    a human to fix.
+    """
+    agent_id = client.retell_routing_agent_id or _mapped_agent_id(client)
+    if not agent_id:
+        logger.warning(
+            'billing: no Retell agent id to restore for %s, so its voice stays paused',
+            client.location_id,
+        )
+        _record_voice_sync(
+            client,
+            paused_at=client.voice_paused_at,
+            error='No Retell agent id to restore. Map an agent to this client.',
+        )
+        return
+
+    try:
+        custom_value = _agent_custom_value(client.location_id)
+        GHLOAuthService().set_custom_value(
+            client.location_id,
+            custom_value['id'],
+            agent_id,
+            name=custom_value.get('name') or '',
+        )
+    except GHLError as exc:
+        logger.exception('billing: could not resume voice for %s', client.location_id)
+        _record_voice_sync(client, paused_at=client.voice_paused_at, error=str(exc))
+        return
+
+    logger.info('billing: voice resumed for %s on agent %s', client.location_id, agent_id)
+    _record_voice_sync(client, paused_at=None, error='')
+
+
+def _agent_custom_value(location_id: str) -> dict:
+    """The sub-account's own Retell agent custom value, looked up by its configured name.
+
+    Resolved on every write rather than cached on the client: pausing and resuming happen at
+    most twice a client-month, so the extra read is free, and a value deleted and recreated by a
+    snapshot refresh gets a new id that a cached one would go on writing past.
+    """
+    name = settings.GHL_RETELL_AGENT_CUSTOM_VALUE_NAME
+    custom_value = GHLOAuthService().find_custom_value(location_id, name)
+    if custom_value is None or not custom_value.get('id'):
+        raise GHLError(f'No custom value named {name!r} in sub-account {location_id}.')
+    return custom_value
+
+
+def _mapped_agent_id(client: ClientMapping) -> str:
+    """The client's mapped Retell agent. One agent per client, so the first is the only one."""
+    agents = client.retell_agent_ids or []
+    return str(agents[0]) if agents else ''
+
+
+def _record_voice_sync(client: ClientMapping, paused_at: datetime | None, error: str) -> None:
+    """Save what the last pause or resume left behind, for the client's page to read."""
+    client.voice_paused_at = paused_at
+    client.voice_sync_error = error[:255]
+    client.save(update_fields=['voice_paused_at', 'voice_sync_error'])
+
+
+def _set_dunning_status(client: ClientMapping, value: str) -> None:
+    """Tell GoHighLevel's dunning workflow where this client stands, if one is configured.
+
+    A contact field is the only thing a GoHighLevel workflow can trigger on, so this is what
+    sends the client an email about a failed payment. Blank `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`
+    means no such field exists yet: skipped in silence, the way a blank card status field is.
+    """
+    if not settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID:
+        return
+    if not client.billing_email:
+        # Nothing to find a contact by. Logged because the bill's outcome stands either way, and
+        # this is the only trace that the workflow was never told.
         logger.warning(
             'billing: %s has no billing email, so its status could not be set to %s',
-            location_id,
+            client.location_id,
             value,
         )
         return
 
     try:
         GHLOAuthService().set_contact_field(
-            bill.client.billing_email, settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID, value
+            client.billing_email, settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID, value
         )
     except GHLError:
         logger.exception(
-            'billing: could not set the rebilling status to %s for %s', value, location_id
-        )
-
-
-def _set_retell_toggle(location_id: str, value: str) -> None:
-    """Flip the client's own sub-account custom value that gates Retell call routing.
-
-    Blank `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` means the setting has not been created in GHL yet,
-    so there is nothing to write - the same way a blank card or rebilling-status field id leaves
-    those writes skipped elsewhere in this module. Best effort, like the contact field write this
-    runs alongside: logged rather than raised, since the bill's own outcome does not depend on it.
-    """
-    custom_value_id = settings.GHL_RETELL_STATUS_CUSTOM_VALUE_ID
-    if not custom_value_id:
-        return
-    try:
-        GHLOAuthService().set_custom_value(location_id, custom_value_id, value)
-    except GHLError:
-        logger.exception(
-            'billing: could not set the Retell call-routing toggle to %s for %s',
-            value,
-            location_id,
+            'billing: could not set the rebilling status to %s for %s', value, client.location_id
         )
 
 
@@ -763,12 +844,8 @@ def _retry_one(bill: Bill, now: datetime) -> str:
     An invoice Stripe already shows as paid is taken as paid without asking for the money again.
     Otherwise the open invoice is paid, which makes Stripe attempt the card once more.
     """
-    _configure()
-    key = f'bill-{bill.pk}-retry-{bill.retry_count}'
     try:
-        invoice = stripe.Invoice.retrieve(bill.stripe_invoice_id)
-        if invoice.status != 'paid':
-            invoice = stripe.Invoice.pay(bill.stripe_invoice_id, idempotency_key=key)
+        invoice = _pay_open_invoice(bill)
     except stripe.StripeError as exc:
         logger.warning(
             'billing: retry %s for %s, bill %s, could not be made',
@@ -786,6 +863,95 @@ def _retry_one(bill: Bill, now: datetime) -> str:
 
     record_failure(bill, NOT_COLLECTED_REASON, now)
     return bill.status
+
+
+def _pay_open_invoice(bill: Bill):
+    """Ask Stripe for this bill's invoice and pay it unless Stripe already shows it paid.
+
+    The read first is not caution for its own sake: an invoice Stripe collected without us
+    hearing about it - a webhook that never arrived - is taken as paid rather than charged
+    again. The idempotency key carries the retry number, so each attempt is its own request and
+    none of them can replay the cached answer of an earlier one (Stripe keeps those 24 hours,
+    declines included).
+
+    Raises whatever Stripe raised; the caller decides what a decline means.
+    """
+    _configure()
+    invoice = stripe.Invoice.retrieve(bill.stripe_invoice_id)
+    if invoice.status == 'paid':
+        return invoice
+    return stripe.Invoice.pay(
+        bill.stripe_invoice_id, idempotency_key=f'bill-{bill.pk}-retry-{bill.retry_count}'
+    )
+
+
+def retry_now(bill_pk: int, now: datetime | None = None) -> Bill:
+    """Make one retry this moment, because an admin asked for it. Returns the settled bill.
+
+    The whole attempt is made under the bill's own row lock, so a second click - or the hourly
+    sweep landing mid-attempt - waits rather than charging the same card twice, and the first
+    thing it finds on the other side is the outcome of the attempt it waited for. A bill another
+    attempt has already paid is returned as paid without asking Stripe for the money again.
+
+    **A decline is not an error here.** The card answering "no" is the outcome, recorded on the
+    bill exactly as the sweep records it, and handed back for the page to show. Only an attempt
+    that could not be *made* - Stripe unreachable, or answering about something other than this
+    card - raises, and raising rolls the whole transaction back, so a bill nobody could charge
+    keeps the retry count and schedule it had before the button was pressed.
+
+    Which retry this is counts: a `retrying` bill spends one of its automatic retries and has its
+    next one pushed out, so "retry 2 of 3" on the page stays true and three clicks cannot become
+    an unbounded series of attempts against a card that keeps declining. A `failed` bill has no
+    schedule left to spend, so staff may keep trying it - each attempt still takes the next
+    number, which is what keeps the idempotency keys apart.
+    """
+    now = now or timezone.now()
+    with transaction.atomic():
+        bill = Bill.objects.select_for_update().select_related('client').get(pk=bill_pk)
+        if bill.status == PAID:
+            return bill
+        if bill.status not in (RETRYING, FAILED):
+            raise ManualRetryUnavailable(
+                'Only a failed or retrying bill can be retried. '
+                f'This one is {bill.get_status_display().lower()}.'
+            )
+        if not bill.stripe_invoice_id:
+            raise ManualRetryUnavailable(
+                'This bill has no Stripe invoice to pay. It was never sent to Stripe.'
+            )
+        if bill.client.billing_mode != AUTO_CHARGE:
+            raise ManualRetryUnavailable(
+                'This client is not on automatic charging, so their card is not taken here.'
+            )
+
+        bill.retry_count += 1
+        bill.last_retry_at = now
+        if bill.status == RETRYING:
+            bill.next_retry_at = now + _retry_interval()
+        bill.save(update_fields=['retry_count', 'last_retry_at', 'next_retry_at'])
+
+        try:
+            invoice = _pay_open_invoice(bill)
+        except stripe.CardError as exc:
+            # Reached the card and was refused: an outcome, recorded and handed back.
+            record_failure(bill, _stripe_reason(exc), now)
+            return bill
+        except stripe.StripeError as exc:
+            # Never reached the card, or Stripe would not say. Raising undoes the retry this
+            # transaction claimed, so nothing was spent on an attempt that never happened.
+            logger.warning(
+                'billing: manual retry for %s, bill %s, could not be made',
+                bill.client.location_id,
+                bill.billing_period,
+                exc_info=True,
+            )
+            raise StripeBillingError(_stripe_reason(exc)) from exc
+
+        if invoice.status == 'paid':
+            _mark_paid(bill, paid_at=now)
+        else:
+            record_failure(bill, NOT_COLLECTED_REASON, now)
+        return bill
 
 
 def _stripe_reason(exc: stripe.StripeError) -> str:

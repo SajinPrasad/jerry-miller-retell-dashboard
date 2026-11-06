@@ -10,6 +10,7 @@ import type {
   RateFields,
   RecentCall,
   SsoSession,
+  VoiceStatus,
 } from '../../types/admin'
 import AdminPage from './AdminPage'
 import { currentMonth, formatMonth, shiftMonth } from './format'
@@ -91,6 +92,8 @@ const detail: ClientDetail = {
   default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
   // Nothing billed for a month still in progress, so the page shows its own estimate.
   bill: null,
+  // Routing normally: a client is only paused once a bill of theirs has failed.
+  voice: { paused: false, paused_at: null, routing_agent_id: 'agent_1', error: '' },
   usage: mapped.usage!,
   twilio_days: [],
   recent_calls: [
@@ -178,6 +181,24 @@ function parentIgnores() {
  * `perMonth` overrides the client returned for a given month. `synced` overrides what the
  * "Refresh clients" sync endpoint returns, in place of the regular list's own clients.
  */
+/** What the retry endpoint answers with unless a test says otherwise: the card was taken. */
+const COLLECTED = {
+  bill: {
+    status: 'paid' as const,
+    total_cents: 5500,
+    failure_reason: '',
+    retry_count: 3,
+    max_retries: 3,
+    next_retry_at: null,
+  },
+  voice: {
+    paused: false,
+    paused_at: null,
+    routing_agent_id: 'agent_1',
+    error: '',
+  },
+}
+
 function mockApi(
   options: {
     session?: SsoSession
@@ -193,6 +214,8 @@ function mockApi(
     twilio?: boolean
     /** What the card request endpoint answers with, or a status code for one that refuses. */
     cardRequest?: CardStatus | number
+    /** What the retry-charge endpoint answers with, or a status code for one that refuses. */
+    retryCharge?: { bill: BillSummary | null; voice: VoiceStatus } | number
   } = {},
 ) {
   const { session = agencySession, perMonth = {}, bill = null, twilio = true } = options
@@ -214,6 +237,14 @@ function mockApi(
     if (url.startsWith('/api/rebilling/admin/twilio-subaccounts/')) return json(twilioSubaccounts)
 
     // Before the detail branch below, which this URL also starts with.
+    if (url.startsWith('/api/rebilling/admin/clients/loc1/retry-charge/')) {
+      const answer = options.retryCharge ?? COLLECTED
+      if (typeof answer === 'number') {
+        return Promise.resolve(new Response('{}', { status: answer }))
+      }
+      return json({ month, ...answer })
+    }
+
     if (url.startsWith('/api/rebilling/admin/clients/loc1/card-request/')) {
       const answer = options.cardRequest ?? REQUESTED
       if (typeof answer === 'number') {
@@ -697,6 +728,7 @@ describe('AdminPage', () => {
             rate_history: [],
             default_rates: { voice_rate_cents: 25, call_rate_cents: 5 },
             bill: null,
+            voice: { paused: false, paused_at: null, routing_agent_id: '', error: '' },
             usage: {
               ...mapped.usage!,
               ai_minutes: '0.00',
@@ -1382,6 +1414,15 @@ describe('AdminPage', () => {
         max_retries: 3,
         next_retry_at: null,
       },
+      detail: {
+        // A failed bill pauses the client, so the only alert on the page is the reason itself.
+        voice: {
+          paused: true,
+          paused_at: '2026-11-03T15:00:00Z',
+          routing_agent_id: 'agent_1',
+          error: '',
+        },
+      },
     })
     const user = userEvent.setup()
 
@@ -1429,6 +1470,14 @@ describe('AdminPage', () => {
         retry_count: 3,
         max_retries: 3,
         next_retry_at: null,
+      },
+      detail: {
+        voice: {
+          paused: true,
+          paused_at: '2026-11-03T15:00:00Z',
+          routing_agent_id: 'agent_1',
+          error: '',
+        },
       },
     })
     const user = userEvent.setup()
@@ -2033,6 +2082,203 @@ describe('AdminPage', () => {
 
       expect(await screen.findByText('No card on file')).toBeInTheDocument()
       expect(requestButton()).not.toBeInTheDocument()
+    })
+  })
+
+  describe('the retry payment button', () => {
+    const FAILED_BILL: BillSummary = {
+      status: 'failed',
+      total_cents: 5500,
+      failure_reason: 'card_declined',
+      retry_count: 3,
+      max_retries: 3,
+      next_retry_at: null,
+    }
+    const PAUSED_VOICE: VoiceStatus = {
+      paused: true,
+      paused_at: '2026-11-03T15:00:00Z',
+      routing_agent_id: 'agent_1',
+      error: '',
+    }
+
+    const retryButton = () => screen.queryByRole('button', { name: 'Retry payment' })
+
+    function failedClient(overrides: Partial<BillSummary> = {}) {
+      return mockApi({
+        bill: { ...FAILED_BILL, ...overrides },
+        detail: { voice: PAUSED_VOICE },
+      })
+    }
+
+    it('offers the button on a failed bill', async () => {
+      parentAnswers()
+      failedClient()
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(retryButton()).toBeInTheDocument()
+    })
+
+    it('offers the button while a bill is still being retried', async () => {
+      parentAnswers()
+      mockApi({
+        bill: { ...FAILED_BILL, status: 'retrying', retry_count: 1, next_retry_at: null },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(retryButton()).toBeInTheDocument()
+    })
+
+    it.each(['paid', 'uncharged', 'charging'] as const)(
+      'offers nothing to press on a %s bill',
+      async (status) => {
+        parentAnswers()
+        mockApi({ bill: { ...FAILED_BILL, status, failure_reason: '' } })
+        const user = userEvent.setup()
+
+        render(<AdminPage />)
+        await openClient(user)
+
+        expect(retryButton()).not.toBeInTheDocument()
+      },
+    )
+
+    it('never offers a sub-account the button on its own page', async () => {
+      parentAnswers()
+      mockApi({
+        session: { ...agencySession, active_location: 'loc1', scope: 'location' },
+        bill: FAILED_BILL,
+        detail: { voice: PAUSED_VOICE },
+      })
+
+      // A sub-account session opens straight onto its own page - there is no list to click.
+      render(<AdminPage />)
+
+      expect(await screen.findByText('card_declined')).toBeInTheDocument()
+      expect(retryButton()).not.toBeInTheDocument()
+    })
+
+    it('shows the bill paid and the client routing again, without reloading the page', async () => {
+      parentAnswers()
+      failedClient()
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(retryButton()!)
+
+      expect(await screen.findByText('Paid', { selector: '.tile-label' })).toBeInTheDocument()
+      expect(screen.queryByText('card_declined')).not.toBeInTheDocument()
+      expect(screen.queryByText(/Calls paused/)).not.toBeInTheDocument()
+      // Paid, so there is nothing left to retry.
+      expect(retryButton()).not.toBeInTheDocument()
+    })
+
+    it('shows the new reason when the card declines again, and keeps the button', async () => {
+      parentAnswers()
+      mockApi({
+        bill: { ...FAILED_BILL, status: 'retrying', retry_count: 1 },
+        retryCharge: {
+          bill: {
+            status: 'retrying',
+            total_cents: 5500,
+            failure_reason: 'insufficient_funds',
+            retry_count: 2,
+            max_retries: 3,
+            next_retry_at: '2026-11-04T03:00:00Z',
+          },
+          voice: { paused: false, paused_at: null, routing_agent_id: 'agent_1', error: '' },
+        },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(retryButton()!)
+
+      expect(await screen.findByText('insufficient_funds')).toBeInTheDocument()
+      expect(screen.getByText('Retry 2 of 3')).toBeInTheDocument()
+      expect(retryButton()).toBeInTheDocument()
+    })
+
+    it('warns when a failed bill left the client still taking calls', async () => {
+      parentAnswers()
+      mockApi({
+        bill: FAILED_BILL,
+        detail: {
+          voice: {
+            paused: false,
+            paused_at: null,
+            routing_agent_id: 'agent_1',
+            error: 'No custom value named "retell_agent_id" in sub-account loc1.',
+          },
+        },
+      })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      expect(screen.getByText(/Calls are still routing for this client/)).toHaveTextContent(
+        'retell_agent_id',
+      )
+    })
+
+    it('says when the charge is on its way, with the button disabled', async () => {
+      parentAnswers()
+      const fetchMock = failedClient()
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+
+      // The charge is held open, because the in-flight state is the thing being tested and a
+      // mocked fetch would otherwise be over before the first render after the click.
+      let collect = () => {}
+      const held = new Promise<Response>((resolve) => {
+        collect = () =>
+          resolve(
+            new Response(JSON.stringify({ month: THIS_MONTH, ...COLLECTED }), {
+              status: 200,
+              headers: { 'Content-Type': 'application/json' },
+            }),
+          )
+      })
+      const answering = fetchMock.getMockImplementation()!
+      fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) =>
+        String(input).includes('/retry-charge/') ? held : answering(input, init),
+      )
+
+      await user.click(retryButton()!)
+
+      // One click cannot become two charges: the button is gone and what stands in its place
+      // is disabled, with the spinner beside its label.
+      const charging = await screen.findByRole('button', { name: 'Charging…' })
+      expect(charging).toBeDisabled()
+      expect(retryButton()).not.toBeInTheDocument()
+
+      collect()
+      expect(await screen.findByText('Paid', { selector: '.tile-label' })).toBeInTheDocument()
+    })
+
+    it('says so when the bill could not be put back through Stripe', async () => {
+      parentAnswers()
+      mockApi({ bill: FAILED_BILL, detail: { voice: PAUSED_VOICE }, retryCharge: 502 })
+      const user = userEvent.setup()
+
+      render(<AdminPage />)
+      await openClient(user)
+      await user.click(retryButton()!)
+
+      expect(await screen.findByText(/Could not put this bill back through Stripe/)).toBeInTheDocument()
+      // The bill on screen is left alone, and the button stays for another go.
+      expect(screen.getByText('card_declined')).toBeInTheDocument()
+      expect(retryButton()).toBeInTheDocument()
     })
   })
 })

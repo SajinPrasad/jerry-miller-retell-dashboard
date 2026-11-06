@@ -460,6 +460,39 @@ def test_detail_reports_a_paid_bill_rather_than_leaving_the_month_an_estimate(cl
     }
 
 
+def test_detail_reports_a_client_whose_voice_is_paused(client):
+    """What the page shows beside a failed bill: paused, when, and onto what it would resume."""
+    make_agency()
+    mapping = make_client('loc1')
+    mapping.voice_paused_at = IN_WINDOW
+    mapping.retell_routing_agent_id = 'agent_captured'
+    mapping.save(update_fields=['voice_paused_at', 'retell_routing_agent_id'])
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['voice'] == {
+        'paused': True,
+        'paused_at': IN_WINDOW.isoformat(),
+        'routing_agent_id': 'agent_captured',
+        'error': '',
+    }
+
+
+def test_detail_reports_a_client_who_could_not_be_paused(client):
+    """A failed bill beside a client still routing calls is the state worth seeing."""
+    make_agency()
+    mapping = make_client('loc1')
+    mapping.voice_sync_error = 'No custom value named "retell_agent_id" in sub-account loc1.'
+    mapping.save(update_fields=['voice_sync_error'])
+
+    body = get_detail(client, 'loc1').json()
+
+    assert body['voice']['paused'] is False
+    assert 'retell_agent_id' in body['voice']['error']
+    # Nothing was captured, so a resume would write the agent they are mapped to.
+    assert body['voice']['routing_agent_id'] == 'agent1'
+
+
 def test_detail_reports_a_bill_still_waiting_on_stripe(client):
     """`charging` is a real state, not a moment: only the webhook moves a bill off it."""
     make_agency()

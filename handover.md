@@ -245,6 +245,7 @@ All under `/api/` unless noted.
 | POST | `/api/ghl/webhooks/location-created/` | GHL's "location created" event. Syncs the new sub-account |
 | POST | `/api/rebilling/webhooks/retell/` | Retell `call_ended` webhook. Signature-verified, answers 204 |
 | POST | `/api/rebilling/webhooks/stripe/` | Stripe invoice events (`invoice.paid`, `invoice.payment_failed`). Signature-verified, answers 204 |
+| POST | `/api/rebilling/admin/clients/<location_id>/retry-charge/` | Collect a `failed` or `retrying` bill now. Agency scope. Optional `{"month"}`. 200 with the refreshed `bill` and `voice` even on a decline; 409 for a bill in no state to retry; 502 for a Stripe that could not be reached (§6.10c) |
 | GET | `/api/rebilling/admin/clients/?month=` | Every sub-account, left-joined to its mapping, with that month's usage and status |
 | POST | `/api/rebilling/admin/clients/sync/?month=` | Agency only. Re-syncs sub-accounts from GHL, then returns the list |
 | GET | `/api/rebilling/admin/clients/<location_id>/?month=` | One client: mapping, rates, bill, usage, Twilio days, recent calls |
@@ -617,7 +618,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
 | `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `failed` on a final failure and `active` on payment. Blank until Jerry creates the field; the write fails and is logged until then |
-| `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` | none | The custom value in each client's own sub-account, set to `off`/`on` alongside the field above, read by an If/Else condition in the call-routing workflow. Blank skips the write (§6.10b) |
+| `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME` | `retell_agent_id` | The **name** of the custom value in each client's own sub-account holding their Retell agent id. Emptied to pause a client in arrears, restored when they pay. Looked up by name per sub-account, because the id differs per sub-account (§6.10b) |
 | `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
 | `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
 
@@ -760,7 +761,47 @@ Nothing calls it from a UI yet.
 **Tests:** `test_stripe_billing.py` (every Stripe call faked by `FakeStripe`, and a guard that fails any
 unfaked call by name), and `test_billing_email.py` (who pays, and the cached-customer rules).
 
-### 6.10b The rebilling status write: a contact field, not a custom value (built)
+### 6.10b Pausing and resuming a client: the agent id, and the dunning field (built)
+
+**Phase 10 (6 Nov) replaced the status-word mechanism below with the agent id itself.**
+`sync_voice_routing(bill)` is what pauses or resumes a client: `pause_voice()` on a bill whose
+retries are used up, `resume_voice()` on one that is paid — unless another bill of theirs is still
+`failed`. Any other status leaves GoHighLevel alone.
+
+- **What pauses them.** The custom value in their own sub-account that holds their **Retell agent
+  id** — the one their call-routing workflow passes to Retell — is emptied. There is then no agent
+  for a call to reach, whatever the workflow does. Resuming puts the id back. The old mechanism
+  wrote the *word* `failed` and needed a correctly-built workflow at the other end to turn it into
+  "do not route this call"; one client whose workflow predated that convention kept taking calls
+  unpaid.
+- **Found by name, not by id.** `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME` (default `retell_agent_id`) →
+  `GHLOAuthService.find_custom_value(location_id, name)` lists that sub-account's custom values and
+  matches on `name`, then on `fieldKey` (`{{ custom_values.retell_agent_id }}`). A custom value
+  carries its own location's id even when a snapshot created it, so one configured id cannot
+  address them all — which is what the old `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` assumed. Resolved on
+  every write rather than cached: a value recreated by a snapshot refresh has a new id.
+- **Pause captures before it clears.** The live value goes to `ClientMapping.retell_routing_agent_id`
+  first, so a client whose agent was changed in GoHighLevel resumes onto the agent that was actually
+  routing their calls. Resume falls back to their mapped agent; with neither, the client stays
+  paused and the page says so rather than a guessed id being written.
+- **New fields on `ClientMapping`** (migration `0009_client_mapping_voice_routing`):
+  `retell_routing_agent_id`, `voice_paused_at`, `voice_sync_error`. `voice_paused_at` is stamped
+  only after GoHighLevel takes the write, so **a `failed` bill beside a null `voice_paused_at` is a
+  client who was never actually paused** — the state Phase 6's alerting should watch, and what the
+  client page shows as a red banner.
+- **The dunning contact field is still written**, when `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` is
+  configured: `failed` / `active` through `set_contact_field()`, exactly as before. It is the only
+  thing a GHL workflow can *trigger* on, so removing it would silently remove any arrears email.
+  Blank skips it without error; the pause does not depend on it.
+- **Both best effort**, like everything else here: the bill's outcome is already saved, so a
+  `GHLError` is logged — and now also recorded on the client as `voice_sync_error`.
+- **Tests:** `test_retries.py` (pause, resume, capture, no-agent, missing custom value, failed
+  write, blank dunning field), `test_manual_retry.py`, and the `find_custom_value` /
+  `set_custom_value` tests in `apps/ghl/tests/test_services.py`.
+
+**What follows is the history that led here, and is no longer the mechanism.**
+
+### 6.10b-i The rebilling status write: a contact field, not a custom value (superseded)
 
 `sync_rebilling_status(bill)` is what tells GoHighLevel to pause or resume a client's Retell agents:
 `failed` once a bill has used up its retries, `active` once one is paid — unless another bill of
@@ -809,6 +850,50 @@ written by `sync_rebilling_status`, in the same run, for the same bill.
 - **Tests:** `test_retries.py`'s `ghl_custom_value_writes` fixture (parallel to
   `ghl_contact_writes`) asserts the `(location_id, custom_value_id, value)` triples; new
   `set_custom_value` tests in `apps/ghl/tests/test_services.py`.
+
+*(Superseded by Phase 10 above: the on/off toggle is gone, and the custom value written is the
+client's Retell agent id, found by name.)*
+
+---
+
+### 6.10c Phase 10: the manual retry button (built, 6 Nov)
+
+**Endpoint:** `POST /api/rebilling/admin/clients/<location_id>/retry-charge/`, agency scope only,
+body optionally `{"month": "YYYY-MM"}` (default: the month running now, which is the month the
+page opens on). Answers `{month, bill, voice}`.
+
+`stripe_billing.retry_now(bill_pk)` makes the attempt:
+
+1. `select_for_update()` on the bill, **held across the Stripe call**. A second click, or the
+   hourly sweep landing mid-attempt, waits and then finds the first attempt's outcome — one click
+   cannot become two charges.
+2. Already `paid` → handed straight back, nothing asked of Stripe.
+3. Not `failed`/`retrying`, no `stripe_invoice_id`, or not on `auto_charge` → `ManualRetryUnavailable`
+   → **409**. Nothing is touched. `billing_mode` means "do not take this one's card", and a button
+   is not a way around it.
+4. `retry_count += 1`, `last_retry_at = now`; a `retrying` bill also has `next_retry_at` pushed out.
+   A `failed` bill keeps `next_retry_at = None` — staff may retry it as often as they like without
+   it going back on a schedule, and each attempt still takes the next number.
+5. `_pay_open_invoice()` — `Invoice.retrieve` first, so **an invoice Stripe already holds as paid is
+   taken as paid without charging again**: this button is the repair for a webhook that never
+   arrived. Otherwise `Invoice.pay`, idempotency key `bill-{pk}-retry-{retry_count}`, the same
+   counter and therefore the same key scheme the automatic sweep uses, so no attempt can replay the
+   cached answer of an earlier one (Stripe keeps those 24 hours, declines included).
+6. `CardError` → `record_failure()`, the same path the sweep takes, and **200** with the reason on
+   the bill. Any other `StripeError` → `StripeBillingError` → **502**, and raising rolls the
+   transaction back, so the retry count and schedule are exactly as they were.
+7. Paid → `_mark_paid()` → `sync_voice_routing()` → the client's agent id goes back into
+   GoHighLevel. The last retry declining → `failed` → paused.
+
+**A decline is a 200, not an error.** The card saying no is the outcome an admin pressed the button
+to find out; only 404 (no mapping, no bill for that month), 409 and 502 are failed requests.
+
+**UI** (`ClientDetail.tsx`): the button shows on a `failed` or `retrying` bill for an agency admin
+only, is disabled with a spinner in flight, and swaps the response's `bill` and `voice` into place
+without reloading the page — the badge, the reason banner, the "retry n of m" note and the paused
+line all move together. `VoiceNote` turns a `failed` bill beside an unpaused client into a red
+banner: that client is still taking calls they are not paying for. The preview page answers the
+button from `demoData` without reaching the network.
 
 ---
 
@@ -1186,11 +1271,12 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
   still succeeds at Stripe while every bill here reads `charging` forever. No reconciliation pass exists; Phase 6 should
   alert on bills stuck in `charging` for N days.
 - **`failed` is not final.** Stripe's Smart Retries can later flip a failed invoice to `paid`, and the webhook handles that.
-- **The Retell on/off toggle is two independent GHL writes now, not one.** `sync_rebilling_status` writes the
-  contact field and the sub-account custom value separately, each best effort; one can fail while the other
-  succeeds (a stale call-routing toggle with a correct dunning status on the contact, or the reverse), and
-  nothing surfaces that divergence yet beyond the two log lines. Phase 6 should alert on both. Like Phase 7/8,
-  this has not run against a live GoHighLevel — see §17.1b step 6.
+- **Pausing is one GHL write now, and the dunning field is a second.** `sync_voice_routing` empties or
+  restores the client's Retell agent id custom value, and separately writes the dunning contact field when
+  one is configured; each is best effort, so one can fail while the other succeeds. A failed pause is
+  visible — `voice_paused_at` stays null beside a `failed` bill, and the client page says so in red — which
+  is the one divergence that costs money if missed. Phase 6 should alert on exactly that pair. Like Phase
+  7/8, none of this has run against a live GoHighLevel — see §17.1b step 6.
 - **Django admin** has `ClientMapping` and `Bill` registered. The GHL tokens and OAuth history cannot be inspected through
   the admin yet.
 - **The install check is weaker** (see §4). Any agency that satisfies the "Company" type can install. A private marketplace
@@ -1365,13 +1451,16 @@ In this order, because each step is useless without the one before it:
 5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
    writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
    keep saying no card — the one failure here that looks like a bug and is not.
-6. **Create the Retell on/off custom value** in each sub-account (same name, pushed by snapshot so
-   it gets the same id everywhere), put that id in `GHL_RETELL_STATUS_CUSTOM_VALUE_ID`, and point
-   the client's call-routing workflow's If/Else condition at it. Verify the write by hand first:
-   `PUT /locations/{location_id}/customValues/{id}` with `{"value": "off"}`, `Version: v3`, on
-   that sub-account's own token (`set_custom_value()`, §6.10b) — this is a different token and a
-   different GHL call than the contact field write above, so confirming one working says nothing
-   about the other.
+6. **Create the Retell agent id custom value** in each sub-account (the name matters, the id does
+   not — Phase 10 looks it up by name per sub-account), put its name in
+   `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME`, and have the client's call-routing workflow pass that
+   custom value to Retell as the agent. Pausing a client in arrears empties it; paying restores it.
+   Verify by hand first: `GET /locations/{location_id}/customValues` then
+   `PUT /locations/{location_id}/customValues/{id}` with `{"value": "", "name": "retell_agent_id"}`,
+   `Version: v3`, on that sub-account's own token (`find_custom_value()` / `set_custom_value()`,
+   §6.10b) — a different token and a different GHL call than the contact field write above, so
+   confirming one working says nothing about the other. **Confirm with one live call that an empty
+   agent id fails the call safely** rather than erroring in a way the caller hears.
 
 ### 17.2 Migrations on the server
 

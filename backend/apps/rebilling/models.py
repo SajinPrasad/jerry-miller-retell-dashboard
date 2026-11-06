@@ -92,6 +92,20 @@ class ClientMapping(models.Model):
     # whether money can be taken is wrong the moment the client acts. Whether we asked is the
     # one part of this Stripe cannot tell us.
     card_requested_at = models.DateTimeField(null=True, blank=True)
+    # The agent id that belongs in this sub-account's Retell agent custom value, captured from
+    # GoHighLevel the moment before it is emptied. Clearing a value destroys it, so resuming
+    # needs its own copy - and taking that copy from the live value rather than from the mapping
+    # means a client whose agent was changed in GoHighLevel resumes onto the agent that was
+    # actually routing their calls. The mapping is the fallback for when there was nothing to
+    # capture.
+    retell_routing_agent_id = models.CharField(max_length=255, blank=True, default='')
+    # When *we* emptied that custom value. Null means we have not, so a bill reading `failed`
+    # while this is null is a client still taking calls they are not paying for - the one state
+    # a silent GoHighLevel failure would otherwise leave invisible.
+    voice_paused_at = models.DateTimeField(null=True, blank=True)
+    # Why the last pause or resume could not be written, cleared when one succeeds. Carried so
+    # the client's page can say what went wrong rather than only that nothing happened.
+    voice_sync_error = models.CharField(max_length=255, blank=True, default='')
     active = models.BooleanField(default=True)
 
     class Meta:

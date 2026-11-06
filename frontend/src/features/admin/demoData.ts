@@ -29,6 +29,7 @@ import type {
   TwilioDay,
   TwilioSubaccount,
   UsageSummary,
+  VoiceStatus,
 } from '../../types/admin'
 import { currentMonth } from './format'
 
@@ -251,6 +252,56 @@ export function resetPreviewCardRequests(): void {
   previewCardRequests.clear()
 }
 
+// And the same for the retry button. A retried bill is paid here, which is the outcome worth
+// showing: the badge, the note and the voice line all move at once.
+const previewRetries = new Set<string>()
+
+/**
+ * Stands in for `retryCharge` in the preview: the card is taken, the bill is paid, and the
+ * client's Retell agent id goes back into GoHighLevel.
+ */
+export function retryPreviewCharge(locationId: string): {
+  bill: BillSummary | null
+  voice: VoiceStatus
+} {
+  previewRetries.add(locationId)
+  const spec = SPECS.find((candidate) => candidate.location_id === locationId)
+  const detail = spec ? (demoDetail(locationId, lastClosedMonth()) as ClientDetail) : null
+  return {
+    bill: detail?.bill ? { ...detail.bill, status: 'paid', failure_reason: '' } : null,
+    voice: { paused: false, paused_at: null, routing_agent_id: spec?.agents[0] ?? '', error: '' },
+  }
+}
+
+export function resetPreviewRetries(): void {
+  previewRetries.clear()
+}
+
+/** The month the preview's settled bills belong to - the one before the month running now. */
+function lastClosedMonth(): string {
+  return shiftBack(currentMonth())
+}
+
+/**
+ * Whether this sample client's calls are routing.
+ *
+ * Paused once their bill has failed, exactly as the real page reads it: a failed bill with the
+ * client still routing is the state that earns a banner, and the preview is where someone sees
+ * that banner before a real client is in it.
+ */
+function voiceFor(spec: Spec | undefined, bill: BillSummary | null): VoiceStatus {
+  const agent = spec?.agents[0] ?? ''
+  if (!spec || previewRetries.has(spec.location_id) || bill?.status !== 'failed') {
+    return { paused: false, paused_at: null, routing_agent_id: agent, error: '' }
+  }
+  return {
+    paused: true,
+    paused_at: `${bill.next_retry_at ?? `${currentMonth()}-01T09:00:00Z`}`,
+    routing_agent_id: agent,
+    error: '',
+  }
+}
+
 /**
  * What Stripe would say about one sample client's card.
  *
@@ -402,6 +453,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
       rate_history: [],
       default_rates: DEFAULT_RATES,
       bill: null,
+      voice: voiceFor(undefined, null),
       usage: EMPTY_USAGE,
       twilio_days: [],
       recent_calls: [],
@@ -441,6 +493,7 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
     ],
     default_rates: DEFAULT_RATES,
     bill,
+    voice: voiceFor(spec, bill),
     usage,
     twilio_days: twilioDays(spec, month),
     recent_calls: recentCalls(spec, month, bill),
@@ -480,6 +533,17 @@ function rate(spec: Spec): RateFields {
 function billFor(spec: Spec, month: string, usage: UsageSummary): BillSummary | null {
   if (!spec.bill_status || month >= currentMonth()) return null
   const retrying = spec.bill_status === 'retrying'
+  // A bill retried on this page is paid from then on, the way the real endpoint's answer is.
+  if (previewRetries.has(spec.location_id)) {
+    return {
+      status: 'paid',
+      total_cents: usage.estimated_bill_cents ?? 0,
+      failure_reason: '',
+      retry_count: spec.bill_retry_count ?? 0,
+      max_retries: MAX_RETRIES,
+      next_retry_at: null,
+    }
+  }
   return {
     status: spec.bill_status,
     total_cents: usage.estimated_bill_cents ?? 0,

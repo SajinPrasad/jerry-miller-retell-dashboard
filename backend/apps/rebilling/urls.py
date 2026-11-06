@@ -35,6 +35,11 @@ urlpatterns = [
         name='admin-client-card-request',
     ),
     path(
+        'admin/clients/<str:location_id>/retry-charge/',
+        views.AdminClientRetryChargeView.as_view(),
+        name='admin-client-retry-charge',
+    ),
+    path(
         'admin/clients/<str:location_id>/mapping/',
         views.AdminClientMappingView.as_view(),
         name='admin-client-mapping',

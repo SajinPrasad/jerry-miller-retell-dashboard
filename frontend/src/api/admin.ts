@@ -1,4 +1,5 @@
 import type {
+  BillSummary,
   CardStatus,
   ClientDetail,
   ClientDetailResult,
@@ -9,6 +10,7 @@ import type {
   RetellAgent,
   SsoSession,
   TwilioSubaccount,
+  VoiceStatus,
 } from '../types/admin'
 import { apiFetch } from './client'
 
@@ -85,6 +87,24 @@ export async function requestCard(locationId: string): Promise<CardStatus> {
     { method: 'POST' },
   )
   return body.card
+}
+
+/**
+ * Collect a failed or retrying bill now, instead of waiting for the next automatic retry.
+ * Agency admins only.
+ *
+ * A declined card is a successful request: it answers with the bill carrying Stripe's reason and
+ * the retry it has moved on to. Only a bill in no state to be retried, or a Stripe that could not
+ * be reached, rejects - and then the bill is left exactly as it was.
+ */
+export function retryCharge(
+  locationId: string,
+  month?: string,
+): Promise<{ month: string; bill: BillSummary | null; voice: VoiceStatus }> {
+  return apiFetch(`/rebilling/admin/clients/${encodeURIComponent(locationId)}/retry-charge/`, {
+    method: 'POST',
+    body: JSON.stringify(month ? { month } : {}),
+  })
 }
 
 /** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */

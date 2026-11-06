@@ -462,40 +462,132 @@ def test_a_contact_write_before_the_agency_installed_the_app_is_an_error(service
         service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
 
 
-# --- the client's own Retell on/off custom value --------------------------------------------
+# --- the client's own Retell agent id custom value --------------------------------------------
+
+
+def custom_values_body(*values):
+    return {'customValues': list(values)}
+
+
+AGENT_VALUE = {
+    'id': 'cv_agent1',
+    'name': 'retell_agent_id',
+    'fieldKey': '{{ custom_values.retell_agent_id }}',
+    'value': 'agent_abc',
+}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_find_custom_value_matches_on_the_name_it_is_configured_with(service):
+    make_location('loc1')
+    listing = respx.get(f'{BASE}/locations/loc1/customValues').mock(
+        return_value=httpx.Response(
+            200,
+            json=custom_values_body({'id': 'cv_other', 'name': 'Office hours'}, AGENT_VALUE),
+        )
+    )
+
+    found = service.find_custom_value('loc1', 'retell_agent_id')
+
+    assert found == AGENT_VALUE
+    # The sub-account's own token, like the write beside it.
+    assert listing.calls.last.request.headers['Authorization'] == 'Bearer loc1-access'
+    assert listing.calls.last.request.headers['Version'] == 'v3'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_find_custom_value_ignores_case_and_surrounding_space(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/locations/loc1/customValues').mock(
+        return_value=httpx.Response(
+            200, json=custom_values_body({**AGENT_VALUE, 'name': '  Retell Agent_ID '})
+        )
+    )
+
+    assert service.find_custom_value('loc1', 'retell_agent_id')['id'] == 'cv_agent1'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_find_custom_value_falls_back_to_the_merge_token(service):
+    """`fieldKey` is what a workflow actually uses, so it survives someone retitling the value."""
+    make_location('loc1')
+    respx.get(f'{BASE}/locations/loc1/customValues').mock(
+        return_value=httpx.Response(
+            200, json=custom_values_body({**AGENT_VALUE, 'name': 'Retell agent (do not edit)'})
+        )
+    )
+
+    assert service.find_custom_value('loc1', 'retell agent_id')['id'] == 'cv_agent1'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_find_custom_value_is_none_when_the_sub_account_has_no_such_value(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/locations/loc1/customValues').mock(
+        return_value=httpx.Response(
+            200, json=custom_values_body({'id': 'cv_other', 'name': 'Hours'})
+        )
+    )
+
+    assert service.find_custom_value('loc1', 'retell_agent_id') is None
+
+
+@pytest.mark.django_db
+def test_reading_custom_values_for_a_sub_account_with_no_token_is_an_error(service):
+    with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
+        service.custom_values('loc1')
 
 
 @pytest.mark.django_db
 @respx.mock
 def test_set_custom_value_writes_to_the_clients_own_sub_account(service):
     make_location('loc1')
-    update = respx.put(f'{BASE}/locations/loc1/customValues/cv_retell_onoff').mock(
-        return_value=httpx.Response(200, json={'customValue': {'id': 'cv_retell_onoff'}})
+    update = respx.put(f'{BASE}/locations/loc1/customValues/cv_agent1').mock(
+        return_value=httpx.Response(200, json={'customValue': {'id': 'cv_agent1'}})
     )
 
-    service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
+    service.set_custom_value('loc1', 'cv_agent1', '', name='retell_agent_id')
 
     # The custom value lives in the client's own sub-account, so this is that sub-account's own
     # token - unlike the billing contact field, which only the main account's token may reach.
     sent = update.calls.last.request
     assert sent.headers['Authorization'] == 'Bearer loc1-access'
     assert sent.headers['Version'] == 'v3'
-    assert json.loads(sent.content) == {'value': 'off'}
+    # The name is sent with the value: GoHighLevel documents both on the update, and the name is
+    # the one the value already has, so this cannot rename anything.
+    assert json.loads(sent.content) == {'value': '', 'name': 'retell_agent_id'}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_set_custom_value_sends_only_the_value_when_no_name_is_known(service):
+    make_location('loc1')
+    update = respx.put(f'{BASE}/locations/loc1/customValues/cv_agent1').mock(
+        return_value=httpx.Response(200, json={'customValue': {'id': 'cv_agent1'}})
+    )
+
+    service.set_custom_value('loc1', 'cv_agent1', 'agent_abc')
+
+    assert json.loads(update.calls.last.request.content) == {'value': 'agent_abc'}
 
 
 @pytest.mark.django_db
 @respx.mock
 def test_a_rejected_custom_value_write_says_why(service):
     make_location('loc1')
-    respx.put(f'{BASE}/locations/loc1/customValues/cv_retell_onoff').mock(
+    respx.put(f'{BASE}/locations/loc1/customValues/cv_agent1').mock(
         return_value=httpx.Response(404, json={'message': 'custom value not found'})
     )
 
     with pytest.raises(GHLError, match='custom value not found'):
-        service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
+        service.set_custom_value('loc1', 'cv_agent1', '')
 
 
 @pytest.mark.django_db
 def test_a_custom_value_write_for_a_sub_account_with_no_token_is_an_error(service):
     with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
-        service.set_custom_value('loc1', 'cv_retell_onoff', 'off')
+        service.set_custom_value('loc1', 'cv_agent1', '')

@@ -193,27 +193,51 @@ def ghl_contact_writes(monkeypatch):
 
 
 class _CustomValueWrites(list):
-    """The recorded custom value writes, with a switch for making the next one fail."""
+    """The recorded custom value writes, and the sub-account they are written into.
 
-    fails_with = None
+    `fails_with` makes the next write raise; `lookup_fails_with` makes the lookup before it
+    raise, which is the "the app was never installed on that sub-account" path. `found` is what
+    the lookup answers - set it to `None` for a sub-account with no such custom value at all.
+    `live_value` is what GoHighLevel currently holds, which is what a pause captures.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.fails_with = None
+        self.lookup_fails_with = None
+        self.found = {'id': 'cv_agent1', 'name': 'retell_agent_id', 'value': ''}
+
+    @property
+    def live_value(self) -> str:
+        return (self.found or {}).get('value', '')
+
+    @live_value.setter
+    def live_value(self, value: str) -> None:
+        self.found = {'id': 'cv_agent1', 'name': 'retell_agent_id', 'value': value}
 
 
 @pytest.fixture(autouse=True)
 def ghl_custom_value_writes(monkeypatch):
-    """Record every write to a client's Retell on/off custom value instead of sending it.
+    """Stand in for the client's own sub-account custom values: the lookup and the write.
 
-    This one lives in the client's own sub-account rather than the main account's billing
-    contact, and reaching it for real would additionally need a `GHLOAuthToken` row for that
+    These live in the client's own sub-account rather than the main account's billing contact,
+    and reaching them for real would additionally need a `GHLOAuthToken` row for that
     sub-account, which most rebilling tests never create. Autouse for the same reason
-    `ghl_contact_writes` is: a write a test forgot to fake must not reach the real API. The
+    `ghl_contact_writes` is: a call a test forgot to fake must not reach the real API. The
     recorded `(location_id, custom_value_id, value)` triples are what the tests assert on.
     """
     writes = _CustomValueWrites()
 
-    def record(self, location_id, custom_value_id, value):
+    def find(self, location_id, name):
+        if writes.lookup_fails_with is not None:
+            raise writes.lookup_fails_with
+        return writes.found
+
+    def record(self, location_id, custom_value_id, value, name=''):
         if writes.fails_with is not None:
             raise writes.fails_with
         writes.append((location_id, custom_value_id, value))
 
+    monkeypatch.setattr(GHLOAuthService, 'find_custom_value', find)
     monkeypatch.setattr(GHLOAuthService, 'set_custom_value', record)
     return writes

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { requestCard, saveRates } from '../../api/admin'
+import { requestCard, retryCharge, saveRates } from '../../api/admin'
 import type {
   BillSummary,
   CardStatus,
@@ -7,8 +7,9 @@ import type {
   MappingResult,
   RateFields,
   RecentCall,
+  VoiceStatus,
 } from '../../types/admin'
-import { requestPreviewCard, savePreviewRates } from './demoData'
+import { requestPreviewCard, retryPreviewCharge, savePreviewRates } from './demoData'
 import {
   DASH,
   centsFromInput,
@@ -94,7 +95,18 @@ export default function ClientDetail({
   onMappingSaved,
   onRatesSaved,
 }: Props) {
-  const { usage, rates, bill } = detail
+  const { usage, rates } = detail
+  // What the retry button's own answer said, once one has been pressed. Held as an override
+  // rather than as a copy of the whole bill, for the same reason the saved rates below are:
+  // this component is not remounted when the page refreshes its detail, and a copy taken at
+  // mount would quietly go stale. Null means nothing has been retried on this page.
+  const [charged, setCharged] = useState<{ bill: BillSummary | null; voice: VoiceStatus } | null>(
+    null,
+  )
+  const [retrying, setRetrying] = useState(false)
+  const [retryError, setRetryError] = useState<string | null>(null)
+  const bill = charged ? charged.bill : detail.bill
+  const voice = charged ? charged.voice : detail.voice
   // Twilio rebilling is paused here whenever this is false: GoHighLevel already rebills those
   // minutes natively. Everything Twilio is hidden rather than removed, and the figures below
   // count Retell AI only - which is what the server's own estimate counts too.
@@ -149,6 +161,30 @@ export default function ClientDetail({
     // A rate nobody can see is not one anyone is resetting: while Twilio is paused the stored
     // call rate is left exactly where it is, and the save sends it back unchanged.
     if (twilioEnabled) setCallInput(centsToInput(detail.default_rates.call_rate_cents))
+  }
+
+  // Only a bill Stripe has an open invoice for can be collected again, and only an agency
+  // admin may press it: a client re-running their own card is not something anyone asked for.
+  const canRetry = canEdit && (bill?.status === 'failed' || bill?.status === 'retrying')
+
+  async function handleRetryCharge() {
+    setRetrying(true)
+    setRetryError(null)
+    try {
+      setCharged(
+        preview
+          ? retryPreviewCharge(detail.location_id)
+          : await retryCharge(detail.location_id, detail.month),
+      )
+    } catch {
+      // A declined card is not this: that comes back as a bill carrying Stripe's reason. This is
+      // the bill being in no state to retry, or Stripe not answering at all.
+      setRetryError(
+        'Could not put this bill back through Stripe. Reload the page and check the bill, then try again.',
+      )
+    } finally {
+      setRetrying(false)
+    }
   }
 
   async function handleSaveRates() {
@@ -253,6 +289,28 @@ export default function ClientDetail({
                 {bill.failure_reason}
               </div>
             )}
+            {canRetry && (
+              <p className="actions">
+                <button
+                  className="button"
+                  type="button"
+                  onClick={handleRetryCharge}
+                  disabled={retrying}
+                >
+                  {retrying && <span className="spinner" aria-hidden="true" />}
+                  {retrying ? 'Charging…' : 'Retry payment'}
+                </button>
+                <span className="muted small">
+                  {' Takes the card now, instead of waiting for the next automatic retry.'}
+                </span>
+              </p>
+            )}
+            {retryError && (
+              <div className="banner error" role="alert">
+                {retryError}
+              </div>
+            )}
+            <VoiceNote bill={bill} voice={voice} />
           </section>
 
           <BillingContact detail={detail} canEdit={canEdit} preview={preview} />
@@ -570,6 +628,34 @@ function RateField({
  * The amount is settled by then, so the note's job is to say where the money got to - and to
  * explain why editing a rate below leaves the figure where it is.
  */
+/**
+ * Whether this client's calls are still routing, said only when it is news.
+ *
+ * Paused is worth saying whenever it is true. The error case is the sharper one: a bill that has
+ * failed beside a client who was *not* paused is a client taking calls they are not paying for,
+ * and nothing else on the page would show it.
+ */
+function VoiceNote({ bill, voice }: { bill: BillSummary | null; voice: VoiceStatus }) {
+  if (bill?.status === 'failed' && !voice.paused) {
+    return (
+      <div className="banner error" role="alert">
+        {`Calls are still routing for this client. ${
+          voice.error || 'GoHighLevel was not updated, so their Retell agent is still live.'
+        }`}
+      </div>
+    )
+  }
+  if (!voice.paused) return null
+  return (
+    <p className="muted small">
+      {`Calls paused${voice.paused_at ? ` ${formatDateTime(voice.paused_at)} UTC` : ''}. `}
+      {voice.routing_agent_id
+        ? 'Their Retell agent id is restored in GoHighLevel when the bill is paid.'
+        : 'No Retell agent is mapped to this client, so paying will not restore their calls.'}
+    </p>
+  )
+}
+
 function BillNote({ bill }: { bill: BillSummary }) {
   return (
     <>

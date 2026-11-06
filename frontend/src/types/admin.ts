@@ -129,6 +129,23 @@ export interface BillSummary {
 }
 
 /**
+ * Whether this client's calls are routing, and what a resume would put back.
+ *
+ * Pausing a client in arrears empties the Retell agent id out of the custom value their
+ * call-routing workflow reads, so there is no agent for a call to reach. `paused` false beside a
+ * `failed` bill is therefore a client still taking calls they are not paying for - which is why
+ * `error` exists: it is GoHighLevel's own reason the pause could not be written.
+ */
+export interface VoiceStatus {
+  paused: boolean
+  /** When the agent id was emptied, as an ISO-8601 UTC string. Null while they are routing. */
+  paused_at: string | null
+  /** The agent id a resume would restore. Blank means there is none to restore. */
+  routing_agent_id: string
+  error: string
+}
+
+/**
  * Whether the client has a card Stripe would charge, and whether we have asked them for one.
  *
  * `no_card` is what Stripe would *do*, not what it holds: a card attached without being made
@@ -180,6 +197,7 @@ export interface ClientDetail {
   default_rates: RateFields
   /** Null until this month has been billed, which is what keeps the estimate on screen. */
   bill: BillSummary | null
+  voice: VoiceStatus
   usage: UsageSummary
   twilio_days: TwilioDay[]
   recent_calls: RecentCall[]

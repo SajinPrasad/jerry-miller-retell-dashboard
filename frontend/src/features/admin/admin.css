@@ -179,6 +179,37 @@
   background: var(--accent-strong);
 }
 
+.admin .button:disabled {
+  cursor: progress;
+  opacity: 0.7;
+}
+
+/* Shown inside a button while its request is in flight, so a charge that takes a second does
+   not read as a click that did nothing. */
+.admin .spinner {
+  display: inline-block;
+  width: 0.75em;
+  height: 0.75em;
+  margin-right: 0.45em;
+  border: 2px solid currentcolor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  vertical-align: -0.05em;
+  animation: sk-spin 0.7s linear infinite;
+}
+
+@keyframes sk-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin .spinner {
+    animation: none;
+  }
+}
+
 .admin .button.ghost {
   background: transparent;
   border-color: var(--border);

@@ -154,29 +154,82 @@ class GHLOAuthService:
             json={'customFields': [{'id': field_id, 'fieldValue': value}]},
         )
 
-    def set_custom_value(self, location_id: str, custom_value_id: str, value: str) -> None:
+    def custom_values(self, location_id: str) -> list[dict]:
+        """Every custom value in a client's own sub-account, as GoHighLevel holds them.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/locations/get-custom-values
+        """
+        body = self._request(
+            'GET',
+            f'/locations/{location_id}/customValues',
+            token=self._location_token(location_id),
+            version=CUSTOM_VALUE_VERSION,
+        )
+        return body.get('customValues') or []
+
+    def find_custom_value(self, location_id: str, name: str) -> dict | None:
+        """The custom value called `name` in that sub-account, or `None` if it has none.
+
+        **By name, not by id.** A custom value belongs to the location it was created in and
+        carries that location's own id, including when a snapshot created it, so one configured
+        id cannot address the same value across sub-accounts. The name is what is the same
+        everywhere, so it is what is configured and this is what turns it into that location's id.
+
+        Matched on the name GoHighLevel shows, ignoring case and surrounding space, and failing
+        that on `fieldKey` - the merge token a workflow uses, like
+        `{{ custom_values.retell_agent_id }}` - which survives someone retitling the value.
+        """
+        wanted = name.strip().casefold()
+        values = self.custom_values(location_id)
+        for value in values:
+            if (value.get('name') or '').strip().casefold() == wanted:
+                return value
+
+        key = wanted.replace(' ', '_')
+        for value in values:
+            if self._field_key(value.get('fieldKey') or '') == key:
+                return value
+        return None
+
+    def set_custom_value(
+        self, location_id: str, custom_value_id: str, value: str, name: str = ''
+    ) -> None:
         """Set one custom value, by id, in a client's own sub-account.
 
         Unlike `set_contact_field`, which writes to one contact shared by every client in the
-        agency's main account, a custom value lives in the client's own sub-account - so this
-        needs that sub-account's own token, and the id is configured once because the same id is
-        pushed to every sub-account the same way (a snapshot-templated custom value), not looked
-        up per location.
+        agency's main account, a custom value lives in the client's own sub-account, so this
+        needs that sub-account's own token and an id that came from that sub-account -
+        `find_custom_value` is what produces one.
+
+        `name` is sent alongside the value when it is known. GoHighLevel's update endpoint
+        documents both fields, and a rename is not what this is for: it is sent so the write
+        cannot be rejected for a missing field, and it is the name the value already has.
 
         Docs: https://marketplace.gohighlevel.com/docs/ghl/locations/update-custom-value
         """
-        try:
-            token = self.get_location_token(location_id)
-        except GHLOAuthToken.DoesNotExist as exc:
-            raise GHLError(f'No GHL token for sub-account {location_id}.') from exc
+        payload = {'value': value}
+        if name:
+            payload['name'] = name
 
         self._request(
             'PUT',
             f'/locations/{location_id}/customValues/{custom_value_id}',
-            token=token,
+            token=self._location_token(location_id),
             version=CUSTOM_VALUE_VERSION,
-            json={'value': value},
+            json=payload,
         )
+
+    def _location_token(self, location_id: str) -> str:
+        """That sub-account's own token. A client the app was never installed on has none."""
+        try:
+            return self.get_location_token(location_id)
+        except GHLOAuthToken.DoesNotExist as exc:
+            raise GHLError(f'No GHL token for sub-account {location_id}.') from exc
+
+    @staticmethod
+    def _field_key(field_key: str) -> str:
+        """`{{ custom_values.retell_agent_id }}` → `retell_agent_id`."""
+        return field_key.strip().strip('{}').strip().rsplit('.', 1)[-1].strip().casefold()
 
     def sync_locations(self, agency: GHLOAuthToken) -> None:
         """Store a row for every sub-account under the agency; deactivate ones that are gone.

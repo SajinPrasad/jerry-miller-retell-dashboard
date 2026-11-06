@@ -37,8 +37,6 @@ NOW = datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
 # sub-account, found by the client's billing email.
 BILLING_EMAIL = 'ops@coolbreeze.test'
 STATUS_FIELD = settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID
-# The other write: the call-routing toggle in the client's own sub-account.
-TOGGLE_VALUE_ID = settings.GHL_RETELL_STATUS_CUSTOM_VALUE_ID
 INTERVAL = timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
 DECLINED = stripe.CardError('Your card was declined.', None, 'card_declined')
 
@@ -313,27 +311,46 @@ def test_a_client_with_no_billing_email_has_no_contact_to_write_the_status_to(
     assert ghl_contact_writes == []
 
 
-# --- the Retell call-routing toggle, alongside the contact field -------------------------------
+# --- pausing and resuming voice by the agent id, alongside the contact field -------------------
 
 
-def test_a_retry_that_collects_also_flips_the_toggle_on(fake, ghl_custom_value_writes):
+def test_a_retry_that_collects_puts_the_agent_id_back(fake, ghl_custom_value_writes):
+    """Resuming is the agent id returning to the custom value their routing reads."""
     bill = retrying_bill(retry_count=1)
 
     retry_due_bills(NOW)
 
-    assert ghl_custom_value_writes == [(bill.client.location_id, TOGGLE_VALUE_ID, 'on')]
+    assert ghl_custom_value_writes == [(bill.client.location_id, 'cv_agent1', 'agent1')]
+    bill.client.refresh_from_db()
+    assert bill.client.voice_paused_at is None
+    assert bill.client.voice_sync_error == ''
 
 
-def test_the_schedule_used_up_also_flips_the_toggle_off(fake, ghl_custom_value_writes):
+def test_the_schedule_used_up_empties_the_agent_id(fake, ghl_custom_value_writes):
+    """Pausing is the agent id leaving, so a call has no agent to reach however it is routed."""
     fake.pay_error = DECLINED
     bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
 
     retry_due_bills(NOW)
 
-    assert ghl_custom_value_writes == [(bill.client.location_id, TOGGLE_VALUE_ID, 'off')]
+    assert ghl_custom_value_writes == [(bill.client.location_id, 'cv_agent1', '')]
+    bill.client.refresh_from_db()
+    assert bill.client.voice_paused_at is not None
 
 
-def test_a_bill_still_retrying_does_not_flip_the_toggle_either(fake, ghl_custom_value_writes):
+def test_a_pause_captures_the_agent_id_goholevel_actually_holds(fake, ghl_custom_value_writes):
+    """What was routing their calls beats what we believe should be, and resume uses it."""
+    fake.pay_error = DECLINED
+    ghl_custom_value_writes.live_value = 'agent_changed_in_ghl'
+    bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
+
+    retry_due_bills(NOW)
+
+    bill.client.refresh_from_db()
+    assert bill.client.retell_routing_agent_id == 'agent_changed_in_ghl'
+
+
+def test_a_bill_still_retrying_pauses_nobody(fake, ghl_custom_value_writes):
     fake.pay_error = DECLINED
     retrying_bill(retry_count=0)
 
@@ -342,30 +359,69 @@ def test_a_bill_still_retrying_does_not_flip_the_toggle_either(fake, ghl_custom_
     assert ghl_custom_value_writes == []
 
 
-def test_the_toggle_is_flipped_even_without_a_billing_email(fake, ghl_custom_value_writes):
-    """Unlike the contact field, the toggle is per sub-account - there is nothing to find by
-    email, so a missing billing email does not stop it."""
+def test_voice_resumes_even_without_a_billing_email(fake, ghl_custom_value_writes):
+    """Unlike the contact field, the custom value is per sub-account - there is nothing to find
+    by email, so a missing billing email does not stop it."""
     client = make_billable_client(billing_email='', stripe_customer_id='cus_known')
     bill = retrying_bill(client=client, retry_count=1)
 
     retry_due_bills(NOW)
 
-    assert ghl_custom_value_writes == [(client.location_id, TOGGLE_VALUE_ID, 'on')]
+    assert ghl_custom_value_writes == [(client.location_id, 'cv_agent1', 'agent1')]
     bill.refresh_from_db()
     assert bill.status == PAID
 
 
-@override_settings(GHL_RETELL_STATUS_CUSTOM_VALUE_ID='')
-def test_a_blank_custom_value_id_skips_the_toggle_write(fake, ghl_custom_value_writes):
-    """Blank means the custom value has not been created in GHL yet - nothing to write to."""
-    retrying_bill(retry_count=1)
+def test_a_sub_account_without_that_custom_value_is_recorded_not_raised(
+    fake, ghl_custom_value_writes
+):
+    """Nothing to write to. The bill is paid either way, and the page is told why."""
+    ghl_custom_value_writes.found = None
+    bill = retrying_bill(retry_count=1)
+
+    result = retry_due_bills(NOW)
+
+    assert result['paid'] == 1
+    assert ghl_custom_value_writes == []
+    bill.client.refresh_from_db()
+    assert 'retell_agent_id' in bill.client.voice_sync_error
+
+
+def test_a_client_with_no_agent_to_restore_is_left_paused_and_said_so(
+    fake, ghl_custom_value_writes
+):
+    """A guessed agent id would route a client's calls to an agent nobody chose."""
+    client = make_billable_client(stripe_customer_id='cus_known', retell_agent_ids=[])
+    client.voice_paused_at = NOW - timedelta(days=1)
+    client.save(update_fields=['voice_paused_at'])
+    bill = retrying_bill(client=client, retry_count=1)
 
     retry_due_bills(NOW)
 
     assert ghl_custom_value_writes == []
+    client.refresh_from_db()
+    assert client.voice_paused_at is not None
+    assert 'No Retell agent id' in client.voice_sync_error
+    bill.refresh_from_db()
+    assert bill.status == PAID
 
 
-def test_a_failed_toggle_write_is_logged_and_does_not_undo_the_outcome(
+def test_a_failed_pause_is_recorded_and_does_not_undo_the_outcome(fake, ghl_custom_value_writes):
+    """A bill reading failed beside a client not paused is the thing worth alerting on."""
+    ghl_custom_value_writes.fails_with = GHLError('GHL is down')
+    fake.pay_error = DECLINED
+    bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
+
+    retry_due_bills(NOW)
+
+    bill.refresh_from_db()
+    assert bill.status == FAILED
+    bill.client.refresh_from_db()
+    assert bill.client.voice_paused_at is None
+    assert 'GHL is down' in bill.client.voice_sync_error
+
+
+def test_a_failed_resume_write_is_logged_and_does_not_undo_the_outcome(
     fake, ghl_custom_value_writes
 ):
     ghl_custom_value_writes.fails_with = GHLError('GHL is down')
@@ -376,6 +432,20 @@ def test_a_failed_toggle_write_is_logged_and_does_not_undo_the_outcome(
     assert result['paid'] == 1
     bill.refresh_from_db()
     assert bill.status == PAID
+
+
+@override_settings(GHL_RETELL_STATUS_CUSTOM_FIELD_ID='')
+def test_no_dunning_field_configured_skips_the_contact_write_but_still_pauses(
+    fake, ghl_contact_writes, ghl_custom_value_writes
+):
+    """The pause does not depend on the dunning field, and a blank one is not an error."""
+    fake.pay_error = DECLINED
+    bill = retrying_bill(retry_count=settings.BILLING_MAX_RETRIES - 1)
+
+    retry_due_bills(NOW)
+
+    assert ghl_contact_writes == []
+    assert ghl_custom_value_writes == [(bill.client.location_id, 'cv_agent1', '')]
 
 
 # --- the task, the command and the schedule ----------------------------------------------------
@@ -416,7 +486,7 @@ def test_the_retry_run_is_hourly_on_the_beat_schedule():
 def test_the_bill_row_carries_the_retry_count_and_next_retry_for_the_page():
     bill = retrying_bill(retry_count=2, next_retry_at=NOW + INTERVAL)
 
-    row = services._bill_row(bill.client, date(2026, 3, 1))
+    row = services.bill_row(bill.client, date(2026, 3, 1))
 
     assert row == {
         'status': RETRYING,
@@ -431,7 +501,7 @@ def test_the_bill_row_carries_the_retry_count_and_next_retry_for_the_page():
 def test_a_bill_with_no_pending_retry_has_no_next_retry_for_the_page():
     bill = retrying_bill(retry_count=0, next_retry_at=None, status=PAID)
 
-    row = services._bill_row(bill.client, date(2026, 3, 1))
+    row = services.bill_row(bill.client, date(2026, 3, 1))
 
     assert row['status'] == PAID
     assert row['next_retry_at'] is None

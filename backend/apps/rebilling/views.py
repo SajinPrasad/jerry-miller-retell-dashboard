@@ -15,12 +15,13 @@ from apps.ghl.exceptions import GHLError
 from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import GHLOAuthService
 
-from .exceptions import RetellError, TwilioError
+from .exceptions import ManualRetryUnavailable, RetellError, StripeBillingError, TwilioError
 from .models import ClientMapping
 from .serializers import ClientMappingSerializer, ClientRatesSerializer
 from .services import (
     RetellReconciliationService,
     TwilioUsageService,
+    bill_row,
     billing_facts,
     client_detail,
     client_rows,
@@ -29,8 +30,9 @@ from .services import (
     set_rates,
     store_call,
     sync_billing_emails,
+    voice_row,
 )
-from .stripe_billing import apply_event, clear_card_request, read_event, request_card
+from .stripe_billing import apply_event, clear_card_request, read_event, request_card, retry_now
 
 logger = logging.getLogger(__name__)
 
@@ -361,6 +363,70 @@ class AdminClientCardRequestView(APIView):
             return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response({'card': billing_facts(mapping)['card']})
+
+
+class AdminClientRetryChargeView(APIView):
+    """POST /api/rebilling/admin/clients/<location_id>/retry-charge/: collect a failed bill now.
+
+    Agency admins only, like the other writes: a client must not be able to re-run their own
+    card. The body may carry `{"month": "YYYY-MM"}`; without one this month is retried, which is
+    the month the page opens on.
+
+    **A decline answers 200, not an error.** The card saying no is the outcome an admin pressed
+    the button to find out, and it comes back on the refreshed bill with its reason, the retry
+    count and the next automatic retry. Only a bill in no state to be retried (404/409) or a
+    Stripe we could not reach at all (502) is a failed request.
+
+    The attempt itself is made under the bill's row lock by `retry_now`, so pressing twice makes
+    one charge, and an invoice Stripe already holds as paid is taken as paid rather than charged
+    again - which makes this button the repair for a webhook that never arrived.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def post(self, request, location_id):
+        context = sso.context_from_request(request)
+        if context.scope != sso.AGENCY:
+            raise PermissionDenied('Only an agency admin can retry a charge.')
+
+        try:
+            start, _ = month_window((request.data or {}).get('month'))
+        except ValueError as exc:
+            raise ValidationError({'month': str(exc)}) from exc
+
+        mapping = ClientMapping.objects.filter(location_id=location_id).first()
+        if mapping is None:
+            raise NotFound('This client has not been mapped for billing yet.')
+
+        period = start.strftime('%Y-%m')
+        bill = mapping.bills.filter(billing_period=period).first()
+        if bill is None:
+            raise NotFound(f'There is no bill for {period} to retry.')
+
+        try:
+            retry_now(bill.pk)
+        except ManualRetryUnavailable as exc:
+            # The bill's own state refuses this, and no card was touched. 409 rather than 400:
+            # nothing about the request was wrong, it is the bill that cannot take it.
+            return Response({'detail': str(exc)}, status=status.HTTP_409_CONFLICT)
+        except StripeBillingError as exc:
+            # The attempt could not be made. `retry_now` rolled it back, so the bill still has
+            # the retry count and schedule it had before the button was pressed.
+            logger.exception('rebilling: manual retry failed for %s %s', location_id, period)
+            return Response(
+                {'detail': f'Stripe could not be reached: {exc}'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        mapping.refresh_from_db()
+        return Response(
+            {
+                'month': period,
+                'bill': bill_row(mapping, start),
+                'voice': voice_row(mapping),
+            }
+        )
 
 
 class AdminClientMappingView(APIView):

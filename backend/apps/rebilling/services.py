@@ -739,7 +739,7 @@ def billing_facts(mapping: ClientMapping) -> dict:
     }
 
 
-def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
+def bill_row(mapping: ClientMapping, start: date) -> dict | None:
     """The bill for the period being read, once the monthly run has calculated one.
 
     `None` until then, which is what keeps the page's own estimate on screen for a month still
@@ -765,6 +765,25 @@ def _bill_row(mapping: ClientMapping, start: date) -> dict | None:
         'retry_count': bill.retry_count,
         'max_retries': settings.BILLING_MAX_RETRIES,
         'next_retry_at': bill.next_retry_at.isoformat() if bill.next_retry_at else None,
+    }
+
+
+def voice_row(mapping: ClientMapping) -> dict:
+    """Whether this client's calls are routing, and what we would put back if they are not.
+
+    Read off the row rather than from GoHighLevel: every one of these fields is written by the
+    pause or resume that last ran, so asking GHL again on every page view would buy nothing but
+    a second way for the page to fail. `paused` false beside a `failed` bill is the state worth
+    seeing - a client who was never actually paused - and `error` is why, when there is one.
+    """
+    return {
+        'paused': mapping.voice_paused_at is not None,
+        'paused_at': mapping.voice_paused_at.isoformat() if mapping.voice_paused_at else None,
+        # What a resume would restore: what was captured when they were paused, or failing that
+        # the agent they are mapped to. Blank means a resume has nothing to write.
+        'routing_agent_id': mapping.retell_routing_agent_id
+        or (str(mapping.retell_agent_ids[0]) if mapping.retell_agent_ids else ''),
+        'error': mapping.voice_sync_error,
     }
 
 
@@ -819,7 +838,8 @@ def client_detail(mapping: ClientMapping, start: date, end: date) -> dict:
             'voice_rate_cents': DEFAULT_VOICE_RATE_CENTS,
             'call_rate_cents': DEFAULT_CALL_RATE_CENTS,
         },
-        'bill': _bill_row(mapping, start),
+        'bill': bill_row(mapping, start),
+        'voice': voice_row(mapping),
         'usage': usage_summary(mapping, start, end),
         'twilio_days': [
             {
