@@ -10,6 +10,7 @@ from decimal import Decimal
 
 from django.conf import settings
 from django.db import models
+from django.utils import timezone
 
 MS_PER_MINUTE = 60_000
 
@@ -99,6 +100,27 @@ class ClientMapping(models.Model):
 
     def __str__(self):
         return f'ClientMapping({self.location_id}, {self.client_name!r})'
+
+    def save(self, *args, **kwargs):
+        """On first creation, put the client on the system default rates from today.
+
+        Every client is billable the moment they are mapped, whether that happens through the
+        admin page's mapping endpoint or (as a fallback) this model's own Django admin. Without
+        this, a freshly mapped client has no `RateHistory` row at all until someone opens the
+        rates panel and saves - `current_rate` and billing now cover that gap too, but a real row
+        is what the admin page shows rather than a value it quietly made up.
+        """
+        creating = self._state.adding
+        super().save(*args, **kwargs)
+        if creating:
+            RateHistory.objects.get_or_create(
+                client=self,
+                start_date=timezone.now().date(),
+                defaults={
+                    'voice_rate_cents': DEFAULT_VOICE_RATE_CENTS,
+                    'call_rate_cents': DEFAULT_CALL_RATE_CENTS,
+                },
+            )
 
 
 class RateHistory(models.Model):

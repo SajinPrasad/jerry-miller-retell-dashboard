@@ -4,7 +4,7 @@ import pytest
 from django.urls import reverse
 
 from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency
-from apps.rebilling.models import ClientMapping
+from apps.rebilling.models import DEFAULT_CALL_RATE_CENTS, DEFAULT_VOICE_RATE_CENTS, ClientMapping
 from apps.rebilling.tests.test_admin_views import make_location
 from apps.rebilling.tests.test_services import make_client
 
@@ -47,6 +47,21 @@ def test_sets_up_a_previously_unmapped_client(client):
     assert mapping.twilio_subaccount_sid == VALID_SID
     assert mapping.retell_agent_ids == ['agent_1']
     assert mapping.phone_numbers == ['+12135551234']
+
+
+def test_a_newly_mapped_client_is_auto_seeded_with_default_rates(client):
+    """A client is billable the moment they are mapped - nobody has to open the rates panel and
+    save before usage counts for anything."""
+    make_agency()
+    make_location('loc-new', 'Polar Peak Heating')
+
+    put_mapping(client, 'loc-new', {'retell_agent_ids': ['agent_1']})
+
+    rate = ClientMapping.objects.get(location_id='loc-new').rates.get()
+    assert (rate.voice_rate_cents, rate.call_rate_cents) == (
+        DEFAULT_VOICE_RATE_CENTS,
+        DEFAULT_CALL_RATE_CENTS,
+    )
 
 
 def test_updates_an_existing_mapping_without_touching_its_name(client):

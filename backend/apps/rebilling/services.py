@@ -579,6 +579,28 @@ def set_rates(mapping: ClientMapping, voice_rate_cents: int, call_rate_cents: in
     return rate
 
 
+def backfill_default_rates() -> dict:
+    """Give every active client with no `RateHistory` row the system defaults, from today.
+
+    For clients mapped before `ClientMapping.save()` started auto-seeding one. A client who
+    already has a rate - even one set long ago, even a non-default one - is left alone: this
+    only fills in the gap for clients nothing has ever been set for.
+    """
+    today = timezone.now().date()
+    seeded = 0
+    for client in ClientMapping.objects.filter(active=True):
+        if client.rates.exists():
+            continue
+        RateHistory.objects.create(
+            client=client,
+            start_date=today,
+            voice_rate_cents=DEFAULT_VOICE_RATE_CENTS,
+            call_rate_cents=DEFAULT_CALL_RATE_CENTS,
+        )
+        seeded += 1
+    return {'seeded': seeded}
+
+
 # --------------------------------------------------------------------------------------------
 # Reads for the embedded admin page.
 #
@@ -887,10 +909,23 @@ def current_rate(mapping: ClientMapping, end: date) -> RateHistory | None:
     """The rate in effect on the window's last day, or today if the window has not ended.
 
     `RateHistory` is ordered newest first, so the first row starting on or before that day is
-    the one in effect. No row at all means no rate has been set for this client yet.
+    the one in effect. A client with no `RateHistory` row at all - legacy data from before
+    auto-seeding, or one hand-deleted - gets the system defaults rather than nothing: this is a
+    client who is mapped and being used, not one no rate has ever applied to. `None` is still
+    returned when rates exist but none of them had started yet as of that day, which is a real
+    gap in that client's own history and must not be papered over with a rate that was never in
+    effect then.
     """
     as_of = min(end, timezone.now().date())
-    return mapping.rates.filter(start_date__lte=as_of).first()
+    rate = mapping.rates.filter(start_date__lte=as_of).first()
+    if rate is None and not mapping.rates.exists():
+        return RateHistory(
+            client=mapping,
+            voice_rate_cents=DEFAULT_VOICE_RATE_CENTS,
+            call_rate_cents=DEFAULT_CALL_RATE_CENTS,
+            start_date=as_of,
+        )
+    return rate
 
 
 def _minutes_str(minutes: Decimal) -> str:
@@ -1011,10 +1046,13 @@ def _bill_one_client(client: ClientMapping, period: str, start: date, end: date)
 def _retell_line(client: ClientMapping, start: date, end: date) -> dict | None:
     """Sum billable AI minutes in the window, each at the rate in effect on its call's day.
 
-    Returns None if there is no billable call in the window. A call on a day with no rate in
-    effect yet is logged and left out of this bill rather than failing the whole run; it is not
-    marked billed, so it is still available the next time a rate exists and this is re-run for a
-    period that has not already been billed.
+    Returns None if there is no billable call in the window. A client with no `RateHistory` row
+    at all bills every call here at the system default voice rate rather than losing it - the
+    same "a mapped client is never rate-less" rule `current_rate` applies for the read-only pages.
+    A client who does have rate history, but none of it had started yet on a particular call's
+    day, is a different case: that call is logged and left out of this bill rather than failing
+    the whole run, and it is not marked billed, so it is still available the next time a rate
+    exists and this is re-run for a period that has not already been billed.
     """
     calls = list(_calls_in_window(client, start, end).filter(billing_status=BILLABLE))
     if not calls:
@@ -1023,6 +1061,7 @@ def _retell_line(client: ClientMapping, start: date, end: date) -> dict | None:
     # Fetched once per client, not once per call: a month can hold thousands of calls, and the
     # rate only changes a handful of times at most.
     rates = list(client.rates.all())
+    no_rate_history = not rates
 
     minutes = Decimal(0)
     cost_cents = 0
@@ -1031,16 +1070,20 @@ def _retell_line(client: ClientMapping, start: date, end: date) -> dict | None:
     for call in calls:
         rate = _rate_in_effect(rates, call.started_at.date())
         if rate is None:
-            logger.warning(
-                'billing: no rate for %s on %s, call %s left out of this bill',
-                client.location_id,
-                call.started_at.date(),
-                call.call_id,
-            )
-            continue
+            if not no_rate_history:
+                logger.warning(
+                    'billing: no rate for %s on %s, call %s left out of this bill',
+                    client.location_id,
+                    call.started_at.date(),
+                    call.call_id,
+                )
+                continue
+            voice_rate_cents = DEFAULT_VOICE_RATE_CENTS
+        else:
+            voice_rate_cents = rate.voice_rate_cents
         minutes += call.billable_minutes
         cost_cents += call.retell_cost_cents or 0
-        bill_cents += call.billable_minutes * rate.voice_rate_cents
+        bill_cents += call.billable_minutes * voice_rate_cents
         call_ids.append(call.pk)
 
     if not call_ids:

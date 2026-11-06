@@ -11,6 +11,7 @@ from django.test import override_settings
 
 from apps.rebilling.models import (
     BILLABLE,
+    DEFAULT_VOICE_RATE_CENTS,
     RETELL_LINE,
     TWILIO_LINE,
     UNBILLABLE,
@@ -125,9 +126,11 @@ def test_calls_outside_the_month_are_not_billed():
     assert RetellCall.objects.get(call_id='april').bill is None
 
 
-def test_call_on_a_day_with_no_rate_is_left_out_of_the_bill():
+def test_call_before_the_clients_earliest_rate_is_left_out_of_the_bill():
+    """A client who does have rate history, just not one covering this call's day, is a real gap
+    - distinct from having no `RateHistory` at all, which is covered below."""
     client = make_client()
-    # No RateHistory at all.
+    client.rates.update(start_date=date(2026, 6, 1))  # the auto-seeded rate, moved into the future
     add_call(client, 'call1')
 
     result = calculate_bills(MONTH)
@@ -136,6 +139,20 @@ def test_call_on_a_day_with_no_rate_is_left_out_of_the_bill():
     assert result['bills_created'] == 0
     assert not Bill.objects.filter(client=client).exists()
     assert RetellCall.objects.get(call_id='call1').bill is None
+
+
+def test_call_bills_at_the_default_rate_with_no_rate_history_at_all():
+    """Legacy data from before auto-seeding, or a row removed by hand: a mapped client is never
+    rate-less, so the call bills at the system default rather than being skipped."""
+    client = make_client()
+    client.rates.all().delete()
+    add_call(client, 'call1', duration_ms=120_000)  # 2 minutes
+
+    result = calculate_bills(MONTH)
+
+    assert result['bills_created'] == 1
+    line = Bill.objects.get(client=client, billing_period=MONTH).lines.get(line_type=RETELL_LINE)
+    assert line.bill_cents == 2 * DEFAULT_VOICE_RATE_CENTS
 
 
 # --- Twilio line -----------------------------------------------------------------------------
@@ -261,7 +278,7 @@ def test_bill_combines_both_sources_into_one_total():
 
 
 def test_client_with_nothing_to_bill_gets_no_bill():
-    make_client()  # no calls, no Twilio usage, not even a rate
+    make_client()  # no calls, no Twilio usage
 
     result = calculate_bills(MONTH)
 

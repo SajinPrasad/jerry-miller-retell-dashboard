@@ -5,8 +5,10 @@ mostly about what a save does *not* touch: a month already billed, and a period 
 """
 
 from datetime import date, timedelta
+from io import StringIO
 
 import pytest
+from django.core.management import call_command
 from django.urls import reverse
 from django.utils import timezone
 
@@ -16,7 +18,7 @@ from apps.rebilling.models import (
     DEFAULT_VOICE_RATE_CENTS,
     RateHistory,
 )
-from apps.rebilling.services import current_rate
+from apps.rebilling.services import backfill_default_rates, current_rate
 from apps.rebilling.tests.test_admin_views import make_location
 from apps.rebilling.tests.test_services import make_client
 
@@ -156,6 +158,66 @@ def test_resetting_writes_the_system_defaults_as_the_clients_active_rates(client
     assert current_rate(mapping, timezone.now().date()).voice_rate_cents == 25
 
 
+# --- falling back to defaults when nothing has ever been set ------------------------------
+
+
+def test_current_rate_falls_back_to_defaults_with_no_rate_history_at_all():
+    """Legacy data from before auto-seeding, or a row removed by hand - either way, a mapped
+    client must never be read as having no rate."""
+    mapping = make_client('loc1')
+    mapping.rates.all().delete()
+
+    rate = current_rate(mapping, timezone.now().date())
+
+    assert (rate.voice_rate_cents, rate.call_rate_cents) == (
+        DEFAULT_VOICE_RATE_CENTS,
+        DEFAULT_CALL_RATE_CENTS,
+    )
+
+
+def test_current_rate_still_returns_none_for_a_day_before_any_rate_started():
+    """A client who does have rate history, just not one covering this particular day, is a real
+    gap and must not be masked by the same fallback."""
+    mapping = make_client('loc1')
+    mapping.rates.all().delete()
+    RateHistory.objects.create(client=mapping, start_date=date(2026, 6, 1), voice_rate_cents=40)
+
+    assert current_rate(mapping, date(2026, 1, 1)) is None
+
+
+# --- backfilling clients mapped before auto-seeding existed --------------------------------
+
+
+def test_backfill_seeds_only_active_clients_with_no_rate_history():
+    legacy = make_client('loc1')
+    legacy.rates.all().delete()
+    already_rated = make_client('loc2', client_name='Branwynn Destinations')
+    RateHistory.objects.create(
+        client=already_rated, start_date=date(2026, 1, 1), voice_rate_cents=99
+    )
+    inactive = make_client('loc3', client_name='Closed Co', active=False)
+    inactive.rates.all().delete()
+
+    result = backfill_default_rates()
+
+    assert result == {'seeded': 1}
+    assert legacy.rates.get().voice_rate_cents == DEFAULT_VOICE_RATE_CENTS
+    # Untouched: already had a rate, even though it is not the default.
+    assert already_rated.rates.count() == 2
+    assert already_rated.rates.get(start_date=date(2026, 1, 1)).voice_rate_cents == 99
+    # Left alone: inactive clients are not billed, so nothing is seeded for them.
+    assert not inactive.rates.exists()
+
+
+def test_backfill_command_reports_what_it_did():
+    make_client('loc1').rates.all().delete()
+
+    out = StringIO()
+    call_command('backfill_default_rates', stdout=out)
+
+    assert 'Backfill: 1 client(s) given the default rates.' in out.getvalue()
+
+
 # --- who may save ------------------------------------------------------------------------
 
 
@@ -183,7 +245,10 @@ def test_a_sub_account_session_cannot_change_what_it_is_charged(client):
     )
 
     assert response.status_code == 403
-    assert not mapping.rates.exists()
+    # Still only the rate auto-seeded when the client was mapped - the rejected request added
+    # nothing and changed nothing.
+    assert mapping.rates.count() == 1
+    assert mapping.rates.get().voice_rate_cents == DEFAULT_VOICE_RATE_CENTS
 
 
 def test_404_for_a_client_nobody_has_mapped_yet(client):
@@ -217,7 +282,10 @@ def test_a_negative_rate_is_refused(client):
     response = put_rates(client, 'loc1', {'voice_rate_cents': -1, 'call_rate_cents': 7})
 
     assert response.status_code == 400
-    assert not mapping.rates.exists()
+    # Still only the rate auto-seeded when the client was mapped - the rejected request added
+    # nothing and changed nothing.
+    assert mapping.rates.count() == 1
+    assert mapping.rates.get().voice_rate_cents == DEFAULT_VOICE_RATE_CENTS
 
 
 def test_a_rate_of_zero_is_allowed(client):

@@ -357,7 +357,12 @@ def test_detail_returns_the_mapping_rates_and_usage(client):
     assert body['retell_agent_ids'] == ['agent1']
     assert body['twilio_subaccount_sid'] == 'ACchild'
     assert body['rates']['voice_rate_cents'] == 30
-    assert [rate['start_date'] for rate in body['rate_history']] == ['2026-03-01', '2026-01-01']
+    # Newest first, including the default rate auto-seeded when the client was mapped.
+    assert [rate['start_date'] for rate in body['rate_history']] == [
+        timezone.now().date().isoformat(),
+        '2026-03-01',
+        '2026-01-01',
+    ]
     assert len(body['twilio_days']) == 1
     assert [call['call_id'] for call in body['recent_calls']] == ['c1']
 
