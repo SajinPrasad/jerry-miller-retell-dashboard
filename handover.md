@@ -287,9 +287,12 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
 - `get_location_token(location_id)` re-mints a sub-account token from the agency token when it is
   expiring.
 - `sync_locations(agency)` calls `GET /oauth/installed-locations` with the `Version: v3` header
-  (the default `2021-07-28` returns 404 for this endpoint), then `POST /oauth/locationToken` for each
-  sub-account. It skips `AGENCY_LOCATION_ID`. If a sub-account's token can't be minted, it stores the
-  row anyway with an empty `access_token` and a future `expires_at` (so it appears in the admin page),
+  (the default `2021-07-28` returns 404 for this endpoint), then `POST /oauth/location-token`
+  (kebab-case, also `Version: v3`) for each sub-account. It skips `AGENCY_LOCATION_ID`. If a
+  sub-account's token can't be minted, it stores the row anyway with an empty `access_token` and a
+  future `expires_at` (so it appears in the admin page) — and because **an empty `access_token`
+  makes `needs_refresh` true whatever that expiry says**, the next sync tries to mint it again
+  rather than treating the placeholder as a working token,
   logs GHL's reason, and continues. It also copies each owner's name and email onto the row.
 - **Error handling in `_request()`:** catches `httpx.HTTPStatusError` separately and includes the
   response body (capped at 500 characters) in the exception, so GHL's reasons are visible in logs.
@@ -1172,8 +1175,9 @@ Full detail is in `local_folder/CriticalFindings.md`. These are the ones that wo
   is billable.
 - **`call_analysis` can arrive later than `call_ended`.** Use `call_analyzed` if a future phase needs analysis data.
 - **GHL `companyId` comes from the token response**, not from config.
-- **The GHL location token endpoint** (`/oauth/locationToken` vs `/oauth/location-token`) differs between doc
-  generations. Verify on Jerry's account.
+- **The GHL location token endpoint is `/oauth/location-token`** (kebab-case) with `Version: v3`.
+  An earlier doc generation spelled it `/oauth/locationToken`; the published spec does not, and that
+  spelling 404s. Settled 6 Nov.
 - **GHL's `Version` header** is the real API-version mechanism, not the "v2" or "v3" label in the prose.
 - **GHL's invoice auto-charge does not charge one-off invoices** (tested live on the other branch). That is why
   charging here goes through Stripe.
@@ -1221,8 +1225,9 @@ These cannot be answered from the docs.
 
 **Verify on Jerry's GHL account:**
 
-- The `Version` header, the `locationToken` path casing, `installed-locations` pagination, and the white-label install
-  host (`GHL_INSTALL_URL_BASE`).
+- The `Version` header, `installed-locations` pagination, and the white-label install
+  host (`GHL_INSTALL_URL_BASE`). (The location-token path casing is settled: `/oauth/location-token`,
+  `Version: v3`.)
 - The SaaS subscription response shape (`GET /saas/get-saas-subscription/{locationId}`), which blocks Task 2's MRR KPI.
 
 **Business questions for Jerry:**

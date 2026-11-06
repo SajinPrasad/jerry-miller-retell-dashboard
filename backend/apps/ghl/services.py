@@ -299,8 +299,12 @@ class GHLOAuthService:
     def _mint_location_token(self, agency_token: str, company_id: str, location_id: str) -> dict:
         return self._request(
             'POST',
-            '/oauth/locationToken',
+            # Kebab-case, and `v3` rather than the dated `GHL_API_VERSION` the rest of the API
+            # takes: this is the path and version GoHighLevel's current spec publishes, and the
+            # older `/oauth/locationToken` spelling from an earlier doc generation 404s.
+            '/oauth/location-token',
             token=agency_token,
+            version='v3',
             data={'companyId': company_id, 'locationId': location_id},
         )
 

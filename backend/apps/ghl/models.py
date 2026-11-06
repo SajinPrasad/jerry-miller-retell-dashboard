@@ -45,4 +45,13 @@ class GHLOAuthToken(models.Model):
 
     @property
     def needs_refresh(self) -> bool:
+        """Whether this row's token has to be re-minted or refreshed before it can be used.
+
+        **No token at all counts.** A sub-account whose mint failed is still stored, so it stays
+        visible in the billing dashboard, with a blank `access_token` and a placeholder expiry.
+        Without this, that placeholder read as a perfectly good token: the next sync skipped the
+        row and every call made with it failed unauthenticated, until the placeholder expired.
+        """
+        if not self.access_token:
+            return True
         return self.expires_at <= timezone.now() + timedelta(seconds=REFRESH_BUFFER_SECONDS)

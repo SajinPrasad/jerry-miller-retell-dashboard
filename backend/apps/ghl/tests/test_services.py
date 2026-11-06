@@ -75,7 +75,7 @@ def _minted_token(request):
 
 
 def mock_location_token():
-    return respx.post(f'{BASE}/oauth/locationToken').mock(side_effect=_minted_token)
+    return respx.post(f'{BASE}/oauth/location-token').mock(side_effect=_minted_token)
 
 
 @pytest.fixture
@@ -261,7 +261,7 @@ def test_sync_keeps_fresh_tokens_and_deactivates_uninstalled(service):
 def test_sync_stores_a_location_even_when_its_token_fails(service):
     agency = make_agency()
     mock_installed(('loc1', 'A'), ('loc2', 'B'))
-    respx.post(f'{BASE}/oauth/locationToken').mock(
+    respx.post(f'{BASE}/oauth/location-token').mock(
         side_effect=[httpx.Response(500), httpx.Response(200, json={'access_token': 'ok'})]
     )
 
@@ -272,7 +272,52 @@ def test_sync_stores_a_location_even_when_its_token_fails(service):
     tokenless = GHLOAuthToken.objects.get(location_id='loc1')
     assert tokenless.access_token == ''
     assert tokenless.name == 'A' and tokenless.is_active
-    assert not tokenless.needs_refresh
+    # And it is due a token: no token at all is a reason to mint, so the next sync tries again
+    # rather than treating the placeholder expiry as a working token for a day.
+    assert tokenless.needs_refresh
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_sub_account_left_tokenless_is_minted_again_on_the_next_sync(service):
+    """The failure above must not be permanent: a row with no token is always due one."""
+    agency = make_agency()
+    mock_installed(('loc1', 'A'))
+    mock_location_details()
+    respx.post(f'{BASE}/oauth/location-token').mock(side_effect=[httpx.Response(500)])
+
+    service.sync_locations(agency)
+    assert GHLOAuthToken.objects.get(location_id='loc1').access_token == ''
+
+    respx.post(f'{BASE}/oauth/location-token').mock(side_effect=_minted_token)
+    service.sync_locations(agency)
+
+    assert GHLOAuthToken.objects.get(location_id='loc1').access_token == 'loc1-minted'
+
+
+@pytest.mark.django_db
+def test_a_token_that_is_not_there_is_due_a_refresh_whatever_its_expiry():
+    """The expiry a failed mint leaves behind is a placeholder, not a promise about a token."""
+    tokenless = make_location(
+        'loc1', access_token='', expires_at=timezone.now() + timedelta(days=1)
+    )
+
+    assert tokenless.needs_refresh
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_the_location_token_is_minted_on_the_published_path_and_version(service):
+    make_agency()
+    make_location('loc1', expires_at=timezone.now())
+    route = mock_location_token()
+
+    service.get_location_token('loc1')
+
+    # Kebab-case, not the `/oauth/locationToken` of an older doc generation, and `v3` rather
+    # than the dated version the rest of the API takes.
+    assert route.calls.last.request.url.path.endswith('/oauth/location-token')
+    assert route.calls.last.request.headers['Version'] == 'v3'
 
 
 @pytest.mark.django_db
