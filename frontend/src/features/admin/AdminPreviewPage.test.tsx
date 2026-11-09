@@ -2,7 +2,12 @@ import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import AdminPreviewPage from './AdminPreviewPage'
-import { resetPreviewCardRequests, resetPreviewMappings, resetPreviewRates } from './demoData'
+import {
+  resetPreviewCardRequests,
+  resetPreviewMappings,
+  resetPreviewRates,
+  resetPreviewRetries,
+} from './demoData'
 import { currentMonth, shiftMonth } from './format'
 
 const THIS_MONTH = currentMonth()
@@ -25,6 +30,7 @@ describe('AdminPreviewPage', () => {
     resetPreviewMappings()
     resetPreviewRates()
     resetPreviewCardRequests()
+    resetPreviewRetries()
   })
 
   it('renders sample clients behind a clearly marked banner, with no network calls', async () => {
@@ -213,6 +219,54 @@ describe('AdminPreviewPage', () => {
 
     expect(await screen.findByText('Shared after-hours line')).toBeInTheDocument()
     expect(screen.queryByText('Branwynn Destinations — main line')).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('marks the failed and retrying sample clients on the preview list and lets retry settle them', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+
+    const polarRow = (
+      await screen.findByRole('button', { name: 'Polar Peak Heating & Air' })
+    ).closest('tr') as HTMLElement
+    expect(within(polarRow).getByText('Payment failed')).toHaveClass('pill', 'err')
+
+    const harborRow = screen
+      .getByRole('button', { name: 'Harbor Heat & Cool' })
+      .closest('tr') as HTMLElement
+    expect(within(harborRow).getByText('In Retry')).toHaveClass('pill', 'warn')
+
+    // Harbor Heat & Cool already shows In Retry on initial open without changing months.
+    await user.click(screen.getByRole('button', { name: 'Harbor Heat & Cool' }))
+    expect(await screen.findByText('In Retry', { selector: '.tile-label' })).toHaveClass(
+      'pill',
+      'warn',
+    )
+    expect(screen.getByText('Retry 2 of 3')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Retry payment' })).toBeInTheDocument()
+
+    // Polar Peak Heating & Air shows Failed, calls paused, and Retry payment straight away.
+    await user.click(screen.getByRole('button', { name: '← All clients' }))
+    await user.click(await screen.findByRole('button', { name: 'Polar Peak Heating & Air' }))
+
+    expect(await screen.findByText('Failed', { selector: '.tile-label' })).toHaveClass('pill', 'err')
+    expect(screen.getByText('card_declined')).toBeInTheDocument()
+    expect(screen.getByText(/Calls paused/)).toBeInTheDocument()
+    expect(screen.getByText(/Automatic retries have ended/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: 'Retry payment' }))
+
+    expect(await screen.findByText('Paid', { selector: '.tile-label' })).toBeInTheDocument()
+    expect(screen.queryByText(/Calls paused/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Retry payment' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '← All clients' }))
+    const updatedPolarRow = (
+      await screen.findByRole('button', { name: 'Polar Peak Heating & Air' })
+    ).closest('tr') as HTMLElement
+    expect(within(updatedPolarRow).queryByText('Payment failed')).not.toBeInTheDocument()
     expect(fetchMock).not.toHaveBeenCalled()
   })
 

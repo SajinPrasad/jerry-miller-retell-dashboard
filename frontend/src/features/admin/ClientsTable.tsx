@@ -122,6 +122,16 @@ function ClientRow({
             {usage.unbillable_calls} unbillable
           </span>
         )}
+        {client.bill_status === 'failed' && (
+          <span className="pill err" title="The latest bill payment failed and retries are exhausted">
+            Payment failed
+          </span>
+        )}
+        {client.bill_status === 'retrying' && (
+          <span className="pill warn" title="The latest charge declined and is retrying automatically">
+            In Retry
+          </span>
+        )}
       </td>
     </tr>
   )

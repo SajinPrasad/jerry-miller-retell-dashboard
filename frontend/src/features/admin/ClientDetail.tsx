@@ -173,7 +173,7 @@ export default function ClientDetail({
     try {
       setCharged(
         preview
-          ? retryPreviewCharge(detail.location_id)
+          ? retryPreviewCharge(detail.location_id, detail.month)
           : await retryCharge(detail.location_id, detail.month),
       )
     } catch {
@@ -301,7 +301,9 @@ export default function ClientDetail({
                   {retrying ? 'Charging…' : 'Retry payment'}
                 </button>
                 <span className="muted small">
-                  {' Takes the card now, instead of waiting for the next automatic retry.'}
+                  {bill?.status === 'failed'
+                    ? ' Automatic retries have ended. Charges the card on file now and resumes calls once paid.'
+                    : ' Takes the card now, instead of waiting for the next automatic retry.'}
                 </span>
               </p>
             )}
@@ -647,12 +649,12 @@ function VoiceNote({ bill, voice }: { bill: BillSummary | null; voice: VoiceStat
   }
   if (!voice.paused) return null
   return (
-    <p className="muted small">
+    <div className="banner warn" role="status">
       {`Calls paused${voice.paused_at ? ` ${formatDateTime(voice.paused_at)} UTC` : ''}. `}
       {voice.routing_agent_id
-        ? 'Their Retell agent id is restored in GoHighLevel when the bill is paid.'
-        : 'No Retell agent is mapped to this client, so paying will not restore their calls.'}
-    </p>
+        ? 'The Retell agent id is restored in GoHighLevel when the bill is paid.'
+        : 'No Retell agent is mapped to this client, so paying will not restore calls.'}
+    </div>
   )
 }
 

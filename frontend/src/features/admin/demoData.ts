@@ -31,7 +31,7 @@ import type {
   UsageSummary,
   VoiceStatus,
 } from '../../types/admin'
-import { currentMonth } from './format'
+import { currentMonth, shiftMonth } from './format'
 
 export const DEMO_SESSION: SsoSession = {
   user_name: 'Standalone preview',
@@ -66,6 +66,9 @@ interface Spec {
   /** How a finished month's bill ended up, so the preview shows a settled month as settled
    * rather than as an estimate. Absent means this client has never been billed. */
   bill_status?: BillSummary['status']
+  /** When true, show the sample bill immediately on the current month as well, so the standalone
+   * preview displays Failed and In Retry examples on initial load without switching months. */
+  bill_in_current_month?: boolean
   bill_failure_reason?: string
   /** Only on a `retrying` bill: the retries made so far, and when the next one is due. */
   bill_retry_count?: number
@@ -80,6 +83,11 @@ interface Spec {
   stale: boolean
   /** A second, older rate, so the detail view has a history worth showing. */
   previous_rate?: { voice_rate_cents: number; call_rate_cents: number }
+}
+
+/** Next retry timestamp shown for the sample `retrying` client, six hours ahead of now in UTC. */
+function upcomingRetryIso(): string {
+  return new Date(Date.now() + 6 * 3_600_000).toISOString()
 }
 
 const SPECS: Spec[] = [
@@ -142,6 +150,7 @@ const SPECS: Spec[] = [
     card_brand: 'mastercard',
     card_last4: '5454',
     bill_status: 'failed',
+    bill_in_current_month: true,
     bill_failure_reason: 'card_declined',
     voice_rate_cents: 28,
     call_rate_cents: 6,
@@ -166,9 +175,10 @@ const SPECS: Spec[] = [
     stripe_customer_id: 'cus_demoHarborHeat',
     stripe_customer_name: 'Harbor Heat & Cool LLC',
     bill_status: 'retrying',
+    bill_in_current_month: true,
     bill_failure_reason: 'card_declined',
     bill_retry_count: 2,
-    bill_next_retry_at: '2026-11-03T15:00:00Z',
+    bill_next_retry_at: upcomingRetryIso(),
     voice_rate_cents: 25,
     call_rate_cents: 5,
     ai_minutes: 121.7,
@@ -260,13 +270,16 @@ const previewRetries = new Set<string>()
  * Stands in for `retryCharge` in the preview: the card is taken, the bill is paid, and the
  * client's Retell agent id goes back into GoHighLevel.
  */
-export function retryPreviewCharge(locationId: string): {
+export function retryPreviewCharge(
+  locationId: string,
+  month: string = lastClosedMonth(),
+): {
   bill: BillSummary | null
   voice: VoiceStatus
 } {
   previewRetries.add(locationId)
   const spec = SPECS.find((candidate) => candidate.location_id === locationId)
-  const detail = spec ? (demoDetail(locationId, lastClosedMonth()) as ClientDetail) : null
+  const detail = spec ? (demoDetail(locationId, month) as ClientDetail) : null
   return {
     bill: detail?.bill ? { ...detail.bill, status: 'paid', failure_reason: '' } : null,
     voice: { paused: false, paused_at: null, routing_agent_id: spec?.agents[0] ?? '', error: '' },
@@ -279,7 +292,7 @@ export function resetPreviewRetries(): void {
 
 /** The month the preview's settled bills belong to - the one before the month running now. */
 function lastClosedMonth(): string {
-  return shiftBack(currentMonth())
+  return shiftMonth(currentMonth(), -1)
 }
 
 /**
@@ -500,7 +513,18 @@ export function demoDetail(locationId: string, month: string): ClientDetailResul
   }
 }
 
+function hasSampleBill(spec: Spec, month: string): boolean {
+  if (!spec.bill_status || month > currentMonth()) return false
+  return month < currentMonth() || Boolean(spec.bill_in_current_month)
+}
+
 function summary(spec: Spec, month: string): ClientSummary {
+  const billStatus = hasSampleBill(spec, month)
+    ? previewRetries.has(spec.location_id)
+      ? 'paid'
+      : (spec.bill_status ?? null)
+    : null
+
   return {
     location_id: spec.location_id,
     client_name: spec.client_name,
@@ -511,6 +535,7 @@ function summary(spec: Spec, month: string): ClientSummary {
     twilio_connected: Boolean(spec.twilio_sid),
     rates: { ...rate(spec), start_date: `${month}-01` },
     usage: usageFor(spec, month),
+    bill_status: billStatus,
   }
 }
 
@@ -524,14 +549,14 @@ function rate(spec: Spec): RateFields {
 }
 
 /**
- * The sample bill for a finished month, or none at all.
+ * The sample bill for a finished month, or a current-month preview state where configured.
  *
- * Only a month that has ended has one: the current month is still being used, which is exactly
- * the state the page's own estimate is for. The amount is what the estimate said, because on
- * the real backend that is where a bill comes from.
+ * Only a month that has ended normally has a bill; current-month exceptions let the standalone
+ * preview demonstrate Failed and In Retry clients straight away without hiding them behind a
+ * month switch.
  */
 function billFor(spec: Spec, month: string, usage: UsageSummary): BillSummary | null {
-  if (!spec.bill_status || month >= currentMonth()) return null
+  if (!spec.bill_status || !hasSampleBill(spec, month)) return null
   const retrying = spec.bill_status === 'retrying'
   // A bill retried on this page is paid from then on, the way the real endpoint's answer is.
   if (previewRetries.has(spec.location_id)) {

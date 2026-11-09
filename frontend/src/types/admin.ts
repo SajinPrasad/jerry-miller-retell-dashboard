@@ -43,6 +43,8 @@ export interface ClientSummary {
   twilio_connected: boolean
   rates: Rates | null
   usage: UsageSummary | null
+  /** Optional bill status surfaced in the client list when a client has a failed or retrying bill. */
+  bill_status?: BillSummary['status'] | null
 }
 
 export interface ClientsResponse {
