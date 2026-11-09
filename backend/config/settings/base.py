@@ -181,12 +181,13 @@ STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
 BILLING_MAX_RETRIES = env.int('BILLING_MAX_RETRIES', default=3)
 BILLING_RETRY_INTERVAL_HOURS = env.int('BILLING_RETRY_INTERVAL_HOURS', default=12)
 
-# The custom field on a client's billing contact that carries their rebilling status (`failed`
-# while a bill has failed, `active` once it is paid). A contact field rather than the
-# sub-account custom value this used to be: GoHighLevel workflows can trigger off a contact
-# field changing and cannot trigger off a custom value, so the custom value was written and
-# nothing ever ran. Every billing contact lives in the one main sub-account, so one id serves
-# all of them.
+# The custom field on a client's billing contact that carries their rebilling status (`OFF`
+# while a bill has failed, `ON` once it is paid - see `GHL_STATUS_FAILED` in `stripe_billing.py`;
+# the live field is a SINGLE_OPTIONS picklist and those are its only two options). A contact
+# field rather than the sub-account custom value this used to be: GoHighLevel workflows can
+# trigger off a contact field changing and cannot trigger off a custom value, so the custom value
+# was written and nothing ever ran. Every billing contact lives in the one main sub-account, so
+# one id serves all of them.
 GHL_RETELL_STATUS_CUSTOM_FIELD_ID = env('GHL_RETELL_STATUS_CUSTOM_FIELD_ID', default='')
 
 # The name of the custom value in each client's own sub-account that holds their Retell agent

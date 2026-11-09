@@ -359,10 +359,14 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     mapped agent (one agent per client). Neither, and the client stays paused and says so:
     writing a guessed id would route their calls to an agent nobody chose.
   - **The dunning contact field is still written when one is configured.**
-    `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` gets `failed` / `active` through `set_contact_field()`,
+    `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` gets `OFF` / `ON` through `set_contact_field()`,
     because a contact field is the only thing a GoHighLevel workflow can *trigger* on and a client
     in arrears is still meant to hear about it. Blank skips it in silence; the pause does not
     depend on it. A client with no `billing_email` has no contact to write to, which is logged.
+    **The two values are GHL's own:** the live field (`Retell Voice AI ON/OFF`) is a
+    `SINGLE_OPTIONS` picklist with `picklistOptions: ["ON", "OFF"]`, so `GHL_STATUS_FAILED` /
+    `GHL_STATUS_ACTIVE` are exactly `'OFF'` / `'ON'`, uppercase, and anything else is not an option
+    the field accepts.
   - All of it is best effort: the bill's outcome is already saved, so a `GHLError` is logged
     rather than raised, and never undoes the money state.
 - **"Retry payment" collects a failed bill now** -

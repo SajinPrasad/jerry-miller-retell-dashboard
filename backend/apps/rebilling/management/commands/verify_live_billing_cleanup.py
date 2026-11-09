@@ -121,7 +121,11 @@ class Command(BaseCommand):
         expected = self._backup_for(client)['agent_custom_value']['value']
         try:
             live = lv.read_agent_value(client.location_id)['value']
-        except lv.VerificationError as exc:
+        except (lv.VerificationError, GHLError) as exc:
+            # A transient GoHighLevel failure here is no different from the custom value being
+            # unconfigured: either way the recovery check cannot finish reading it, but the
+            # revert below - which does not depend on this read - must still run rather than
+            # leaving the passing card, the Stripe invoice and the synthetic rows untouched.
             self._fail(f'Could not read the agent custom value back: {exc}')
             return
 

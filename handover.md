@@ -111,10 +111,12 @@ Companion docs:
 - `867f963` — Handover doc update: the SSO bridge script for GHL's Agency Custom JavaScript
   (§17.1a) and the answered Retell multi-location research (§15), both doc-only.
 - `6f0e544` — **Phase 8**, the rebilling status write (§6.10b-i): `sync_rebilling_status` moved
-  `failed` / `active` to a custom field on the client's **billing contact in the main account**,
-  not the `retell_rebilling_status` custom value in their own sub-account, because GoHighLevel
+  the status to a custom field on the client's **billing contact in the main account**, not the
+  `retell_rebilling_status` custom value in their own sub-account, because GoHighLevel
   workflows have no trigger for a custom value changing. Reuses Phase 7's `set_contact_field()`.
-  Still written today, alongside Phase 10's pause/resume — see the settled facts above.
+  Still written today, alongside Phase 10's pause/resume — see the settled facts above. (It wrote
+  the words `failed` / `active` then; the live field turned out to be a picklist, so it now writes
+  `OFF` / `ON` — §6.10b.)
 - `a14e0a3` — Phase 7, the card on file (§6.11) — the live Stripe card check on every detail view,
   the **Request card** button, and the webhook back.
 - Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
@@ -681,7 +683,7 @@ once, checking the bill becomes `paid` and the agent id comes back by itself —
 | `STRIPE_WEBHOOK_SECRET` | none | The webhook signing secret. Different from the API key |
 | `BILLING_MAX_RETRIES` | 3 | Automatic retries after a declined charge, before the bill is `failed` |
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
-| `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `failed` on a final failure and `active` on payment. Blank until Jerry creates the field; the write fails and is logged until then |
+| `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `OFF` on a final failure and `ON` on payment. It is the live `Retell Voice AI ON/OFF` field, a `SINGLE_OPTIONS` picklist whose `picklistOptions` are exactly `["ON", "OFF"]`, so those two strings are not ours to choose. Blank until the id is filled in; the write fails and is logged until then |
 | `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME` | `retell_agent_id` | The **name** of the custom value in each client's own sub-account holding their Retell agent id. Emptied to pause a client in arrears, restored when they pay. Looked up by name per sub-account, because the id differs per sub-account (§6.10b) |
 | `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
 | `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
@@ -854,9 +856,15 @@ retries are used up, `resume_voice()` on one that is paid — unless another bil
   client who was never actually paused** — the state Phase 6's alerting should watch, and what the
   client page shows as a red banner.
 - **The dunning contact field is still written**, when `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` is
-  configured: `failed` / `active` through `set_contact_field()`, exactly as before. It is the only
-  thing a GHL workflow can *trigger* on, so removing it would silently remove any arrears email.
-  Blank skips it without error; the pause does not depend on it.
+  configured: `OFF` on a final failure, `ON` on payment, through `set_contact_field()`. It is the
+  only thing a GHL workflow can *trigger* on, so removing it would silently remove any arrears
+  email. Blank skips it without error; the pause does not depend on it.
+  - **The two values are GoHighLevel's, not ours.** The live field (`Retell Voice AI ON/OFF`) is a
+    `SINGLE_OPTIONS` picklist with `picklistOptions: ["ON", "OFF"]`, so `GHL_STATUS_FAILED` /
+    `GHL_STATUS_ACTIVE` in `stripe_billing.py` are exactly `'OFF'` / `'ON'`, uppercase. The words
+    `failed` / `active` these held until 9 Nov are not options on that field. `test_retries.py`
+    asserts the strings literally rather than through the constants, so changing them fails a test
+    rather than passing quietly.
 - **Both best effort**, like everything else here: the bill's outcome is already saved, so a
   `GHLError` is logged — and now also recorded on the client as `voice_sync_error`.
 - **Tests:** `test_retries.py` (pause, resume, capture, no-agent, missing custom value, failed
@@ -1518,7 +1526,7 @@ In this order, because each step is useless without the one before it:
    form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/` with
    `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`. The
    **pause/resume workflow** triggers the same way, off the rebilling status field changing to
-   `failed` or `active`.
+   `OFF` or `ON` — the two `picklistOptions` on the live `Retell Voice AI ON/OFF` field (§6.10b).
 5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
    writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
    keep saying no card — the one failure here that looks like a bug and is not.

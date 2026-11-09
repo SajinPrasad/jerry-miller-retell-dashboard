@@ -14,6 +14,7 @@ from apps.rebilling.exceptions import StripeBillingError
 from apps.rebilling.models import AUTO_CHARGE, FAILED, PAID, RETRYING, Bill
 from apps.rebilling.services import calculate_bills
 from apps.rebilling.stripe_billing import (
+    GHL_STATUS_FAILED,
     MINIMUM_CHARGE_CENTS,
     charge_bills,
     customer_id,
@@ -383,9 +384,10 @@ class Command(BaseCommand):
             )
             return
         self._line(
-            f'_set_dunning_status: RAN. It wrote "failed" to contact field {field_id} for '
-            f'{failer.billing_email}. The write is best effort - a GoHighLevel failure is logged '
-            'and swallowed - so confirm it landed on the contact in GoHighLevel.'
+            f'_set_dunning_status: RAN. It wrote "{GHL_STATUS_FAILED}" to contact field '
+            f'{field_id} for {failer.billing_email}. The write is best effort - a GoHighLevel '
+            'failure is logged and swallowed - so confirm it landed on the contact in '
+            'GoHighLevel.'
         )
 
     def _what_now(self, failer) -> None:

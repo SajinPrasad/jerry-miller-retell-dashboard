@@ -79,10 +79,12 @@ FALLBACK_FAILURE_REASON = 'payment_failed'
 NOT_COLLECTED_REASON = 'not_collected'
 
 # The values written to the rebilling status field on the client's billing contact in
-# GoHighLevel. Jerry's GHL workflows key off these words, so they must not change without
-# changing the workflows too.
-GHL_STATUS_FAILED = 'failed'
-GHL_STATUS_ACTIVE = 'active'
+# GoHighLevel. That field (`Retell Voice AI ON/OFF`) is a SINGLE_OPTIONS picklist whose
+# `picklistOptions` are exactly `["ON", "OFF"]`, confirmed against the live field, so these are
+# not free text: anything else is not one of the options the field accepts, and Jerry's GHL
+# workflows key off these values too. The case matters.
+GHL_STATUS_FAILED = 'OFF'
+GHL_STATUS_ACTIVE = 'ON'
 
 # The same, for the card status field on that same contact. Writing `card not found` is what
 # triggers the GoHighLevel workflow that emails them a card collection form.
@@ -649,16 +651,16 @@ def sync_voice_routing(bill: Bill) -> None:
 
     **What pauses a client is now the agent id itself** (`pause_voice`): the custom value their
     call-routing workflow reads to know which Retell agent answers is emptied, so there is no
-    agent for a call to reach whatever the workflow does. The status word this used to write was
-    indirect - it needed a correctly-built workflow at the other end to turn `failed` into "do
+    agent for a call to reach whatever the workflow does. The status this used to write was
+    indirect - it needed a correctly-built workflow at the other end to turn the word into "do
     not route this call", and one client whose workflow was built before that convention kept
     taking calls unpaid.
 
     **The contact field is still written when one is configured**
-    (`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`), because it is the only thing a GoHighLevel workflow
-    can *trigger* on, and a client in arrears is still meant to hear about it. Blank means no
-    dunning field has been created yet and the write is skipped in silence - the pause does not
-    depend on it.
+    (`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, `OFF` or `ON` - see `GHL_STATUS_FAILED`), because it is
+    the only thing a GoHighLevel workflow can *trigger* on, and a client in arrears is still
+    meant to hear about it. Blank means no dunning field has been created yet and the write is
+    skipped in silence - the pause does not depend on it.
 
     Every write here is best effort. The bill's outcome is already saved, and GoHighLevel being
     down must not undo it or stop the webhook, the sweep or the retry button.
@@ -781,6 +783,9 @@ def _set_dunning_status(client: ClientMapping, value: str) -> None:
     A contact field is the only thing a GoHighLevel workflow can trigger on, so this is what
     sends the client an email about a failed payment. Blank `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`
     means no such field exists yet: skipped in silence, the way a blank card status field is.
+
+    `value` has to be one of the field's own picklist options - `GHL_STATUS_FAILED` or
+    `GHL_STATUS_ACTIVE`, nothing else.
     """
     if not settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID:
         return

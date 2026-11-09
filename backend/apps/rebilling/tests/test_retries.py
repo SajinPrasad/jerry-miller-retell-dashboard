@@ -34,7 +34,10 @@ pytestmark = pytest.mark.django_db
 
 NOW = datetime(2026, 3, 5, 12, 0, tzinfo=UTC)
 # Who the status is written against, and which field of theirs: the billing contact in the main
-# sub-account, found by the client's billing email.
+# sub-account, found by the client's billing email. The two values asserted below are spelled out
+# rather than read from `stripe_billing`: that field is a SINGLE_OPTIONS picklist in GoHighLevel
+# whose options are exactly `["ON", "OFF"]`, so the strings themselves are the contract, and a
+# test reading the same constant it is checking would pass whatever they were changed to.
 BILLING_EMAIL = 'ops@coolbreeze.test'
 STATUS_FIELD = settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID
 INTERVAL = timedelta(hours=settings.BILLING_RETRY_INTERVAL_HOURS)
@@ -106,7 +109,7 @@ def test_being_paid_after_a_retry_clears_the_schedule_and_marks_the_client_activ
     bill.refresh_from_db()
     assert bill.status == PAID
     assert bill.next_retry_at is None
-    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'active')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'ON')]
 
 
 # --- what a retry run does -----------------------------------------------------------------------
@@ -160,7 +163,7 @@ def test_a_retry_that_collects_marks_the_bill_paid_and_the_client_active(fake, g
     assert bill.paid_at == NOW
     assert bill.failure_reason == ''
     assert bill.next_retry_at is None
-    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'active')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'ON')]
 
 
 def test_an_invoice_stripe_already_shows_as_paid_is_not_charged_again(fake, ghl_contact_writes):
@@ -188,7 +191,7 @@ def test_the_last_retry_that_fails_uses_up_the_schedule_and_marks_the_client_fai
     assert bill.status == FAILED
     assert bill.retry_count == settings.BILLING_MAX_RETRIES
     assert bill.next_retry_at is None
-    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'failed')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'OFF')]
 
 
 def test_a_retry_repeated_at_the_same_moment_is_not_made_twice(fake):
@@ -232,7 +235,7 @@ def test_the_schedule_runs_in_order_until_it_is_used_up(api, fake, ghl_contact_w
 
     assert bill.status == FAILED
     assert bill.next_retry_at is None
-    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'failed')]
+    assert ghl_contact_writes == [(BILLING_EMAIL, STATUS_FIELD, 'OFF')]
 
 
 def test_a_declined_retry_for_one_client_does_not_stop_the_others(fake, monkeypatch):
