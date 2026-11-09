@@ -20,13 +20,15 @@ export function Shell({
 }) {
   return (
     <main className="admin">
-      <header className="admin-header">
-        <div>
-          <h1>Voice billing</h1>
-          <p className="muted">{userName ?? 'Loading…'}</p>
-        </div>
-      </header>
-      {children}
+      <div className="admin-inner">
+        <header className="admin-header">
+          <div>
+            <h1>Voice billing</h1>
+            <p className="muted">{userName ?? 'Loading…'}</p>
+          </div>
+        </header>
+        {children}
+      </div>
     </main>
   )
 }

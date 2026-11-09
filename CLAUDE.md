@@ -146,7 +146,11 @@ read-only.
   records its reason and leaves the bill `uncharged`, which is precisely the state nobody can
   act on without being told.
 - **Frontend:** `features/admin/` (route `/admin`, the Custom Page URL), `lib/ghlSession.ts`
-  (handshake, 10s timeout, listener removed), `api/admin.ts`. White background, green accent.
+  (handshake, 10s timeout, listener removed), `api/admin.ts`. SurPro Labs AI brand dark theme
+  (plum-black background `#1a0f0f`, mint-green accent, Audiowide/DM Sans fonts, per
+  `local_folder/SurPro-Labs-AI-Brand-Guidelines.md`), scoped to `.admin` only - the rest of the
+  app (`/onboarding`) stays the original light theme. `.admin` fills the viewport edge-to-edge
+  (`width: 100%`, `min-height: 100vh`); `.admin-inner` centers the content at `max-width: 1120px`.
   Loading states are skeletons shaped like the content (`Skeleton.tsx`), not text.
 - **Period filter** (`MonthPicker.tsx`): on the client's page, opposite the "All clients" back
   button. Arrows to step a month, a list to jump, bounded at the current month (nothing is billed
@@ -206,9 +210,9 @@ read-only.
   `local_folder/seed_demo_data.py` fills the local database. Both are offline and gitignored. The
   backend verifies a dev blob exactly like a real one - there is no server-side bypass.
 
-## Voice rebilling (Task 4, Phases 1, 2, 2b, 3, 5 and 7 built)
+## Voice rebilling (Task 4, Phases 1, 2, 2b, 3, 5, 7, 8 and 10 built)
 
-Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe, Phase 7 the card on file and the card request. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started.
+Phases and open questions live in `local_folder/plan.md`; cross-platform contradictions and safeguards live in `local_folder/CriticalFindings.md`. Phase 1 is the data model and the Retell webhook, Phase 2 the nightly Retell audit, Phase 2b the daily Twilio pull, Phase 3 the monthly calculation (`Bill`/`BillLine`), Phase 5 charging through Stripe, Phase 7 the card on file and the card request, Phase 8 the dunning contact-field write, Phase 10 pausing/resuming a client by their Retell agent id plus the manual retry-charge endpoint. Phase 4's rate editing is built (see the admin page above); its unassigned-calls and bills tables, and Phase 6 (alerts), are not started. **Phase 9 (one Retell workspace per sub-account) is a separate, parked branch (`feat/retell-workspace-per-subaccount`) and is not on `main`** — this section describes `main`'s actual design: one shared `RETELL_API_KEY`, one account-level webhook, agent-id/phone matching.
 
 **Two ingest paths, sharing only `ClientMapping`.** Retell is one row per call, written once on the webhook. Twilio is one row per day, re-written on every pull. Do not unify them.
 

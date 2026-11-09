@@ -33,12 +33,20 @@
   --font-display: 'Audiowide', system-ui, sans-serif;
   --font-body: 'DM Sans', system-ui, sans-serif;
 
-  max-width: 1120px;
-  margin: 0 auto;
-  padding: 2rem 16px 4rem;
+  /* Full-bleed: the dark background must reach every edge of the viewport/iframe, not just the
+     centered content column. .admin-inner (below) is what constrains and centers the content;
+     .admin itself only ever paints the background. */
+  width: 100%;
+  min-height: 100vh;
   background: var(--bg);
   color: var(--text);
   font-family: var(--font-body);
+}
+
+.admin-inner {
+  max-width: 1120px;
+  margin: 0 auto;
+  padding: 2rem 16px 4rem;
 }
 
 .admin h1,

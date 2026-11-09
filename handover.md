@@ -19,7 +19,7 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `ee98a0b`. Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `106cdb1`. Do not commit or push unless asked.
 
 > ### This branch is not the Phase 9 redesign
 >
@@ -34,31 +34,61 @@ Companion docs:
 > (`/webhooks/retell/<location_id>/`), or "no agent picker" change applies here. If a task
 > references that design, confirm with the user which branch it belongs to before touching code.
 
-> ### The dark brand theme is not on `main` either
->
-> The admin page's styling (dark plum-black background, mint-green accent, Audiowide/DM Sans
-> fonts, per `local_folder/SurPro-Labs-AI-Brand-Guidelines.md`) was built and committed on a
-> separate branch, **`feat/admin-brand-theme`** (one commit, `97d9d59`, on top of this branch's
-> `ee98a0b`) — **not merged into `main`**. `main`'s `frontend/src/features/admin/admin.css`,
-> `frontend/index.html` and `ClientDetail.tsx`'s Request-card button are still the original light
-> theme described in §9. If a task references the dark theme, or a screenshot shows it, confirm
-> which branch it belongs to before touching admin CSS — the two will conflict on the same file.
+**Settled, confirmed live — do not re-raise these as open questions:**
+
+- **One Stripe account.** `STRIPE_SECRET_KEY` names the single Stripe account connected to both
+  GoHighLevel and this app, holding every client's card. "Which Stripe account" is answered:
+  there is only one, so the customer lookup by `billing_email` always has a card to find if GHL
+  has one.
+- **The Stripe webhook is registered and verified live.** `invoice.paid` and
+  `invoice.payment_failed` are registered against this app's endpoint, `STRIPE_WEBHOOK_SECRET`
+  matches, and live test payments have gone end-to-end — charged, webhook received, bill marked
+  `paid`. A bill reading `charging` well past Stripe's own attempt window is now a real anomaly to
+  investigate, not an assumed misconfiguration.
+- **Bills under Stripe's $0.50 minimum are intentionally left alone.** `charge_bills` counts them
+  as `too_small` and leaves them `uncharged`, by design — not a bug, not a pending policy
+  decision, and nothing retries them. (The admin page still shows no reason text against one —
+  that is a real, separate, low-priority UI gap; see §16.)
+- **GHL marketplace distribution is live.** The app is enabled on all sub-accounts, with
+  "Auto-Install on future sub-accounts" turned on.
+- **`POST /oauth/location-token` is verified live**, `Version: v3`, 201 Created.
+- **The live Retell agent custom value is confirmed.** `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME` is set
+  in `.env` to `"Outbound AI Assistant ID"` (`fieldKey: outbound_ai_assistant_id`) — the real name
+  on Jerry's sub-accounts, not the generic `retell_agent_id` placeholder in `.env.example`. This is
+  the value §6.10b's `pause_voice()`/`resume_voice()` look up by name on every pause/resume.
 
 **Already committed, newest first:**
 
-- `ee98a0b` — **Retell on/off toggle, back as a sub-account custom value, alongside the contact
-  field.** `sync_rebilling_status` now writes *two* things on every outcome that matters:
-  the existing contact field (§6.10b, for Jerry's dunning workflows, which trigger on a contact
-  field changing) and a **new** custom value in the client's own sub-account (`off` on exhausted
-  retries, `on` on paid-with-no-other-failed-bill), read directly by an If/Else condition in the
-  client's call-routing workflow — evaluated per call, not watched as a trigger, so the limitation
-  that killed the custom-value approach in §6.10b does not apply to this one. New setting
-  `GHL_RETELL_STATUS_CUSTOM_VALUE_ID` (blank skips the write, same pattern as the other field ids).
-  Reinstates `GHLOAuthService.set_custom_value()` (removed in `6f0e544`) and the
-  `locations/customValues.readonly`/`.write` scopes. The toggle write does not depend on
-  `billing_email` (it's per-location, not per-contact), so it still fires for a client GHL has no
-  owner email for, unlike the contact field write next to it. Best effort, same as the contact
-  field: a `GHLError` is logged, never raised.
+- `106cdb1` — **GHL location-token fix.** `sync_locations` calls `POST /oauth/location-token`
+  (kebab-case, `Version: v3`) instead of the old path — confirmed live, 201 Created (see the
+  settled facts above). `needs_refresh` is now true for an empty `access_token` regardless of its
+  placeholder expiry, so a sub-account whose mint failed is retried on the next sync instead of
+  waiting out an expiry it was never close to.
+- `ed16126` — **Phase 10: pause/resume by agent id, and the manual retry endpoint.** See
+  §6.10b/§6.10c. Replaces the on/off custom-value toggle (`ee98a0b`, below) with
+  clearing/restoring the client's actual Retell agent id, and adds `POST .../retry-charge/` to
+  collect a failed bill by hand.
+- `18d88f0` — **Stripe invoices are collected immediately.** `charge_bills` calls
+  `stripe.Invoice.pay()` right after finalising instead of waiting on Stripe's own ~1-hour first
+  attempt, so a run ends with each bill `paid`, `failed`/`retrying`, or — only on a non-card Stripe
+  error — `charging` for the webhook to settle. See §6.10.
+- `7675615` — **Merged `feat/admin-brand-theme` into `main`.** The SurPro Labs AI dark theme
+  (plum-black background, mint-green accent, Audiowide/DM Sans fonts; one commit, `97d9d59`) is
+  now live on `/admin` and `/admin/preview`. See §9.
+- `d67f2a0` — **Rates are auto-seeded, so no mapped client is ever rate-less.**
+  `ClientMapping.save()` gives a freshly created client a `RateHistory` row at the system defaults
+  the instant they are mapped, whether through the admin page or the Django admin fallback.
+  `current_rate()` and `_retell_line()` fall back to the same defaults in memory (never written)
+  for clients mapped before this existed, so an admin page view or a bill run never has to invent
+  a rate silently. `manage.py backfill_default_rates` gives those legacy clients a real row, once.
+- `ee98a0b` — **Superseded by Phase 10 (`ed16126`) above.** Briefly restored the rebilling status
+  as a sub-account custom value (`GHL_RETELL_STATUS_CUSTOM_VALUE_ID`, an `on`/`off` toggle read by
+  an If/Else in the call-routing workflow) alongside the contact field. Phase 10 replaced the
+  toggle with clearing/restoring the client's actual agent id instead, which needs no workflow
+  convention to be correct. **`GHL_RETELL_STATUS_CUSTOM_VALUE_ID` no longer exists.**
+  `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` (the dunning contact field) is unaffected by any of this —
+  still written alongside the pause/resume, still optional, still skipped in silence when blank.
+  Full history in §6.10b-i.
 - `1d28c35` — **A card GHL attached but never made the invoice default is now promoted, not
   reported as no card.** `_promote_attached_card()` (`stripe_billing.py`): when a Stripe customer
   has no `invoice_settings.default_payment_method` and no legacy `default_source`, it lists the
@@ -80,15 +110,11 @@ Companion docs:
 - `5fd30f1` — **Client detail page split into two tabs.** See §5.4/§5.7.
 - `867f963` — Handover doc update: the SSO bridge script for GHL's Agency Custom JavaScript
   (§17.1a) and the answered Retell multi-location research (§15), both doc-only.
-- `6f0e544` — **Phase 8**, the rebilling status write (§6.10b): `sync_rebilling_status` now writes
+- `6f0e544` — **Phase 8**, the rebilling status write (§6.10b-i): `sync_rebilling_status` moved
   `failed` / `active` to a custom field on the client's **billing contact in the main account**,
-  not to the `retell_rebilling_status` custom value in their own sub-account, because GoHighLevel
+  not the `retell_rebilling_status` custom value in their own sub-account, because GoHighLevel
   workflows have no trigger for a custom value changing. Reuses Phase 7's `set_contact_field()`.
-  `GHL_RETELL_STATUS_CUSTOM_VALUE_NAME` is replaced by `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`, blank
-  until Jerry creates the field. `GHLOAuthService.set_custom_value()` and the
-  `locations/customValues.*` scopes are gone. A client with no `billing_email` has no contact to
-  write to: logged and skipped, never guessed. Still best effort — a GHL failure is logged, never
-  raised, so it cannot undo the bill's own outcome.
+  Still written today, alongside Phase 10's pause/resume — see the settled facts above.
 - `a14e0a3` — Phase 7, the card on file (§6.11) — the live Stripe card check on every detail view,
   the **Request card** button, and the webhook back.
 - Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
@@ -96,24 +122,25 @@ Companion docs:
 
 **Test status (last run, this state):**
 
-- Backend: `pytest`: **367 passed**.
-- Frontend: `npm test -- --run`: **96 passed** in 3 files.
+- Backend: `pytest`: **417 passed**.
+- Frontend: `npm test -- --run`: **107 passed** in 3 files.
 - `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
 - `manage.py makemigrations --check --dry-run`: "No changes detected".
 
-**Nothing in Phase 7 or 8 has run against live GoHighLevel or Stripe.** Every call is mocked. The
-contact search and update shapes come from GHL's published v3 spec, not from a live call — §17 has
-what to check first. Both phases wait on the same thing: the two field ids, and a re-authorisation
-for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO bridge injected into
-GHL's Agency Custom JavaScript (§17.1a, the bridge script).
+**Stripe charging has run live** (settled facts above): the single account, the registered
+webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have
+not.** The card-request flow (§6.11) and the dunning field (§6.10b) still wait on
+`GHL_CARD_STATUS_CUSTOM_FIELD_ID` and `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` being created and on a
+re-authorisation for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO
+bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
-The most important open question is in §15: which Stripe account the charges go through.
 
-**Not merged into `main`:** the dark brand theme (`feat/admin-brand-theme`, see the callout above)
-and the Phase 9 Retell-workspace-per-subaccount redesign (`feat/retell-workspace-per-subaccount`).
+**Not merged into `main`:** only the Phase 9 Retell-workspace-per-subaccount redesign
+(`feat/retell-workspace-per-subaccount`, see the callout above). The dark brand theme is merged
+(see the settled facts and commit list above).
 
 ---
 
@@ -1021,10 +1048,19 @@ These are enforced in code, or are explicit requirements.
   tabs, **Overview & billing** and **Agent mapping** (§5.4/§5.7); `.tabs`/`.tab`/`.tab.active` in
   `admin.css` style them.
 - Not built: the agency dashboard and the client dashboard (empty folders).
-- **Theme:** white background, green accent, system-ui font — all of it CSS custom properties
-  (`--text`, `--muted`, `--bg`, `--card`, `--border`, `--accent`, …) set once in `index.css`'s
-  `:root` and consumed throughout `admin.css`/`onboarding.css`. A dark SurPro Labs AI brand restyle
-  of the admin page exists but is **not on `main`** — see the `feat/admin-brand-theme` note in §0.
+- **Theme:** two themes, scoped by page. `/onboarding` stays the original light theme (white
+  background, green accent, system-ui font) from `onboarding.css`/`index.css`'s `:root`. `/admin`
+  and `/admin/preview` carry the SurPro Labs AI brand dark theme (plum-black `#1a0f0f` background,
+  mint-green accent, Audiowide display font, DM Sans body font, per
+  `local_folder/SurPro-Labs-AI-Brand-Guidelines.md`) merged from `feat/admin-brand-theme` (§0). All
+  of it is CSS custom properties (`--text`, `--muted`, `--bg`, `--card`, `--border`, `--accent`, …)
+  — `.admin` in `admin.css` overrides every one of `index.css`'s `:root` defaults, scoped to that
+  class, so nothing outside `/admin` sees the dark palette. `.admin` itself fills the viewport
+  edge-to-edge (`width: 100%`, `min-height: 100vh`) so the dark background reaches every edge of
+  the iframe; `.admin-inner` is the nested wrapper that centers the actual content at
+  `max-width: 1120px`. (Before this split, `.admin` carried both the full-bleed background and the
+  centered content in one box, which left the centering rules fighting the fill rules and showed
+  white borders around the dark page.)
 - `frontend/dist/` is build output and is gitignored.
 - **Type checking:** the root `tsconfig.json` is solution-style (`"files": []`), so `npx tsc --noEmit` checks
   nothing. Use `./node_modules/.bin/tsc -b` from `frontend/`. Plain `npx tsc -b` may try to install an unrelated
@@ -1189,17 +1225,10 @@ Full detail is in `local_folder/CriticalFindings.md`. These are the ones that wo
 
 ## 15. Open questions and live verification
 
-These cannot be answered from the docs.
-
-**Blocks charging anyone (the most important):**
-
-- **Which Stripe account?** `STRIPE_SECRET_KEY` must be the account that holds the clients' cards. Lookup is by
-  billing email on that account. If the cards live on a different account, no customer is ever found, and every
-  bill stays `uncharged` with "No Stripe customer found". Confirm which account GoHighLevel is connected to
-  before the first live charge.
-- **The webhook must be registered in Stripe** for `invoice.paid` and `invoice.payment_failed`, pointing at this
-  app's endpoint, with `STRIPE_WEBHOOK_SECRET` matching. Without it every charge succeeds at Stripe while every
-  bill here reads `charging` forever. Whether this is done is not recorded here.
+These cannot be answered from the docs. For what has already been settled and verified live —
+the Stripe account, the Stripe webhook, GHL marketplace distribution, `location-token`, and the
+live Retell agent custom value name — see the "Settled, confirmed live" list in §0. They are not
+repeated here.
 
 **Blocks trusting Twilio at all:**
 
@@ -1225,9 +1254,9 @@ These cannot be answered from the docs.
 
 **Verify on Jerry's GHL account:**
 
-- The `Version` header, `installed-locations` pagination, and the white-label install
-  host (`GHL_INSTALL_URL_BASE`). (The location-token path casing is settled: `/oauth/location-token`,
-  `Version: v3`.)
+- The `Version` header and `installed-locations` pagination on the white-label install host
+  (`GHL_INSTALL_URL_BASE`). (`/oauth/location-token`, `Version: v3`, is settled and verified
+  live — §0.)
 - The SaaS subscription response shape (`GET /saas/get-saas-subscription/{locationId}`), which blocks Task 2's MRR KPI.
 
 **Business questions for Jerry:**
@@ -1237,8 +1266,6 @@ These cannot be answered from the docs.
 - How are **transfer legs** billed? `call_cost.product_costs[].is_transfer_leg_cost` marks them. Currently the whole
   `duration_ms` is billed.
 - Do clients pay **monthly or prepaid**? The backend PDF says "being confirmed".
-- **What happens to a bill under 50 cents?** It stays `uncharged` and is not retried. Options (roll forward, waive, or
-  charge anyway) are undecided.
 - **Are `send_invoice` clients needed?** `billing_mode = send_invoice` is accepted and skipped by `charge_bills`, but
   nothing sends them an invoice (§16).
 - Who receives **alert emails**? (Phase 6.)
@@ -1261,9 +1288,10 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
 
 ## 16. Known gaps and risks
 
-- **A bill under 50 cents has no explanation on the page.** `charge_bills` counts it as `too_small` and leaves it
-  `uncharged` without a `failure_reason`, so the admin page shows "Uncharged" with no reason. This is a small gap to
-  close with the open question in §15.
+- **A bill under 50 cents has no explanation on the page.** The policy itself is settled and
+  intentional (§0): `charge_bills` counts it as `too_small` and leaves it `uncharged`, on purpose,
+  with nothing to retry. What remains a real (low-priority) gap is purely cosmetic — it does so
+  without a `failure_reason`, so the admin page shows "Uncharged" with no reason text next to it.
 - **`send_invoice` clients are never billed.** Their bills are calculated and then skipped. Nothing sends an invoice,
   and no UI or command shows them.
 - **`setup_link()` is not reachable from any UI.** A client with no card has no way to add one from this app yet.
@@ -1272,9 +1300,11 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
   both. Each degrades to a blank name on failure rather than failing the page.
 - **A failed nightly run only logs.** There is no alert until Phase 6. Until then, a silently failing Retell audit or
   Twilio pull under-bills with no visible signal.
-- **The Stripe webhook is a single point of failure.** If it is unregistered or the signing secret is wrong, every charge
-  still succeeds at Stripe while every bill here reads `charging` forever. No reconciliation pass exists; Phase 6 should
-  alert on bills stuck in `charging` for N days.
+- **The Stripe webhook is a single point of failure, structurally — even though it is registered
+  and verified live today (§0).** If it were ever unregistered, pointed at the wrong URL, or its
+  signing secret rotated without updating `STRIPE_WEBHOOK_SECRET`, every charge would still succeed
+  at Stripe while every bill here kept reading `charging` forever. No reconciliation pass exists;
+  Phase 6 should alert on bills stuck in `charging` for N days regardless.
 - **`failed` is not final.** Stripe's Smart Retries can later flip a failed invoice to `paid`, and the webhook handles that.
 - **Pausing is one GHL write now, and the dunning field is a second.** `sync_voice_routing` empties or
   restores the client's Retell agent id custom value, and separately writes the dunning contact field when
@@ -1585,20 +1615,27 @@ Merged into `main`. Oldest first:
 | `bcd48b9` | Automated retry schedule and the first GHL rebilling-status write |
 | `654c927` | Twilio billing paused |
 | `a14e0a3` | Phase 7: the card on file, and asking for one |
-| `6f0e544` | Phase 8: rebilling status write moved to a contact custom field (§6.10b) |
+| `6f0e544` | Phase 8: rebilling status write moved to a contact custom field (§6.10b-i) |
 | `867f963` | Handover doc update: SSO bridge script (§17.1a), answered Retell multi-location research (§15) |
 | `5fd30f1` | Client detail page split into Overview & billing / Agent mapping tabs (§5.4, §5.7) |
 | `d91b450` | Clients list status pill reverts to Not mapped once every Retell agent is removed (§5.7) |
 | `2ffe3f1` | Handover doc update: brought current with `5fd30f1`/`d91b450`, the Phase 9 not-merged note |
 | `1d28c35` | A card attached but not defaulted is promoted and charged, not reported as `no_card` (§6.10, §6.11) |
-| `ee98a0b` | Retell on/off toggle restored as a sub-account custom value, alongside the contact field (§6.10b) |
+| `ee98a0b` | Retell on/off toggle restored as a sub-account custom value, alongside the contact field — **superseded by Phase 10 (`ed16126`)** |
+| `dec0681` | Handover doc update: the custom-value toggle, card promotion, the (then-)unmerged brand theme |
+| `97d9d59` | Admin page restyled to the SurPro Labs AI brand dark theme; button styling fixed |
+| `d67f2a0` | Rates auto-seeded on mapping; a client with none still bills and displays at the defaults (§0) |
+| `7675615` | Merge `feat/admin-brand-theme` into `main` — the dark theme is live on `/admin` and `/admin/preview` |
+| `18d88f0` | Stripe invoices collected immediately (`Invoice.pay()`) instead of waiting on Stripe's own queue (§6.10) |
+| `ed16126` | Phase 10: pause/resume a client by clearing/restoring their Retell agent id; manual retry-charge endpoint (§6.10b, §6.10c) |
+| `106cdb1` | GHL `location-token` fixed to the real `v3` kebab-case path; auto-mint retried on an empty `access_token` |
 
 Other branches in the repository: `feat/retell-workspace-per-subaccount` (the parked Phase 9 redesign,
 one Retell workspace per sub-account — **not merged, not in use**, see §0), `feat/ghl-billing-with-stripe-fallback`
 (the GHL one-off invoice attempt, with its own `0006` and the `ghl_invoice_*` columns), `feat/stripe-billing`
 (now merged into `main`), `feat/admin-brand-theme` (the dark brand restyle of the admin page, one commit,
-`97d9d59`, on top of this branch's `ee98a0b` — **not merged, not in use**, see §0), and a couple of older
-working branches (`retell`, `twillio-retell`, `versionone-singleworkspace-backup`).
+`97d9d59` — **merged into `main` via `7675615`**, see §0), and a couple of older working branches
+(`retell`, `twillio-retell`, `versionone-singleworkspace-backup`).
 
 ---
 
@@ -1620,19 +1657,21 @@ working branches (`retell`, `twillio-retell`, `versionone-singleworkspace-backup
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`, if they exist on the machine.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **367 passed**. From `frontend/`, run `npm test -- --run` and expect **96 passed**. Also run `ruff check .`,
+   **417 passed**. From `frontend/`, run `npm test -- --run` and expect **107 passed**. Also run `ruff check .`,
    `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
    `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. `main` should be clean at
-   `ee98a0b` (§0) unless new work is in flight.
-5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and most of 4 are built. Still open: the unassigned-call mapping UI, the bills
-   table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started. Don't start any of these
-   without an explicit request. Ask first if the request is ambiguous. **Never make live API calls.**
+   `106cdb1` (§0) unless new work is in flight.
+5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built. Still open: the unassigned-call
+   mapping UI, the bills table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started.
+   Don't start any of these without an explicit request. Ask first if the request is ambiguous. **Never make live
+   API calls.**
 6. **This branch is not Phase 9.** `main` uses one shared `RETELL_API_KEY` and agent-id/phone matching
    (§6.4), not the parked per-sub-account workspace redesign on `feat/retell-workspace-per-subaccount` (§0).
    If a request describes a per-client Retell workspace, a pasted API key per client, or a webhook URL
    carrying `location_id`, stop and confirm which branch it belongs to before writing code.
-7. **This branch is not the dark brand theme either.** The admin page's styling on `main` is still the
-   original light theme (§9); the dark restyle is on `feat/admin-brand-theme` (§0), not merged. Confirm
-   which branch before editing admin CSS.
-8. Before the first live charge, answer the Stripe account question in §15.
+7. **The dark brand theme is merged and live** on `/admin` and `/admin/preview` (§0, §9) — it is not a
+   separate, unmerged branch any more. `/onboarding` stays the original light theme.
+8. **Stripe is settled** (§0): one account, webhook registered and verified live, sub-$0.50 bills
+   intentionally left `uncharged`. Do not re-ask these as open questions; §15 holds what is genuinely
+   still open (Twilio subaccounts, live Retell verification, a few business policy questions for Jerry).
