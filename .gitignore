@@ -14,6 +14,9 @@ htmlcov/
 backend/.env
 backend/db.sqlite3
 backend/staticfiles/
+# What verify_live_billing backs up before it changes anything live. Server-local and
+# short-lived: verify_live_billing_cleanup deletes it once everything is restored.
+backend/live_verification_state.json
 
 # Node
 node_modules/

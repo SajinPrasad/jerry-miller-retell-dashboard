@@ -122,7 +122,7 @@ Companion docs:
 
 **Test status (last run, this state):**
 
-- Backend: `pytest`: **417 passed**.
+- Backend: `pytest`: **444 passed**.
 - Frontend: `npm test -- --run`: **107 passed** in 3 files.
 - `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
@@ -617,6 +617,7 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | Calculate bills | **not scheduled** | — | `python manage.py calculate_bills [--month YYYY-MM]` |
 | Charge bills | **not scheduled** (deliberately) | — | `python manage.py charge_bills [--month YYYY-MM]` |
 | Retry declined charges | Hourly, at :15 | `apps.rebilling.tasks.retry_failed_charges` | `python manage.py retry_failed_charges` |
+| Live verification (never scheduled) | — | — | `python manage.py verify_live_billing` / `verify_live_billing_cleanup [--recover]` — see §6.6a |
 
 - The beat schedule lives in `CELERY_BEAT_SCHEDULE` in `config/settings/base.py`.
   `config/celery.py` is the Celery app. `config/__init__.py` exposes it so `@shared_task` binds.
@@ -628,6 +629,39 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
   A partial failure warns and exits 0. Cron can monitor the exit code.
 - The **first** charge is never automatic. It runs by hand, per month, in order: the Twilio month-close pull
   (with both dates), then `calculate_bills`, then `charge_bills`.
+
+### 6.6a Live verification: proving the paid and failed paths on the server
+
+`verify_live_billing` drives the **real** production functions — `calculate_bills`,
+`charge_bills`, `retry_due_bills`, and `retry_now` on the way out — against live GoHighLevel and
+Stripe **test mode**, so the pause and resume that only exist end-to-end can actually be watched
+happening. `apps/rebilling/live_verification.py` holds everything the two commands share. There
+is no new billing logic anywhere in it; it only sets the stage and records what to put back.
+
+| | |
+|---|---|
+| Hard gate | Aborts unless `STRIPE_SECRET_KEY` starts with `sk_test_`. `sk_live_` and `rk_` are both refused |
+| Period | `2025-12` only — dead, but still inside `/admin`'s twelve-month picker, so the failed bill can be found and its **Retry payment** button pressed by hand |
+| Accounts | Branwynn Destinations LLC (paid path) and FrostLine Climate Solutions (failed path), by hard-coded location id |
+| Failed path | FrostLine's Stripe **default payment method** is temporarily pointed at `pm_card_chargeDeclined`. Its real card stays attached — removing it would make `_assert_chargeable` refuse before an invoice was ever raised, and the decline is the whole point |
+| Backup | FrostLine's original default payment method, both sub-accounts' live `Outbound AI Assistant ID`, and `retell_routing_agent_id` / `voice_paused_at` / `voice_sync_error`, written to `backend/live_verification_state.json` (gitignored) **before** anything changes |
+
+It stops with FrostLine `failed`, its agent custom value **emptied** and `voice_paused_at`
+stamped, and says plainly whether `_set_dunning_status` ran or skipped on a blank
+`GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. That paused state is the thing being verified, so it is left
+standing.
+
+**Isolation is enforced, not assumed.** The run refuses to start if `2025-12` already holds any
+bill, refuses to charge if `calculate_bills` turns up real `2025-12` usage for a third client, and
+refuses to run the account-wide retry sweep while anyone else's bill is also due
+(`--allow-other-due-bills` overrides the last one). Only the synthetic call (`live-verify-` id
+prefix), the `2025-12` bill and a `2025-12` rate row the run itself created are ever deleted.
+
+`verify_live_billing_cleanup` restores the passing card, detaches the declining one, voids or
+deletes the unpaid test invoice, puts both agent custom values and the voice fields back from the
+backup, and deletes those rows. With `--recover` it first restores the card and calls `retry_now`
+once, checking the bill becomes `paid` and the agent id comes back by itself — the resume half of
+§6.10b. Safe to re-run; a step that could not complete is listed at the end and the backup is kept.
 
 ### 6.7 Rebilling settings
 
@@ -1110,6 +1144,8 @@ python manage.py reconcile_retell_calls                   # manual Retell audit
 python manage.py pull_twilio_usage [--start --end]        # manual Twilio pull (rolling 3-day window by default)
 python manage.py calculate_bills [--month YYYY-MM]        # build the month's bills
 python manage.py charge_bills [--month YYYY-MM]           # charge the month's uncharged bills through Stripe
+python manage.py verify_live_billing                      # live paid+failed path check, Stripe TEST mode only (§6.6a)
+python manage.py verify_live_billing_cleanup [--recover]  # undo it; --recover also proves the resume path
 celery -A config worker -l info                           # background worker
 celery -A config beat -l info                             # scheduler
 pip-sync requirements/dev.txt                             # install dependencies
@@ -1657,7 +1693,7 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`, if they exist on the machine.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **417 passed**. From `frontend/`, run `npm test -- --run` and expect **107 passed**. Also run `ruff check .`,
+   **444 passed**. From `frontend/`, run `npm test -- --run` and expect **107 passed**. Also run `ruff check .`,
    `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
    `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. `main` should be clean at
