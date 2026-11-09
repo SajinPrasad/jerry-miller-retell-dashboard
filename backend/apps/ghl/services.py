@@ -292,12 +292,17 @@ class GHLOAuthService:
         A sub-account the app isn't installed on can't be minted a token, but it is still stored
         (tokenless) so it stays visible in the billing dashboard.
 
-        `hidden_location_ids()` is dropped before any of that: an excluded sub-account is not
-        read for its owner, not minted a token, and not stored - and one already stored is
+        The agency's own main location is added to that list when GoHighLevel leaves it out
+        (`_add_main_location`), so it can be mapped and billed like any other client.
+
+        `hidden_location_ids()` is dropped after that and before any of the rest: an excluded
+        sub-account - the main one included, if it is listed in `EXCLUDED_GHL_LOCATION_IDS` - is
+        not read for its owner, not minted a token, and not stored, and one already stored is
         deactivated by the same sweep that retires a sub-account GHL no longer reports.
         """
         agency_token = self.get_agency_token(agency)
         installed = self._installed_locations(agency_token, agency.company_id)
+        self._add_main_location(agency_token, installed)
         for hidden in hidden_location_ids():
             installed.pop(hidden, None)
 
@@ -404,6 +409,36 @@ class GHLOAuthService:
             for field in changed:
                 setattr(row, field, fields[field])
             row.save(update_fields=changed)
+
+    def _add_main_location(self, agency_token: str, installed: dict[str, str]) -> None:
+        """Put the agency's own main location into the sync list when GHL omits it.
+
+        `/oauth/installed-locations` answers with the sub-accounts the *app* is installed on, and
+        the agency's main location is frequently not one of them even though it runs voice like
+        any other client. Without this it could never be synced, so it could never be mapped or
+        billed - the Clients list is built from the rows this sync writes.
+
+        **Added rather than forced.** It goes in only when the listing left it out, so a main
+        location GHL does report keeps that listing's own name, and `hidden_location_ids()` still
+        gets the last word: adding it to `EXCLUDED_GHL_LOCATION_IDS` hides it again.
+
+        A name that cannot be read falls back to whatever is already stored, never to blank: the
+        id is what makes the row syncable, and a failed read must not rename a client to nothing.
+        """
+        location_id = (settings.AGENCY_LOCATION_ID or '').strip()
+        if not location_id or location_id in installed:
+            return
+        installed[location_id] = self._main_location_name(agency_token, location_id)
+
+    def _main_location_name(self, agency_token: str, location_id: str) -> str:
+        """What GoHighLevel calls the main location, for the row the sync is about to write."""
+        try:
+            body = self._request('GET', f'/locations/{location_id}', token=agency_token)
+        except GHLError as exc:
+            logger.warning('ghl: could not read the main location %s: %s', location_id, exc)
+            stored = GHLOAuthToken.objects.filter(is_agency=False, location_id=location_id).first()
+            return stored.name if stored else ''
+        return (body.get('location') or {}).get('name') or ''
 
     def _installed_locations(self, agency_token: str, company_id: str) -> dict[str, str]:
         """Return {location_id: name} for every sub-account under the agency."""

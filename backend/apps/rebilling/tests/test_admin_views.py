@@ -827,6 +827,7 @@ def test_sync_is_refused_for_a_sub_account_session(client):
 
 
 @respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=[settings.AGENCY_LOCATION_ID])
 def test_sync_discovers_a_new_sub_account_and_returns_the_updated_list(client):
     make_agency()
     mock_installed(('loc-new', 'Polar Peak Heating'))
@@ -843,7 +844,27 @@ def test_sync_discovers_a_new_sub_account_and_returns_the_updated_list(client):
 
 
 @respx.mock
-@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc-internal'])
+def test_a_refresh_puts_the_main_account_in_the_clients_list(client):
+    """The agency's own account bills like any other client, so "Refresh clients" must surface
+    it - even though `/oauth/installed-locations` does not report it."""
+    make_agency()
+    respx.get(f'{BASE}/locations/{settings.AGENCY_LOCATION_ID}').mock(
+        return_value=httpx.Response(200, json={'location': {'name': 'SurPro Labs AI'}})
+    )
+    mock_installed(('loc-new', 'Polar Peak Heating'))
+    mock_location_token()
+
+    body = sync_clients(client).json()
+
+    rows = {row['location_id']: row for row in body['clients']}
+    assert set(rows) == {'loc-new', settings.AGENCY_LOCATION_ID}
+    # Listed but not yet set up for billing, exactly like any other newly discovered client.
+    assert rows[settings.AGENCY_LOCATION_ID]['client_name'] == 'SurPro Labs AI'
+    assert rows[settings.AGENCY_LOCATION_ID]['mapped'] is False
+
+
+@respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc-internal', settings.AGENCY_LOCATION_ID])
 def test_a_refresh_does_not_bring_an_excluded_sub_account_back(client):
     """The point of the setting: pressing \"Refresh clients\" must not undo the exclusion."""
     make_agency()

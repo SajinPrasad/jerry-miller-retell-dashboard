@@ -422,10 +422,11 @@ def test_a_webhook_for_a_sub_account_we_do_not_bill_is_not_an_error(api, fake):
 # --- the payload the main-account workflow actually sends ---------------------------------
 
 
-def with_card(location_id='loc1', customer='cus_known', **extra):
+def with_card(location_id='loc1', customer='cus_known', billing_email=EMAIL, **extra):
+    """A client Stripe knows, already asked for a card. The main account overrides the email."""
     return make_client(
         location_id,
-        billing_email=EMAIL,
+        billing_email=billing_email,
         stripe_customer_id=customer,
         card_requested_at=REQUESTED_AT,
         **extra,

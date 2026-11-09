@@ -318,9 +318,15 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
   expiring.
 - `sync_locations(agency)` calls `GET /oauth/installed-locations` with the `Version: v3` header
   (the default `2021-07-28` returns 404 for this endpoint), then `POST /oauth/location-token`
-  (kebab-case, also `Version: v3`) for each sub-account. It skips everything
+  (kebab-case, also `Version: v3`) for each sub-account. **`installed-locations` reports where the
+  *app* is installed, which normally leaves the agency's own main location out**, so
+  `_add_main_location()` puts `AGENCY_LOCATION_ID` into the list before anything else happens —
+  its name read from `GET /locations/{id}`, falling back to the name already stored if that read
+  fails, so a transient error can neither blank the client's name nor retire its row. A listing
+  that does report the main location keeps the listing's own name. It then skips everything
   `hidden_location_ids()` names (`EXCLUDED_GHL_LOCATION_IDS`, see §6.12; `AGENCY_LOCATION_ID` itself
-  is now listed like any client unless included there) before it reads an owner or mints a token. If a
+  is listed and billable like any client unless included there, which still hides it) before it
+  reads an owner or mints a token. If a
   sub-account's token can't be minted, it stores the row anyway with an empty `access_token` and a
   future `expires_at` (so it appears in the admin page) — and because **an empty `access_token`
   makes `needs_refresh` true whatever that expiry says**, the next sync tries to mint it again
@@ -1009,8 +1015,9 @@ matched nothing.
 Jerry's GoHighLevel workflow emailing them a form. `GHLOAuthService.add_contact_tag(email, tag)` finds the
 contact by email in the **main account** (`GET /contacts/search/duplicate`) and adds the tag (`POST
 /contacts/{id}/tags`, `{"tags": [tag]}`), both `Version: v3`, both on a Location-class token minted on
-demand by `get_main_location_token()` (contact writes mint on demand without depending on synced rows —
-the main account is still listed if not in `EXCLUDED_GHL_LOCATION_IDS`), and an agency token is refused by `/contacts/`
+demand by `get_main_location_token()` (contact writes mint on demand and never depend on a synced row,
+so they keep working whether or not the main account is listed as a client — and it now is, unless
+`EXCLUDED_GHL_LOCATION_IDS` hides it), and an agency token is refused by `/contacts/`
 outright. The **add-tags** endpoint, not `PUT /contacts/{id}` with a `tags` array: that one replaces every
 tag the contact carries. Unlike the rebilling status write, this one **raises**: a human pressed a button,
 so a failure is shown, not logged.

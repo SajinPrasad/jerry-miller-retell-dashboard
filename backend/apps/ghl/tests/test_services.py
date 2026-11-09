@@ -16,6 +16,11 @@ from apps.ghl.services import GHLOAuthService, hidden_location_ids
 
 BASE = settings.GHL_API_BASE_URL
 
+# Every sync now also picks up the agency's own main location, whether or not
+# `/oauth/installed-locations` reported it. Tests about ordinary sub-accounts exclude it so they
+# stay about one thing; the main-location fallback has its own tests further down.
+without_main_location = override_settings(EXCLUDED_GHL_LOCATION_IDS=[settings.AGENCY_LOCATION_ID])
+
 
 def token_response(**overrides):
     body = {
@@ -195,6 +200,7 @@ def test_fresh_agency_token_is_reused(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_sync_creates_location_rows_with_tokens(service):
     agency = make_agency()
     installed = mock_installed(('loc1', 'Cool Breeze HVAC'), ('loc2', 'Branwynn'))
@@ -216,6 +222,7 @@ def test_sync_creates_location_rows_with_tokens(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_sync_follows_pagination(service):
     agency = make_agency()
     route = respx.get(f'{BASE}/oauth/installed-locations').mock(
@@ -241,6 +248,7 @@ def test_sync_follows_pagination(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_sync_keeps_fresh_tokens_and_deactivates_uninstalled(service):
     agency = make_agency()
     make_location('loc1', name='Old name')
@@ -265,7 +273,7 @@ def test_hidden_location_ids_trims_its_entries_and_drops_the_blanks():
 
 @pytest.mark.django_db
 @respx.mock
-@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc2'])
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc2', settings.AGENCY_LOCATION_ID])
 def test_sync_skips_excluded_sub_accounts(service):
     """An excluded id is not a client: not read for its owner, not minted a token, not stored."""
     agency = make_agency()
@@ -299,6 +307,66 @@ def test_sync_deactivates_a_sub_account_excluded_after_it_was_stored(service):
 
 @pytest.mark.django_db
 @respx.mock
+def test_sync_adds_the_main_location_when_ghl_leaves_it_out(service):
+    """`/oauth/installed-locations` lists where the *app* is installed, which often leaves the
+    agency's own main location out - and without it there, it could never be mapped or billed."""
+    agency = make_agency()
+    # Registered before `mock_installed`, whose details route is a catch-all regex and would
+    # otherwise answer for the main location too (respx matches in registration order).
+    respx.get(f'{BASE}/locations/{settings.AGENCY_LOCATION_ID}').mock(
+        return_value=httpx.Response(
+            200, json={'location': {'name': 'SurPro Labs AI', 'email': 'jerry@surpro.test'}}
+        )
+    )
+    mock_installed(('loc1', 'Cool Breeze HVAC'))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    main = GHLOAuthToken.objects.get(is_agency=False, location_id=settings.AGENCY_LOCATION_ID)
+    assert main.is_active
+    assert main.name == 'SurPro Labs AI'
+    # The agency's own row is a separate one and is untouched by the sub-account sweep.
+    assert GHLOAuthToken.objects.get(is_agency=True).is_active
+
+
+@pytest.mark.django_db
+@respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['agency-loc'])
+def test_excluding_the_main_location_still_hides_it(service):
+    """`EXCLUDED_GHL_LOCATION_IDS` gets the last word over the main-location fallback."""
+    agency = make_agency()
+    mock_installed(('loc1', 'Cool Breeze HVAC'))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    assert not GHLOAuthToken.objects.filter(
+        is_agency=False, location_id=settings.AGENCY_LOCATION_ID
+    ).exists()
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_an_unreadable_main_location_keeps_the_name_it_already_had(service):
+    """A failed read must not rename the client to nothing, nor retire its row."""
+    agency = make_agency()
+    make_location(settings.AGENCY_LOCATION_ID, name='SurPro Labs AI')
+    respx.get(f'{BASE}/locations/{settings.AGENCY_LOCATION_ID}').mock(
+        return_value=httpx.Response(500)
+    )
+    mock_installed(('loc1', 'Cool Breeze HVAC'))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    main = GHLOAuthToken.objects.get(is_agency=False, location_id=settings.AGENCY_LOCATION_ID)
+    assert main.name == 'SurPro Labs AI'
+    assert main.is_active
+
+
+@pytest.mark.django_db
+@respx.mock
 def test_sync_stores_the_agency_location_when_not_excluded(service):
     """The main account can run Retell voice too, so sync keeps it unless `.env` excludes it."""
     agency = make_agency()
@@ -318,6 +386,7 @@ def test_sync_stores_the_agency_location_when_not_excluded(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_sync_stores_a_location_even_when_its_token_fails(service):
     agency = make_agency()
     mock_installed(('loc1', 'A'), ('loc2', 'B'))
@@ -339,6 +408,7 @@ def test_sync_stores_a_location_even_when_its_token_fails(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_a_sub_account_left_tokenless_is_minted_again_on_the_next_sync(service):
     """The failure above must not be permanent: a row with no token is always due one."""
     agency = make_agency()
@@ -421,6 +491,7 @@ def test_sync_stores_each_sub_accounts_owner(service):
 
 @pytest.mark.django_db
 @respx.mock
+@without_main_location
 def test_sync_refreshes_the_owner_of_a_sub_account_it_does_not_remint(service):
     """A fresh token short-circuits the mint, but the owner still has to be re-read.
 

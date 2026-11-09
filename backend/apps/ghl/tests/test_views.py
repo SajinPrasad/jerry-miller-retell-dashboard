@@ -3,6 +3,7 @@ import json
 import httpx
 import pytest
 import respx
+from django.conf import settings
 from rest_framework.test import APIClient
 
 from apps.ghl.models import GHLOAuthToken
@@ -95,7 +96,10 @@ def test_sync_returns_updated_payload(api):
     response = api.post('/api/ghl/onboarding/sync/')
 
     assert response.status_code == 200
-    assert response.json()['locations'][0]['location_id'] == 'loc1'
+    # The agency's own main location is synced alongside the sub-accounts, so "Refresh clients"
+    # puts it in the Clients table ready to be mapped and billed like any other client.
+    returned = {row['location_id'] for row in response.json()['locations']}
+    assert returned == {'loc1', settings.AGENCY_LOCATION_ID}
 
 
 @respx.mock
