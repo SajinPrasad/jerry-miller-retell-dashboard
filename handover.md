@@ -643,7 +643,7 @@ is no new billing logic anywhere in it; it only sets the stage and records what 
 | Hard gate | Aborts unless `STRIPE_SECRET_KEY` starts with `sk_test_`. `sk_live_` and `rk_` are both refused |
 | Period | `2025-12` only — dead, but still inside `/admin`'s twelve-month picker, so the failed bill can be found and its **Retry payment** button pressed by hand |
 | Accounts | Branwynn Destinations LLC (paid path) and FrostLine Climate Solutions (failed path), by hard-coded location id |
-| Failed path | FrostLine's Stripe **default payment method** is temporarily pointed at `pm_card_chargeDeclined`. Its real card stays attached — removing it would make `_assert_chargeable` refuse before an invoice was ever raised, and the decline is the whole point |
+| Failed path | FrostLine's Stripe **default payment method** is temporarily pointed at `pm_card_chargeCustomerFail` (not `pm_card_chargeDeclined`, which fails Stripe's own `PaymentMethod.attach` in test mode before an invoice ever exists). Its real card stays attached — removing it would make `_assert_chargeable` refuse before an invoice was ever raised, and the decline is the whole point |
 | Backup | FrostLine's original default payment method, both sub-accounts' live `Outbound AI Assistant ID`, and `retell_routing_agent_id` / `voice_paused_at` / `voice_sync_error`, written to `backend/live_verification_state.json` (gitignored) **before** anything changes |
 
 It stops with FrostLine `failed`, its agent custom value **emptied** and `voice_paused_at`

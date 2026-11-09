@@ -52,10 +52,14 @@ PAID_PATH_NAME = 'Branwynn Destinations LLC'
 FAILED_PATH_LOCATION_ID = 'eOcXvOOF2Rg56lR47HUl'
 FAILED_PATH_NAME = 'FrostLine Climate Solutions'
 
-# Stripe's always-declining test card, as a shared test payment method token. Attaching it
-# produces a *new* payment method on the customer, whose id is what gets detached again, so the
-# token itself is never what we clean up.
-DECLINING_TEST_PM = 'pm_card_chargeDeclined'
+# A Stripe test payment method that attaches cleanly to a customer and then declines every
+# invoice charge made against it. **Not** `pm_card_chargeDeclined`: that one declines on the
+# `PaymentMethod.attach` call itself, in test mode, which would raise a `CardError` before this
+# module ever got as far as finalising an invoice - the decline has to happen at charge time, not
+# at attach time, or there is no invoice for the retry sweep to work on. Attaching it produces a
+# *new* payment method on the customer, whose id is what gets detached again, so the shared token
+# itself is never what we clean up.
+DECLINING_TEST_PM = 'pm_card_chargeCustomerFail'
 
 # How long the synthetic call is. At the 25c default voice rate this bills $2.50 - comfortably
 # over Stripe's 50c minimum, which a bill under would be skipped by `charge_bills` entirely and
