@@ -440,7 +440,7 @@ def test_set_contact_field_finds_the_contact_by_email_and_writes_the_field(servi
         return_value=httpx.Response(200, json={'contact': {'id': 'contact1'}})
     )
 
-    service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+    service.set_contact_field('owner@coolbreeze.test', 'cf_retell_status', 'OFF')
 
     # The contact lives in the agency's own main sub-account, and only a Location-class token
     # may read it - GHL refuses an agency token on `/contacts/`.
@@ -455,7 +455,7 @@ def test_set_contact_field_finds_the_contact_by_email_and_writes_the_field(servi
     sent = update.calls.last.request
     assert sent.headers['Version'] == 'v3'
     assert json.loads(sent.content) == {
-        'customFields': [{'id': 'cf_card_status', 'fieldValue': 'card not found'}]
+        'customFields': [{'id': 'cf_retell_status', 'fieldValue': 'OFF'}]
     }
 
 
@@ -468,7 +468,7 @@ def test_an_email_matching_no_contact_is_an_error_not_a_silent_write(service):
     update = respx.put(url__regex=rf'{BASE}/contacts/.+')
 
     with pytest.raises(GHLError, match='owner@coolbreeze.test'):
-        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+        service.set_contact_field('owner@coolbreeze.test', 'cf_retell_status', 'OFF')
     assert not update.called
 
 
@@ -483,7 +483,7 @@ def test_a_rejected_contact_field_write_says_why(service):
     )
 
     with pytest.raises(GHLError, match='custom field not found'):
-        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+        service.set_contact_field('owner@coolbreeze.test', 'cf_retell_status', 'OFF')
 
 
 @pytest.mark.django_db
@@ -495,7 +495,7 @@ def test_the_main_account_token_is_minted_fresh_and_never_stored(service):
     mock_contact()
     respx.put(f'{BASE}/contacts/contact1').mock(return_value=httpx.Response(200, json={}))
 
-    service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+    service.set_contact_field('owner@coolbreeze.test', 'cf_retell_status', 'OFF')
 
     assert not GHLOAuthToken.objects.filter(is_agency=False, location_id=MAIN).exists()
 
@@ -504,7 +504,85 @@ def test_the_main_account_token_is_minted_fresh_and_never_stored(service):
 @respx.mock
 def test_a_contact_write_before_the_agency_installed_the_app_is_an_error(service):
     with pytest.raises(GHLNotConnectedError):
-        service.set_contact_field('owner@coolbreeze.test', 'cf_card_status', 'card not found')
+        service.set_contact_field('owner@coolbreeze.test', 'cf_retell_status', 'OFF')
+
+
+# --- asking a client for a card, by tagging their contact --------------------------------------
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_add_contact_tag_finds_the_contact_by_email_and_adds_the_tag(service):
+    make_agency()
+    minted = mock_location_token()
+    found = mock_contact()
+    tagged = respx.post(f'{BASE}/contacts/contact1/tags').mock(
+        return_value=httpx.Response(200, json={'tags': ['collect card information']})
+    )
+
+    service.add_contact_tag('owner@coolbreeze.test', 'collect card information')
+
+    # Same contact, in the same main sub-account, on the same Location-class token as every
+    # other write to a billing contact.
+    assert parse_qs(minted.calls.last.request.content.decode())['locationId'] == [MAIN]
+    searched = found.calls.last.request
+    assert dict(parse_qs(urlparse(str(searched.url)).query)) == {
+        'locationId': [MAIN],
+        'email': ['owner@coolbreeze.test'],
+    }
+    sent = tagged.calls.last.request
+    assert sent.headers['Authorization'] == f'Bearer {MAIN}-minted'
+    assert sent.headers['Version'] == 'v3'
+    assert json.loads(sent.content) == {'tags': ['collect card information']}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_tagging_goes_through_the_add_endpoint_and_never_replaces_the_contact(service):
+    """`PUT /contacts/{id}` with a `tags` array replaces the lot, dropping every other tag."""
+    make_agency()
+    mock_location_token()
+    mock_contact()
+    respx.post(f'{BASE}/contacts/contact1/tags').mock(return_value=httpx.Response(200, json={}))
+    replaced = respx.put(url__regex=rf'{BASE}/contacts/.+')
+
+    service.add_contact_tag('owner@coolbreeze.test', 'collect card information')
+
+    assert not replaced.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_an_email_matching_no_contact_is_not_silently_tagged(service):
+    make_agency()
+    mock_location_token()
+    respx.get(DUPLICATE).mock(return_value=httpx.Response(200, json={}))
+    tagged = respx.post(url__regex=rf'{BASE}/contacts/.+/tags')
+
+    with pytest.raises(GHLError, match='owner@coolbreeze.test'):
+        service.add_contact_tag('owner@coolbreeze.test', 'collect card information')
+    assert not tagged.called
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_rejected_tag_says_why(service):
+    make_agency()
+    mock_location_token()
+    mock_contact()
+    respx.post(f'{BASE}/contacts/contact1/tags').mock(
+        return_value=httpx.Response(422, json={'message': 'tag is required'})
+    )
+
+    with pytest.raises(GHLError, match='tag is required'):
+        service.add_contact_tag('owner@coolbreeze.test', 'collect card information')
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_tagging_before_the_agency_installed_the_app_is_an_error(service):
+    with pytest.raises(GHLNotConnectedError):
+        service.add_contact_tag('owner@coolbreeze.test', 'collect card information')
 
 
 # --- the client's own Retell agent id custom value --------------------------------------------

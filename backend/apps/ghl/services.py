@@ -130,17 +130,7 @@ class GHLOAuthService:
         """
         location_id = settings.AGENCY_LOCATION_ID
         token = self.get_main_location_token()
-
-        found = self._request(
-            'GET',
-            '/contacts/search/duplicate',
-            token=token,
-            version=CONTACT_VERSION,
-            params={'locationId': location_id, 'email': email},
-        )
-        contact_id = (found.get('contact') or {}).get('id')
-        if not contact_id:
-            raise GHLError(f'No contact in {location_id} with the email {email}.')
+        contact_id = self._find_contact_id(token, location_id, email)
 
         self._request(
             'PUT',
@@ -152,6 +142,53 @@ class GHLOAuthService:
             # one sub-account - which is why this one can be configured and the per-sub-account
             # custom values cannot.
             json={'customFields': [{'id': field_id, 'fieldValue': value}]},
+        )
+
+    def _find_contact_id(self, token: str, location_id: str, email: str) -> str:
+        """The id of the contact in the main account with this email address.
+
+        Shared by every write to a billing contact, because they all identify the contact the
+        same way - by the address that already comes from the sub-account's owner in
+        GoHighLevel and is the same one Stripe is matched by.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/contacts/get-duplicate-contact
+        """
+        found = self._request(
+            'GET',
+            '/contacts/search/duplicate',
+            token=token,
+            version=CONTACT_VERSION,
+            params={'locationId': location_id, 'email': email},
+        )
+        contact_id = (found.get('contact') or {}).get('id')
+        if not contact_id:
+            raise GHLError(f'No contact in {location_id} with the email {email}.')
+        return contact_id
+
+    def add_contact_tag(self, email: str, tag: str) -> None:
+        """Add one tag to the main account's contact with this email address.
+
+        The tag is what starts Jerry's GoHighLevel workflow emailing the client a card form. A
+        tag rather than a custom field because a workflow triggers on a tag being added
+        directly, and a tag is addressed by the word itself - there is no per-field id to
+        create in GoHighLevel first and keep in step with a setting here.
+
+        **Additive.** `POST /contacts/{id}/tags` adds to whatever the contact already carries,
+        unlike `PUT /contacts/{id}` with a `tags` array, which replaces the lot and would drop
+        every other tag on a shared billing contact.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/contacts/add-tags
+        """
+        location_id = settings.AGENCY_LOCATION_ID
+        token = self.get_main_location_token()
+        contact_id = self._find_contact_id(token, location_id, email)
+
+        self._request(
+            'POST',
+            f'/contacts/{contact_id}/tags',
+            token=token,
+            version=CONTACT_VERSION,
+            json={'tags': [tag]},
         )
 
     def custom_values(self, location_id: str) -> list[dict]:

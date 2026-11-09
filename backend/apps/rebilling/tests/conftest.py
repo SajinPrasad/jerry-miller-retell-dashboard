@@ -2,7 +2,8 @@
 
 Nothing a test in this package does may reach Stripe or GoHighLevel. `never_reach_stripe` makes
 an unfaked Stripe call fail by name, `fake` stands in for the Stripe methods the code uses, and
-`ghl_contact_writes` records writes to a client's GoHighLevel contact instead of sending them.
+`ghl_contact_writes` and `ghl_contact_tags` record writes to a client's GoHighLevel contact
+instead of sending them.
 """
 
 from types import SimpleNamespace
@@ -173,13 +174,13 @@ class _ContactWrites(list):
 
 @pytest.fixture(autouse=True)
 def ghl_contact_writes(monkeypatch):
-    """Record every write to a client's GoHighLevel billing contact instead of sending it.
+    """Record every custom field write to a client's GoHighLevel billing contact.
 
-    Both the rebilling status and the card status are custom fields on that one contact.
-    Autouse because the write is a search-then-update over HTTP, and one made in a test that
-    forgot to fake it would go to the real API. The recorded `(email, field_id, value)` triples
-    are what the tests assert on; `fails_with` makes the next write raise, which is how the
-    "GoHighLevel refused it" paths are reached.
+    The rebilling status is a custom field on that one contact. Autouse because the write is a
+    search-then-update over HTTP, and one made in a test that forgot to fake it would go to the
+    real API. The recorded `(email, field_id, value)` triples are what the tests assert on;
+    `fails_with` makes the next write raise, which is how the "GoHighLevel refused it" paths
+    are reached.
     """
     writes = _ContactWrites()
 
@@ -190,6 +191,31 @@ def ghl_contact_writes(monkeypatch):
 
     monkeypatch.setattr(GHLOAuthService, 'set_contact_field', record)
     return writes
+
+
+class _ContactTags(list):
+    """The recorded contact tags, with a switch for making the next add fail."""
+
+    fails_with = None
+
+
+@pytest.fixture(autouse=True)
+def ghl_contact_tags(monkeypatch):
+    """Record every tag added to a client's GoHighLevel billing contact instead of sending it.
+
+    Asking a client for a card adds a tag rather than writing a custom field, and that add is
+    the same search-then-write over HTTP, so it is faked here for the same reason and autouse
+    for the same reason. The recorded `(email, tag)` pairs are what the tests assert on.
+    """
+    tags = _ContactTags()
+
+    def record(self, email, tag):
+        if tags.fails_with is not None:
+            raise tags.fails_with
+        tags.append((email, tag))
+
+    monkeypatch.setattr(GHLOAuthService, 'add_contact_tag', record)
+    return tags
 
 
 class _CustomValueWrites(list):

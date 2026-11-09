@@ -132,9 +132,10 @@ Companion docs:
 
 **Stripe charging has run live** (settled facts above): the single account, the registered
 webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have
-not.** The card-request flow (§6.11) and the dunning field (§6.10b) still wait on
-`GHL_CARD_STATUS_CUSTOM_FIELD_ID` and `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` being created and on a
-re-authorisation for `contacts.write` (§17.1a, step 2). The sidebar iframe also needs an SSO
+not.** The dunning field (§6.10b) still waits on `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` being
+filled in, and both it and the card-request flow (§6.11) wait on a re-authorisation for
+`contacts.write` (§17.1a, step 2). The card request needs no field of its own any more: it adds
+the `collect card information` tag. The sidebar iframe also needs an SSO
 bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
@@ -685,7 +686,6 @@ once, checking the bill becomes `paid` and the agent id comes back by itself —
 | `BILLING_RETRY_INTERVAL_HOURS` | 12 | Hours between automatic retries |
 | `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `OFF` on a final failure and `ON` on payment. It is the live `Retell Voice AI ON/OFF` field, a `SINGLE_OPTIONS` picklist whose `picklistOptions` are exactly `["ON", "OFF"]`, so those two strings are not ours to choose. Blank until the id is filled in; the write fails and is logged until then |
 | `GHL_RETELL_AGENT_CUSTOM_VALUE_NAME` | `retell_agent_id` | The **name** of the custom value in each client's own sub-account holding their Retell agent id. Emptied to pause a client in arrears, restored when they pay. Looked up by name per sub-account, because the id differs per sub-account (§6.10b) |
-| `GHL_CARD_STATUS_CUSTOM_FIELD_ID` | none | The custom field on a billing contact set to `card not found` when an admin asks for a card. An **id**, which works here because every billing contact is in the one main account. Blank until Jerry creates the field; a card request fails until then |
 | `GHL_CARD_WEBHOOK_TOKEN` | none | The shared secret the GHL workflow sends in `X-Card-Webhook-Token` when a card has been saved. **Blank refuses every request** |
 
 ### 6.8 Calculation (built)
@@ -1002,14 +1002,23 @@ The page now **matches the Stripe customer on first view** rather than on first 
 card question needs one. That is `customer_id()` unchanged, including its refusal to create a customer that
 matched nothing.
 
-**Requesting a card** (`request_card(client)`): writes `card not found` to the card status **custom field on
-the client's billing contact**, which is what starts Jerry's GoHighLevel workflow emailing them a form.
-`GHLOAuthService.set_contact_field(email, field_id, value)` finds the contact by email in the **main
-account** (`GET /contacts/search/duplicate`) and writes it (`PUT /contacts/{id}`, `fieldValue`), both
-`Version: v3`, both on a Location-class token minted on demand by `get_main_location_token()` and
-deliberately **not stored** — a stored row would show the agency's own location in the billing dashboard as
-a client, and an agency token is refused by `/contacts/` outright. Unlike the rebilling status write, this
-one **raises**: a human pressed a button, so a failure is shown, not logged.
+**Requesting a card** (`request_card(client)`): adds the tag **`collect card information`**
+(`GHL_CARD_REQUEST_TAG` in `stripe_billing.py`) to the client's **billing contact**, which is what starts
+Jerry's GoHighLevel workflow emailing them a form. `GHLOAuthService.add_contact_tag(email, tag)` finds the
+contact by email in the **main account** (`GET /contacts/search/duplicate`) and adds the tag (`POST
+/contacts/{id}/tags`, `{"tags": [tag]}`), both `Version: v3`, both on a Location-class token minted on
+demand by `get_main_location_token()` and deliberately **not stored** — a stored row would show the
+agency's own location in the billing dashboard as a client, and an agency token is refused by `/contacts/`
+outright. The **add-tags** endpoint, not `PUT /contacts/{id}` with a `tags` array: that one replaces every
+tag the contact carries. Unlike the rebilling status write, this one **raises**: a human pressed a button,
+so a failure is shown, not logged.
+
+**A tag, not a custom field.** A tag is addressed by the word itself, so there is no field to create in
+GoHighLevel and no id to configure here and keep in step — `GHL_CARD_STATUS_CUSTOM_FIELD_ID` is gone. The
+cost is that the word *is* the contract: it has to be exactly what the workflow's trigger is set to.
+**Open question:** GoHighLevel fires a tag trigger when a tag is *added*, so if the workflow does not
+remove `collect card information` when it finishes, a second press of Request card adds a tag the contact
+already has and emails nothing. The workflow should remove the tag as its last action.
 
 `ClientMapping.card_requested_at` (migration `0008`) is the only thing stored, because whether *we asked*
 is the one part Stripe cannot tell us.
@@ -1022,16 +1031,26 @@ card between the page loading and the button being pressed comes back green rath
 **Webhook:** `POST /api/rebilling/webhooks/ghl-card/`, called by the workflow once the client has entered a
 card. It is **not** signed by GHL — a workflow's Custom Webhook action is an arbitrary request, not a
 marketplace event — so it authenticates on `GHL_CARD_WEBHOOK_TOKEN` in `X-Card-Webhook-Token`, compared
-with `hmac.compare_digest`. **A blank setting refuses everything.** What it is told is never believed:
-Stripe is re-read, and only Stripe's answer clears `card_requested_at`. 401 bad token, 400 unreadable body
-or no `locationId`, 204 otherwise, including for a sub-account we do not bill.
+with `hmac.compare_digest`. **A blank setting refuses everything.**
+
+Its body is `{"email": "{{contact.email}}", "locationId": "{{location.id}}"}` and **either may identify the
+client.** The workflow runs in the agency's main account, where the billing contacts live, so
+`{{location.id}}` resolves to the *main account* rather than to the client's own sub-account, and the email
+is then the only thing in the payload naming a client. `_clients_for()` tries the sub-account id first
+because it is exact, and falls back to `billing_email__iexact`. The email match can answer with **more than
+one client** — two sub-accounts owned by the same person share a billing email and therefore the one Stripe
+customer — and every one of them is cleared, because the card that arrived is on that customer.
+
+What it is told is never believed: Stripe is re-read, and only Stripe's answer clears `card_requested_at`.
+401 bad token, 400 unreadable body or neither an `email` nor a `locationId` (blank counts as absent, which
+is how an unresolved merge field arrives), 204 otherwise, including for a contact we do not bill.
 
 **Scope:** `contacts.write` is new in `GHL_SCOPES`. **The app must be re-authorised** before a card request
 can work.
 
-**Tests:** `apps/rebilling/tests/test_card_status.py` (30), five more in `apps/ghl/tests/test_services.py`
-for `set_contact_field`, and a new autouse `ghl_contact_writes` fixture so nothing in the rebilling package
-can reach GoHighLevel. Frontend: a `card on file` block in `AdminPage.test.tsx` and two preview tests.
+**Tests:** `apps/rebilling/tests/test_card_status.py` (41), five in `apps/ghl/tests/test_services.py` for
+`set_contact_field` and five for `add_contact_tag`, and the autouse `ghl_contact_writes` and
+`ghl_contact_tags` fixtures so nothing in the rebilling package can reach GoHighLevel. Frontend: a `card on file` block in `AdminPage.test.tsx` and two preview tests.
 
 ---
 
@@ -1511,22 +1530,27 @@ the script is deployed:
 
 In this order, because each step is useless without the one before it:
 
-1. **Create both custom fields** on contacts in the main account — the card status and the
-   rebilling status — and put their ids in `GHL_CARD_STATUS_CUSTOM_FIELD_ID` and
-   `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. Field ids, not names — the lookup is by id.
+1. **Create the rebilling status custom field** on contacts in the main account and put its id
+   in `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. A field id, not a name — the lookup is by id. The card
+   request needs nothing created: it adds the `collect card information` tag, and a tag is
+   addressed by the word itself.
 2. **Re-authorise the marketplace app**, which now asks for `contacts.write`, and, as of `ee98a0b`,
    `locations/customValues.readonly`/`.write` again too (§6.10b's on/off toggle). Until the
    re-auth, every card request 502s and every status write is logged as a failure.
-3. **Check the first search and write by hand** before trusting the button. `GET
+3. **Check the first search and tag by hand** before trusting the button. `GET
    /contacts/search/duplicate?locationId=<main>&email=<owner>` should answer `{"contact": {...}}` —
-   the response shape is not in GHL's published spec, and `set_contact_field()` reads `contact.id`.
-   The write is `PUT /contacts/{id}` with `{"customFields": [{"id": …, "fieldValue": "card not
-   found"}]}`, `Version: v3`.
-4. **Build the workflow**: triggered by that field changing to `card not found`, emailing the card
-   form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/` with
-   `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body carrying `locationId`. The
-   **pause/resume workflow** triggers the same way, off the rebilling status field changing to
-   `OFF` or `ON` — the two `picklistOptions` on the live `Retell Voice AI ON/OFF` field (§6.10b).
+   the response shape is not in GHL's published spec, and `_find_contact_id()` reads `contact.id`.
+   The write is `POST /contacts/{id}/tags` with `{"tags": ["collect card information"]}`,
+   `Version: v3`.
+4. **Build the workflow**: triggered by the `collect card information` tag being added, emailing
+   the card form, and ending in a Custom Webhook action to `POST /api/rebilling/webhooks/ghl-card/`
+   with `X-Card-Webhook-Token` set to `GHL_CARD_WEBHOOK_TOKEN` and a body of
+   `{"email": "{{contact.email}}", "locationId": "{{location.id}}"}`. **The workflow must remove
+   the tag when it finishes** — GHL fires a tag trigger on the tag being *added*, so leaving it on
+   the contact makes a second Request card press a no-op that emails nothing. The tag name must
+   match `GHL_CARD_REQUEST_TAG` exactly. The **pause/resume workflow** triggers differently, off
+   the rebilling status field changing to `OFF` or `ON` — the two `picklistOptions` on the live
+   `Retell Voice AI ON/OFF` field (§6.10b).
 5. **Confirm the card lands on the Stripe customer our `billing_email` match finds.** If the form
    writes to a different Stripe account, the webhook will keep saying `card saved` and the page will
    keep saying no card — the one failure here that looks like a bug and is not.

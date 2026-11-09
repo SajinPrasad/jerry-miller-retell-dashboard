@@ -103,6 +103,12 @@ class GHLCardWebhookView(APIView):
     configured with, and a shared secret is the only thing available. A blank
     `GHL_CARD_WEBHOOK_TOKEN` refuses every request rather than letting any through.
 
+    The body is `{"email": ..., "locationId": ...}`. **Either may identify the client.** The
+    workflow runs in the agency's main account, where the billing contacts live, so
+    `{{location.id}}` resolves to the main account rather than to the client's own sub-account;
+    `{{contact.email}}` is then the only thing in the payload that names a client. The
+    sub-account id is still tried first, because it is exact - the email is the fallback.
+
     What it is told is never taken on trust: Stripe is re-read, and only Stripe's answer clears
     the request. Answers quickly and empty, like the other two webhooks, because GHL retries
     anything that is not a 2xx.
@@ -124,21 +130,46 @@ class GHLCardWebhookView(APIView):
         except ValueError:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        location_id = (payload or {}).get('locationId')
-        if not location_id:
+        location_id = ((payload or {}).get('locationId') or '').strip()
+        email = ((payload or {}).get('email') or '').strip()
+        if not location_id and not email:
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        client = ClientMapping.objects.filter(location_id=location_id).first()
-        if client is None:
-            # Not an error: this workflow may run for sub-accounts that are not billed here.
-            logger.info('rebilling: card webhook for unmapped sub-account %s', location_id)
+        clients = self._clients_for(location_id, email)
+        if not clients:
+            # Not an error: this workflow may run for contacts that are not billed here.
+            logger.info(
+                'rebilling: card webhook matched no client (location %r, email %r)',
+                location_id,
+                email,
+            )
             return Response(status=status.HTTP_204_NO_CONTENT)
 
-        if not clear_card_request(client):
-            logger.warning(
-                'rebilling: %s reported a saved card, but Stripe still has none', location_id
-            )
+        for client in clients:
+            if not clear_card_request(client):
+                logger.warning(
+                    'rebilling: %s reported a saved card, but Stripe still has none',
+                    client.location_id,
+                )
         return Response(status=status.HTTP_204_NO_CONTENT)
+
+    @staticmethod
+    def _clients_for(location_id: str, email: str) -> list[ClientMapping]:
+        """The clients this webhook is about: by sub-account first, then by billing email.
+
+        The email match is case-insensitive, because the address is typed into GoHighLevel by
+        hand and Stripe is matched on it the same way. It can answer with more than one client
+        - two sub-accounts owned by the same person share a billing email, and therefore the
+        one Stripe customer - and all of them are cleared, because the card that arrived is on
+        that customer and every one of them is now answered.
+        """
+        if location_id:
+            client = ClientMapping.objects.filter(location_id=location_id).first()
+            if client is not None:
+                return [client]
+        if email:
+            return list(ClientMapping.objects.filter(billing_email__iexact=email))
+        return []
 
 
 def _clients_response(context, request) -> Response:

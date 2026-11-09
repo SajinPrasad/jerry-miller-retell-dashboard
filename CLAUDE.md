@@ -318,23 +318,31 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   `charge_bills` would hit - the test is `_assert_chargeable`'s, so the page and the charge cannot
   disagree. Stripe being unreachable is `unknown`, never `no_card`.
   - **Request card** (`POST /api/rebilling/admin/clients/<location_id>/card-request/`, agency scope
-    only - it emails the client) writes `card not found` to a custom field on their billing contact
-    in the **main account** (`AGENCY_LOCATION_ID`), found by `billing_email`. That write is what
-    starts Jerry's GHL workflow. `GHLOAuthService.set_contact_field()` does the search
-    (`GET /contacts/search/duplicate`) and the write (`PUT /contacts/{id}`, `fieldValue`), both
-    `Version: v3`, on a Location-class token minted on demand by `get_main_location_token()` and
-    **not stored** - a stored row would show the agency's own location as a client, and an agency
-    token is refused by `/contacts/`. Unlike the rebilling status write this one **raises**: a
-    human pressed a button, so a failure is shown rather than logged.
+    only - it emails the client) adds the tag **`collect card information`** to their billing
+    contact in the **main account** (`AGENCY_LOCATION_ID`), found by `billing_email`. That tag is
+    what starts Jerry's GHL workflow. `GHLOAuthService.add_contact_tag()` does the search
+    (`GET /contacts/search/duplicate`) and the add (`POST /contacts/{id}/tags`, `{"tags": [...]}`),
+    both `Version: v3`, on a Location-class token minted on demand by `get_main_location_token()`
+    and **not stored** - a stored row would show the agency's own location as a client, and an
+    agency token is refused by `/contacts/`. The **add** endpoint, not `PUT /contacts/{id}` with a
+    `tags` array, which replaces every tag on the contact. A tag rather than a custom field
+    because the word itself addresses it: nothing to create in GHL first, no id in settings.
+    Unlike the rebilling status write this one **raises**: a human pressed a button, so a failure
+    is shown rather than logged.
   - **The webhook back** (`POST /api/rebilling/webhooks/ghl-card/`) is a workflow's Custom Webhook
     action, not a marketplace event, so GHL does not sign it: it authenticates on
     `GHL_CARD_WEBHOOK_TOKEN` in `X-Card-Webhook-Token`, and **a blank setting refuses everything**.
-    Its claim is never believed - Stripe is re-read, and only Stripe's answer clears
-    `ClientMapping.card_requested_at`, which is the one thing stored because it is the one thing
-    Stripe cannot tell us.
-  - **Settings:** `GHL_CARD_STATUS_CUSTOM_FIELD_ID` (an id, which works only because every billing
-    contact is in the one main account) and `GHL_CARD_WEBHOOK_TOKEN`. `contacts.write` is new in
-    `GHL_SCOPES`, so **the app must be re-authorised**.
+    Its body is `{"email": "{{contact.email}}", "locationId": "{{location.id}}"}` and **either may
+    identify the client**: the workflow runs in the main account, so `{{location.id}}` resolves to
+    the main account rather than the client's sub-account. The sub-account id is tried first
+    because it is exact, then `billing_email` case-insensitively - which can match more than one
+    client (two sub-accounts, one owner, one Stripe customer), and all of them are cleared. 400
+    only when neither is given. Its claim is never believed - Stripe is re-read, and only Stripe's
+    answer clears `ClientMapping.card_requested_at`, which is the one thing stored because it is
+    the one thing Stripe cannot tell us.
+  - **Settings:** `GHL_CARD_WEBHOOK_TOKEN` only; the tag is `GHL_CARD_REQUEST_TAG` in
+    `stripe_billing.py`, not an env var. `contacts.write` is new in `GHL_SCOPES`, so **the app
+    must be re-authorised**.
 - **A client in arrears is paused by taking their Retell agent id away, not by writing a word.**
   `sync_voice_routing(bill)` pauses once a bill has used up its retries and resumes once one is
   paid (unless another bill of theirs is still failed, since paying one month must not switch the

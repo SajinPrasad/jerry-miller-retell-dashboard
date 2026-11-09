@@ -28,6 +28,5 @@ TWILIO_BILLING_ENABLED = False
 # in GoHighLevel and what the webhook accepts, neither of which may depend on a developer's
 # own `.env`.
 GHL_RETELL_STATUS_CUSTOM_FIELD_ID = 'cf_retell_status'
-GHL_CARD_STATUS_CUSTOM_FIELD_ID = 'cf_card_status'
 GHL_CARD_WEBHOOK_TOKEN = 'card-webhook-token'
 GHL_RETELL_AGENT_CUSTOM_VALUE_NAME = 'retell_agent_id'

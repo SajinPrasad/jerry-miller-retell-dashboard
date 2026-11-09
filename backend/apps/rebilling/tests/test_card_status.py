@@ -1,7 +1,7 @@
 """Phase 7: whether a client has a card, asking them for one, and hearing that they answered.
 
 Nothing here reaches Stripe or GoHighLevel. `fake` stands in for the Stripe calls, and the
-autouse `ghl_contact_writes` records the contact field write the request makes.
+autouse `ghl_contact_tags` records the contact tag the request adds.
 """
 
 import json
@@ -20,6 +20,7 @@ from apps.rebilling.models import ClientMapping
 from apps.rebilling.stripe_billing import (
     CARD_ON_FILE,
     CARD_UNKNOWN,
+    GHL_CARD_REQUEST_TAG,
     NO_BILLING_EMAIL,
     NO_CARD,
     NO_CUSTOMER,
@@ -68,10 +69,17 @@ def card_request(api, location_id='loc1', blob=VECTOR_AGENCY):
     )
 
 
-def card_saved(api, location_id='loc1', token='card-webhook-token'):
+def card_saved(api, token='card-webhook-token', **payload):
+    """The workflow's Custom Webhook body: `{"email": ..., "locationId": ...}`.
+
+    Defaults to the sub-account id alone, which is the shape the endpoint was built for. The
+    tests covering the payload the main-account workflow really sends pass `email` as well.
+    """
+    body = {'status': 'card saved'}
+    body.update(payload or {'locationId': 'loc1'})
     return api.post(
         reverse('rebilling:ghl-card-webhook'),
-        data=json.dumps({'locationId': location_id, 'status': 'card saved'}),
+        data=json.dumps(body),
         content_type='application/json',
         HTTP_X_CARD_WEBHOOK_TOKEN=token,
     )
@@ -199,31 +207,36 @@ def test_an_unreachable_stripe_during_the_match_is_unknown_too(fake):
 # --- asking for a card --------------------------------------------------------------------
 
 
-def test_requesting_a_card_writes_the_status_onto_the_billing_contact(fake, ghl_contact_writes):
+def test_requesting_a_card_tags_the_billing_contact(fake, ghl_contact_tags):
     client = make_client('loc1', billing_email=EMAIL)
 
     request_card(client)
 
-    assert ghl_contact_writes == [(EMAIL, 'cf_card_status', 'card not found')]
+    assert ghl_contact_tags == [(EMAIL, 'collect card information')]
     client.refresh_from_db()
     assert client.card_requested_at is not None
 
 
-def test_requesting_a_card_for_a_client_with_no_email_writes_nothing(fake, ghl_contact_writes):
+def test_the_tag_is_the_word_the_gohighlevel_workflow_triggers_on():
+    """The tag *is* the contract. A different word reaches GoHighLevel and starts nothing."""
+    assert GHL_CARD_REQUEST_TAG == 'collect card information'
+
+
+def test_requesting_a_card_for_a_client_with_no_email_tags_nothing(fake, ghl_contact_tags):
     client = make_client('loc1')
 
     with pytest.raises(GHLError, match='no billing email'):
         request_card(client)
 
-    assert ghl_contact_writes == []
+    assert ghl_contact_tags == []
     client.refresh_from_db()
     assert client.card_requested_at is None
 
 
-def test_a_refused_write_leaves_the_client_unasked(fake, ghl_contact_writes):
+def test_a_refused_tag_leaves_the_client_unasked(fake, ghl_contact_tags):
     """Nothing reached GoHighLevel, so recording that we asked would be a lie."""
     client = make_client('loc1', billing_email=EMAIL)
-    ghl_contact_writes.fails_with = GHLError('custom field not found')
+    ghl_contact_tags.fails_with = GHLError('No contact in agency-loc with the email ...')
 
     with pytest.raises(GHLError):
         request_card(client)
@@ -236,7 +249,7 @@ def test_a_refused_write_leaves_the_client_unasked(fake, ghl_contact_writes):
 
 
 def test_an_agency_admin_can_request_a_card_and_sees_the_refreshed_status(
-    api, fake, ghl_contact_writes
+    api, fake, ghl_contact_tags
 ):
     make_agency()
     make_client('loc1', billing_email=EMAIL)
@@ -246,11 +259,11 @@ def test_an_agency_admin_can_request_a_card_and_sees_the_refreshed_status(
     assert response.status_code == 200
     assert response.json()['card']['status'] == NO_CUSTOMER
     assert response.json()['card']['requested_at'] is not None
-    assert ghl_contact_writes == [(EMAIL, 'cf_card_status', 'card not found')]
+    assert ghl_contact_tags == [(EMAIL, 'collect card information')]
 
 
 def test_the_endpoint_reports_a_card_attached_between_the_page_loading_and_the_press(
-    api, fake, ghl_contact_writes
+    api, fake, ghl_contact_tags
 ):
     make_agency()
     make_client('loc1', billing_email=EMAIL, stripe_customer_id='cus_known')
@@ -266,7 +279,7 @@ def test_the_endpoint_reports_a_card_attached_between_the_page_loading_and_the_p
     }
 
 
-def test_a_sub_account_cannot_request_a_card_even_for_itself(api, fake, ghl_contact_writes):
+def test_a_sub_account_cannot_request_a_card_even_for_itself(api, fake, ghl_contact_tags):
     """This sends the client an email. A client chasing itself is not a thing to allow."""
     make_agency()
     make_client('loc1', billing_email=EMAIL)
@@ -274,20 +287,20 @@ def test_a_sub_account_cannot_request_a_card_even_for_itself(api, fake, ghl_cont
     response = card_request(api, blob=VECTOR_LOCATION)
 
     assert response.status_code == 403
-    assert ghl_contact_writes == []
+    assert ghl_contact_tags == []
 
 
-def test_a_card_request_for_an_unmapped_client_is_a_404(api, fake, ghl_contact_writes):
+def test_a_card_request_for_an_unmapped_client_is_a_404(api, fake, ghl_contact_tags):
     make_agency()
 
     assert card_request(api).status_code == 404
-    assert ghl_contact_writes == []
+    assert ghl_contact_tags == []
 
 
-def test_a_refused_write_is_a_502_saying_what_gohighlevel_said(api, fake, ghl_contact_writes):
+def test_a_refused_tag_is_a_502_saying_what_gohighlevel_said(api, fake, ghl_contact_tags):
     make_agency()
     client = make_client('loc1', billing_email=EMAIL)
-    ghl_contact_writes.fails_with = GHLError('No contact in agency-loc with the email ...')
+    ghl_contact_tags.fails_with = GHLError('No contact in agency-loc with the email ...')
 
     response = card_request(api)
 
@@ -366,10 +379,22 @@ def test_an_unconfigured_token_refuses_every_request(api, fake, settings):
     assert card_saved(api).status_code == 401
 
 
-def test_a_webhook_with_no_location_is_a_400(api, fake):
+def test_a_webhook_naming_neither_a_location_nor_an_email_is_a_400(api, fake):
     response = api.post(
         reverse('rebilling:ghl-card-webhook'),
         data=json.dumps({'status': 'card saved'}),
+        content_type='application/json',
+        HTTP_X_CARD_WEBHOOK_TOKEN='card-webhook-token',
+    )
+
+    assert response.status_code == 400
+
+
+def test_a_webhook_whose_merge_fields_came_through_blank_is_a_400_too(api, fake):
+    """An unresolved GoHighLevel merge field arrives empty, not as a missing key."""
+    response = api.post(
+        reverse('rebilling:ghl-card-webhook'),
+        data=json.dumps({'email': '', 'locationId': '  '}),
         content_type='application/json',
         HTTP_X_CARD_WEBHOOK_TOKEN='card-webhook-token',
     )
@@ -390,8 +415,97 @@ def test_an_unreadable_webhook_body_is_a_400(api, fake):
 
 def test_a_webhook_for_a_sub_account_we_do_not_bill_is_not_an_error(api, fake):
     """This workflow may well run for sub-accounts that are not billed here."""
-    assert card_saved(api, location_id='loc-unknown').status_code == 204
+    assert card_saved(api, locationId='loc-unknown').status_code == 204
     assert fake.names() == []
+
+
+# --- the payload the main-account workflow actually sends ---------------------------------
+
+
+def with_card(location_id='loc1', customer='cus_known', **extra):
+    return make_client(
+        location_id,
+        billing_email=EMAIL,
+        stripe_customer_id=customer,
+        card_requested_at=REQUESTED_AT,
+        **extra,
+    )
+
+
+def test_the_main_accounts_location_id_falls_back_to_the_email(api, fake):
+    """The workflow runs in the main account, so `{{location.id}}` is not the client's."""
+    client = with_card()
+    fake.customer_records['cus_known'] = WITH_CARD
+
+    response = card_saved(api, email=EMAIL, locationId=django_settings.AGENCY_LOCATION_ID)
+
+    assert response.status_code == 204
+    client.refresh_from_db()
+    assert client.card_requested_at is None
+
+
+def test_the_email_alone_is_enough(api, fake):
+    client = with_card()
+    fake.customer_records['cus_known'] = WITH_CARD
+
+    assert card_saved(api, email=EMAIL).status_code == 204
+    client.refresh_from_db()
+    assert client.card_requested_at is None
+
+
+def test_the_email_is_matched_whatever_the_case(api, fake):
+    """GoHighLevel sends back whatever was typed into the contact."""
+    client = with_card()
+    fake.customer_records['cus_known'] = WITH_CARD
+
+    assert card_saved(api, email=EMAIL.upper()).status_code == 204
+    client.refresh_from_db()
+    assert client.card_requested_at is None
+
+
+def test_a_matching_sub_account_wins_over_the_email(api, fake):
+    """The id is exact; the email is the fallback for when it names the main account."""
+    named = with_card('loc1')
+    other = with_card('loc2', customer='cus_other')
+    fake.customer_records['cus_known'] = WITH_CARD
+    fake.customer_records['cus_other'] = WITH_CARD
+
+    assert card_saved(api, email=EMAIL, locationId='loc1').status_code == 204
+
+    named.refresh_from_db()
+    other.refresh_from_db()
+    assert named.card_requested_at is None
+    assert other.card_requested_at == REQUESTED_AT
+
+
+def test_an_email_shared_by_two_clients_clears_both(api, fake):
+    """Both bill to the one Stripe customer, so the card that arrived answers both."""
+    first = with_card('loc1')
+    second = with_card('loc2')
+    fake.customer_records['cus_known'] = WITH_CARD
+
+    assert card_saved(api, email=EMAIL).status_code == 204
+
+    first.refresh_from_db()
+    second.refresh_from_db()
+    assert first.card_requested_at is None
+    assert second.card_requested_at is None
+
+
+def test_an_email_matching_no_client_is_not_an_error(api, fake):
+    """The workflow may well run for contacts that are not billed here."""
+    assert card_saved(api, email='nobody@nowhere.test').status_code == 204
+    assert fake.names() == []
+
+
+def test_the_email_fallback_is_believed_about_nothing_either(api, fake):
+    """Same rule as the sub-account path: Stripe is the one that knows."""
+    client = with_card()
+    fake.customer_records['cus_known'] = CARDLESS
+
+    assert card_saved(api, email=EMAIL).status_code == 204
+    client.refresh_from_db()
+    assert client.card_requested_at == REQUESTED_AT
 
 
 def test_clear_card_request_leaves_a_client_who_was_never_asked_alone(fake):

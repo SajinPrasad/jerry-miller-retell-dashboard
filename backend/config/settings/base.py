@@ -200,10 +200,6 @@ GHL_RETELL_AGENT_CUSTOM_VALUE_NAME = env(
     'GHL_RETELL_AGENT_CUSTOM_VALUE_NAME', default='retell_agent_id'
 )
 
-# The custom field on the same contact that carries their card status. Writing `card not found`
-# to it is what starts the GoHighLevel workflow emailing them a card form.
-GHL_CARD_STATUS_CUSTOM_FIELD_ID = env('GHL_CARD_STATUS_CUSTOM_FIELD_ID', default='')
-
 # The shared secret a GoHighLevel workflow sends in `X-Card-Webhook-Token` when a client has
 # entered a card. A workflow's webhook is not signed by GHL, so this is the only thing that
 # authenticates it; blank refuses every request rather than accepting any.

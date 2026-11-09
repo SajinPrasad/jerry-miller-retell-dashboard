@@ -86,9 +86,11 @@ NOT_COLLECTED_REASON = 'not_collected'
 GHL_STATUS_FAILED = 'OFF'
 GHL_STATUS_ACTIVE = 'ON'
 
-# The same, for the card status field on that same contact. Writing `card not found` is what
-# triggers the GoHighLevel workflow that emails them a card collection form.
-GHL_CARD_NOT_FOUND = 'card not found'
+# The tag added to that same contact to ask a client for a card. Adding it is what triggers
+# the GoHighLevel workflow that emails them a card collection form, so the word has to be
+# exactly the one that workflow's trigger is set to. A tag rather than a custom field: there is
+# no id to create in GoHighLevel and configure here, so nothing to keep in step.
+GHL_CARD_REQUEST_TAG = 'collect card information'
 
 # Whether Stripe holds a card we could charge this client with. A card GHL attached without
 # making it the invoice default is promoted to the default the first time either is asked
@@ -234,11 +236,11 @@ def _promote_attached_card(customer: str):
 
 
 def request_card(client: ClientMapping) -> None:
-    """Ask a client for a card, by writing the card status onto their contact in GoHighLevel.
+    """Ask a client for a card, by tagging their contact in GoHighLevel.
 
-    That write is what starts Jerry's GoHighLevel workflow, which emails the client the form
-    they enter a card on. Nothing about the card itself happens here - the form and the card
-    entry both live in GoHighLevel and Stripe.
+    Adding `GHL_CARD_REQUEST_TAG` is what starts Jerry's GoHighLevel workflow, which emails the
+    client the form they enter a card on. Nothing about the card itself happens here - the form
+    and the card entry both live in GoHighLevel and Stripe.
 
     **Not best effort**, unlike `sync_voice_routing`: an admin pressed a button, so a
     GoHighLevel failure is raised for them to see rather than logged, or they would walk away
@@ -249,9 +251,7 @@ def request_card(client: ClientMapping) -> None:
             f'{client.location_id} has no billing email in GoHighLevel to find a contact by.'
         )
 
-    GHLOAuthService().set_contact_field(
-        client.billing_email, settings.GHL_CARD_STATUS_CUSTOM_FIELD_ID, GHL_CARD_NOT_FOUND
-    )
+    GHLOAuthService().add_contact_tag(client.billing_email, GHL_CARD_REQUEST_TAG)
     client.card_requested_at = timezone.now()
     client.save(update_fields=['card_requested_at'])
 
