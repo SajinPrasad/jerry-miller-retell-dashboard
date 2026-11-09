@@ -22,6 +22,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from apps.ghl.models import GHLOAuthToken
+from apps.ghl.services import hidden_location_ids
 
 from .exceptions import RetellError, TwilioError
 from .models import (
@@ -642,7 +643,14 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
     Sub-accounts come from Task 1's sync, so a client who has been onboarded but never mapped
     still appears - with `mapped: False`. That is the whole point of the column: it separates
     "nobody has set this client up" from "this client used nothing".
+
+    `hidden_location_ids()` is left out of both halves, mapping or not. The sync already
+    refuses to store those sub-accounts, but a row stored before the id was excluded - or a
+    mapping made before it - would otherwise still be listed, so the filter is applied on the
+    read as well as on the write. That is what makes the setting take effect on the next page
+    load rather than only on the next sync.
     """
+    hidden = hidden_location_ids()
     mappings = {m.location_id: m for m in ClientMapping.objects.all()}
     locations = GHLOAuthToken.objects.filter(is_agency=False).order_by('name')
 
@@ -650,6 +658,8 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
     seen = set()
     for location in locations:
         if location_id and location.location_id != location_id:
+            continue
+        if location.location_id in hidden:
             continue
         seen.add(location.location_id)
         rows.append(
@@ -665,6 +675,8 @@ def client_rows(start: date, end: date, location_id: str | None = None) -> list[
     # A mapping whose sub-account the sync has not seen still bills, so it must still be visible.
     for mapped_location, mapping in mappings.items():
         if mapped_location in seen or (location_id and mapped_location != location_id):
+            continue
+        if mapped_location in hidden:
             continue
         rows.append(_client_row(mapped_location, '', mapping, start, end))
 
@@ -785,6 +797,31 @@ def voice_row(mapping: ClientMapping) -> dict:
         or (str(mapping.retell_agent_ids[0]) if mapping.retell_agent_ids else ''),
         'error': mapping.voice_sync_error,
     }
+
+
+def agent_ids_mapped_elsewhere(location_id: str = '') -> set[str]:
+    """Every Retell agent id already mapped to a client other than `location_id`.
+
+    One agent belongs to one client. A call is matched to a client by its agent id before
+    anything else, so the same agent on two mappings makes that match ambiguous - whichever
+    mapping the query happens to return first is the client billed for the call. The picker
+    therefore hides an agent that is already spoken for rather than letting that be set up.
+
+    The current client is the exception: its own agents stay in its own list, marked "Added",
+    which is what keeps a mapping editable instead of frozen. Removing an agent here and saving
+    puts it back in every other client's list, because that list is read fresh each time.
+
+    Called without a `location_id` there is no current client to make an exception for, so every
+    mapped agent counts as taken.
+    """
+    rows = ClientMapping.objects.all()
+    if location_id:
+        rows = rows.exclude(location_id=location_id)
+
+    taken: set[str] = set()
+    for agent_ids in rows.values_list('retell_agent_ids', flat=True):
+        taken.update(str(agent_id) for agent_id in (agent_ids or []) if agent_id)
+    return taken
 
 
 def _retell_agents(mapping: ClientMapping) -> list[dict]:

@@ -7,11 +7,12 @@ import pytest
 import respx
 from django.conf import settings
 from django.db import connection as db_connection
+from django.test import override_settings
 from django.utils import timezone
 
 from apps.ghl.exceptions import GHLError, GHLNotConnectedError
 from apps.ghl.models import GHLOAuthToken
-from apps.ghl.services import GHLOAuthService
+from apps.ghl.services import GHLOAuthService, hidden_location_ids
 
 BASE = settings.GHL_API_BASE_URL
 
@@ -254,6 +255,46 @@ def test_sync_keeps_fresh_tokens_and_deactivates_uninstalled(service):
     assert loc1.access_token == 'loc1-access' and loc1.name == 'Cool Breeze HVAC'
     assert not GHLOAuthToken.objects.get(location_id='gone').is_active
     assert GHLOAuthToken.objects.get(is_agency=True).is_active
+
+
+@override_settings(AGENCY_LOCATION_ID='agency-loc', EXCLUDED_GHL_LOCATION_IDS=[' loc9 ', ''])
+def test_hidden_location_ids_trims_its_entries_and_drops_the_blanks():
+    """A trailing comma in `.env` must not hide the sub-account whose id is the empty string."""
+    assert hidden_location_ids() == {'agency-loc', 'loc9'}
+
+
+@pytest.mark.django_db
+@respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc2'])
+def test_sync_skips_excluded_sub_accounts(service):
+    """An excluded id is not a client: not read for its owner, not minted a token, not stored."""
+    agency = make_agency()
+    mock_installed(('loc1', 'Cool Breeze HVAC'), ('loc2', 'SurPro Labs internal'))
+    minted = mock_location_token()
+
+    service.sync_locations(agency)
+
+    stored = GHLOAuthToken.objects.filter(is_agency=False)
+    assert list(stored.values_list('location_id', flat=True)) == ['loc1']
+    assert [parse_qs(call.request.content.decode())['locationId'][0] for call in minted.calls] == [
+        'loc1'
+    ]
+
+
+@pytest.mark.django_db
+@respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc2'])
+def test_sync_deactivates_a_sub_account_excluded_after_it_was_stored(service):
+    """Excluding an id that is already stored retires its row, the same sweep a removed
+    sub-account goes through - the row is kept, so its mapping and bills are not orphaned."""
+    agency = make_agency()
+    make_location('loc2', name='SurPro Labs internal')
+    mock_installed(('loc1', 'Cool Breeze HVAC'), ('loc2', 'SurPro Labs internal'))
+    mock_location_token()
+
+    service.sync_locations(agency)
+
+    assert not GHLOAuthToken.objects.get(location_id='loc2').is_active
 
 
 @pytest.mark.django_db

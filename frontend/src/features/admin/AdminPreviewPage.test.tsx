@@ -270,6 +270,41 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('leaves an agent mapped to another sample client out of the picker', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    // The spare and this client's own agent are free; Cool Breeze's is spoken for, and an agent
+    // on two mappings would bill whichever client the backend's own lookup answered with first.
+    expect(await screen.findByText('Shared after-hours line')).toBeInTheDocument()
+    expect(screen.getByText('Summit Air Solutions — main line')).toBeInTheDocument()
+    expect(screen.queryByText('Cool Breeze HVAC — main line')).not.toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
+  it('offers an agent again once it is taken off the client that had it', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+    await user.click(await screen.findByRole('tab', { name: 'Agent mapping' }))
+    await user.click(screen.getByRole('button', { name: 'Remove Cool Breeze HVAC — main line' }))
+    await user.click(screen.getByRole('button', { name: 'Save mapping' }))
+
+    await user.click(screen.getByRole('button', { name: '← All clients' }))
+    await user.click(await screen.findByRole('button', { name: 'Summit Air Solutions' }))
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+
+    // Freed on its own client, so it is on offer to the rest - no refresh, no reload.
+    expect(await screen.findByText('Cool Breeze HVAC — main line')).toBeInTheDocument()
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('sets up the unmapped sample client, which then appears mapped in the list', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()

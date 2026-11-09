@@ -173,6 +173,46 @@ def test_an_onboarded_but_unmapped_client_is_listed_as_unmapped(client):
     assert row['rates'] is None
 
 
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc-internal'])
+def test_an_excluded_sub_account_is_not_listed(client):
+    """`EXCLUDED_GHL_LOCATION_IDS` keeps an internal or non-Retell GHL account off the list."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_location('loc-internal', 'SurPro Labs internal')
+
+    rows = get_clients(client).json()['clients']
+
+    assert [row['location_id'] for row in rows] == ['loc1']
+
+
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc-internal'])
+def test_an_excluded_sub_account_is_hidden_even_when_it_is_already_mapped(client):
+    """Excluding an id that was mapped before takes effect on the next page load.
+
+    The mapped half of the list is a separate pass - a mapping whose sub-account the sync has
+    not seen is still listed, because it still bills - so the filter has to be applied there
+    too, or excluding a mapped client would hide nothing.
+    """
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_client('loc-internal', client_name='SurPro Labs internal')
+
+    rows = get_clients(client).json()['clients']
+
+    assert [row['location_id'] for row in rows] == ['loc1']
+
+
+def test_the_agency_s_own_location_is_not_listed(client):
+    """It is not a client, however it came to be stored as a sub-account row."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_location(settings.AGENCY_LOCATION_ID, 'SurPro Labs AI')
+
+    rows = get_clients(client).json()['clients']
+
+    assert [row['location_id'] for row in rows] == ['loc1']
+
+
 def test_a_mapping_the_sync_has_not_seen_is_still_listed(client):
     """It is being billed, so it has to be visible even without a GHL row."""
     make_agency()
@@ -788,6 +828,22 @@ def test_sync_discovers_a_new_sub_account_and_returns_the_updated_list(client):
     assert [row['location_id'] for row in body['clients']] == ['loc-new']
     location = GHLOAuthToken.objects.get(location_id='loc-new')
     assert location.is_active and location.name == 'Polar Peak Heating'
+
+
+@respx.mock
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=['loc-internal'])
+def test_a_refresh_does_not_bring_an_excluded_sub_account_back(client):
+    """The point of the setting: pressing \"Refresh clients\" must not undo the exclusion."""
+    make_agency()
+    mock_installed(('loc-new', 'Polar Peak Heating'), ('loc-internal', 'SurPro Labs internal'))
+    mock_location_token()
+
+    body = sync_clients(client).json()
+
+    assert [row['location_id'] for row in body['clients']] == ['loc-new']
+    # Not stored at all, so it is not waiting to reappear if the setting is ever cleared by
+    # accident - it comes back from GoHighLevel on the next sync, which is where it lives.
+    assert not GHLOAuthToken.objects.filter(location_id='loc-internal').exists()
 
 
 @respx.mock

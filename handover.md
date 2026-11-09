@@ -318,7 +318,9 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
   expiring.
 - `sync_locations(agency)` calls `GET /oauth/installed-locations` with the `Version: v3` header
   (the default `2021-07-28` returns 404 for this endpoint), then `POST /oauth/location-token`
-  (kebab-case, also `Version: v3`) for each sub-account. It skips `AGENCY_LOCATION_ID`. If a
+  (kebab-case, also `Version: v3`) for each sub-account. It skips everything
+  `hidden_location_ids()` names - `AGENCY_LOCATION_ID` plus `EXCLUDED_GHL_LOCATION_IDS` (see
+  §6.12) - before it reads an owner or mints a token. If a
   sub-account's token can't be minted, it stores the row anyway with an empty `access_token` and a
   future `expires_at` (so it appears in the admin page) — and because **an empty `access_token`
   makes `needs_refresh` true whatever that expiry says**, the next sync tries to mint it again
@@ -1142,8 +1144,8 @@ Everything is in `backend/.env`, which is gitignored. `backend/.env.example` doc
   `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`.
   **Rotating it makes every stored token unreadable**, so it needs a plan first.
 - **GHL:** `GHL_CLIENT_ID`, `GHL_CLIENT_SECRET`, `GHL_APP_ID`, `GHL_APP_SSO_KEY`, `AGENCY_LOCATION_ID`,
-  `GHL_REDIRECT_URI`, `GHL_INSTALL_URL_BASE`, `GHL_API_VERSION` (default `2021-07-28`), `GHL_SCOPES`,
-  `GHL_API_BASE_URL`, `GHL_REQUEST_TIMEOUT`.
+  `EXCLUDED_GHL_LOCATION_IDS`, `GHL_REDIRECT_URI`, `GHL_INSTALL_URL_BASE`, `GHL_API_VERSION`
+  (default `2021-07-28`), `GHL_SCOPES`, `GHL_API_BASE_URL`, `GHL_REQUEST_TIMEOUT`.
 - **Retell:** `RETELL_API_KEY`, `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
 - **Twilio:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Stripe:** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.

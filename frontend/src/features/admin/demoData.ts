@@ -355,12 +355,16 @@ function withPreviewMapping(spec: Spec): Spec {
 }
 
 /**
- * What the mapping editor's pickers offer in the preview, in place of a live call to Retell.
+ * Every agent on the sample Retell workspace, in place of a live call to Retell: the agents the
+ * sample clients already use, plus a spare apiece, so the unmapped sample client can be set up
+ * here the same way a real one is.
  *
- * The agents the sample clients already use, plus a spare apiece, so the unmapped sample client
- * can be set up here the same way a real one is.
+ * The whole catalogue, unfiltered - what a name is looked up in. The picker reads the narrowed
+ * list below instead, for the same reason the real backend filters in its view rather than in
+ * `list_agents()`: an agent left out of the catalogue would lose its name on the one page that
+ * has to show it.
  */
-export function demoRetellAgents(): RetellAgent[] {
+function allDemoRetellAgents(): RetellAgent[] {
   return [
     ...SPECS.flatMap((spec) =>
       spec.agents.map((agent_id) => ({ agent_id, agent_name: `${spec.client_name} — main line` })),
@@ -370,10 +374,38 @@ export function demoRetellAgents(): RetellAgent[] {
   ]
 }
 
+/** The preview's copy of the backend's `agent_ids_mapped_elsewhere()`: every agent mapped to a
+ * sample client other than `locationId`, with this tab's own unsaved edits counted in. */
+function agentsMappedElsewhere(locationId: string): Set<string> {
+  const taken = new Set<string>()
+  for (const spec of SPECS) {
+    if (spec.location_id === locationId) continue
+    for (const agentId of withPreviewMapping(spec).agents) taken.add(agentId)
+  }
+  // The sample unmapped client is not in SPECS, so its own preview edit is read separately.
+  for (const [mapped, mapping] of previewMappings) {
+    if (mapped === locationId) continue
+    for (const agentId of mapping.retell_agent_ids) taken.add(agentId)
+  }
+  return taken
+}
+
+/**
+ * What the mapping editor's agent picker offers in the preview: the catalogue above, minus
+ * whatever is already mapped to another sample client.
+ *
+ * One agent belongs to one client here too, so the preview shows the list the real page would -
+ * and freeing an agent on one client's page puts it back on every other client's.
+ */
+export function demoRetellAgents(locationId = ''): RetellAgent[] {
+  const taken = agentsMappedElsewhere(locationId)
+  return allDemoRetellAgents().filter((agent) => !taken.has(agent.agent_id))
+}
+
 /** The mapped agent ids, each carrying its own name - the same shape the real backend resolves
  * them to, so the preview's Mapping card shows a name rather than an id for the same reason. */
 function agentsWithNames(agentIds: string[]): RetellAgent[] {
-  const names = new Map(demoRetellAgents().map((agent) => [agent.agent_id, agent.agent_name]))
+  const names = new Map(allDemoRetellAgents().map((agent) => [agent.agent_id, agent.agent_name]))
   return agentIds.map((agent_id) => ({ agent_id, agent_name: names.get(agent_id) ?? '' }))
 }
 

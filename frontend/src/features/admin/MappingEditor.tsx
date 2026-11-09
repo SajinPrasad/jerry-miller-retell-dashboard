@@ -57,8 +57,11 @@ export default function MappingEditor({
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Scoped to this client: the backend (and the preview's copy of it) leaves out any agent
+  // already mapped to another one. Fetched on the picker's first open, and the editor is
+  // remounted per client, so a client opened after an agent was freed elsewhere sees it back.
   async function loadAgents(): Promise<Option[]> {
-    const agents = preview ? demoRetellAgents() : await getRetellAgents()
+    const agents = preview ? demoRetellAgents(locationId) : await getRetellAgents(locationId)
     return agents.map((agent) => ({
       value: agent.agent_id,
       label: agent.agent_name || agent.agent_id,

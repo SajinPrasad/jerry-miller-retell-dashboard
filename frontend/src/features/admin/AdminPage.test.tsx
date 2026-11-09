@@ -132,7 +132,13 @@ const detail: ClientDetail = {
 
 const NEW_SID = 'AC' + '7'.repeat(32)
 
-/** What `GET /admin/retell-agents/` answers: Jerry's whole Retell account, not one client's. */
+/**
+ * What `GET /admin/retell-agents/` answers for the client being configured.
+ *
+ * Not quite "Jerry's whole Retell account" any more: the backend leaves out any agent already
+ * mapped to another client, so this stands for what is left once that filter has run. `agent_1`
+ * is on this client's own mapping, which is why it is still here - see the "Added" test below.
+ */
 const retellAgents = {
   agents: [
     { agent_id: 'agent_1', agent_name: 'Cool Breeze front desk' },
@@ -777,6 +783,26 @@ describe('AdminPage', () => {
     await screen.findByText('Cool Breeze after hours')
     expect(listCalls(fetchMock, '/rebilling/admin/retell-agents/')).toBe(1)
     expect(listCalls(fetchMock, '/rebilling/admin/twilio-subaccounts/')).toBe(0)
+  })
+
+  it('asks for the agent list scoped to the client being configured', async () => {
+    parentAnswers()
+    const user = userEvent.setup()
+    const { fetchMock } = mockMappingApi()
+
+    render(<AdminPage />)
+    await openClient(user)
+    await openMappingTab(user)
+    await user.click(screen.getByRole('button', { name: 'Add a Retell agent' }))
+    await screen.findByText('Cool Breeze after hours')
+
+    // The backend can only leave out the agents another client already has if it is told which
+    // client this is. Without the parameter it answers with every mapped agent left out
+    // instead, and this client's own would vanish from its own picker.
+    const asked = fetchMock.mock.calls
+      .map(([url]) => String(url))
+      .find((url) => url.startsWith('/api/rebilling/admin/retell-agents/'))
+    expect(asked).toBe('/api/rebilling/admin/retell-agents/?location_id=loc1')
   })
 
   it('filters the agent list as the admin types, and reuses it on the next open', async () => {

@@ -107,9 +107,17 @@ export function retryCharge(
   })
 }
 
-/** Every agent on Jerry's Retell account, for the mapping editor's agent picker. */
-export async function getRetellAgents(): Promise<RetellAgent[]> {
-  const body = await apiFetch<{ agents: RetellAgent[] }>('/rebilling/admin/retell-agents/')
+/**
+ * The Retell agents the client at `locationId` can be mapped to.
+ *
+ * Not every agent on the account: the backend leaves out any agent already mapped to another
+ * client, because a call is matched to a client by its agent id and the same agent on two
+ * mappings bills the wrong one. This client's own agents stay in, marked "Added" by the picker.
+ * Called without a `locationId` - which the editor never does - every mapped agent is left out.
+ */
+export async function getRetellAgents(locationId?: string): Promise<RetellAgent[]> {
+  const query = locationId ? `?location_id=${encodeURIComponent(locationId)}` : ''
+  const body = await apiFetch<{ agents: RetellAgent[] }>(`/rebilling/admin/retell-agents/${query}`)
   return body.agents
 }
 

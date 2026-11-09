@@ -21,6 +21,7 @@ from .serializers import ClientMappingSerializer, ClientRatesSerializer
 from .services import (
     RetellReconciliationService,
     TwilioUsageService,
+    agent_ids_mapped_elsewhere,
     bill_row,
     billing_facts,
     client_detail,
@@ -281,6 +282,13 @@ class AdminRetellAgentsView(APIView):
 
     What the agent picker in the mapping editor reads, so an agency admin chooses an agent off
     the Retell account instead of pasting an id. Agency scope only, because mapping itself is.
+
+    **`?location_id=` is who is being configured, and it narrows the list.** An agent already
+    mapped to another client is left out: a call is matched to a client by its agent id, so the
+    same agent on two mappings bills whichever of them the query returns first. The client named
+    here keeps its own agents in its own list - that is what the picker marks "Added", and what
+    makes an existing mapping editable. Without the parameter every mapped agent is left out,
+    which is the same rule read from no client's point of view.
     """
 
     authentication_classes: list = []
@@ -298,7 +306,12 @@ class AdminRetellAgentsView(APIView):
             return Response(
                 {'detail': 'Retell request failed.'}, status=status.HTTP_502_BAD_GATEWAY
             )
-        return Response({'agents': agents})
+
+        # Filtered here rather than inside `list_agents()`: the detail endpoint uses that same
+        # call to put a name to an agent a client is already mapped to, and an agent filtered
+        # out of it would lose its name on the one page that has to show it.
+        taken = agent_ids_mapped_elsewhere((request.query_params.get('location_id') or '').strip())
+        return Response({'agents': [agent for agent in agents if agent['agent_id'] not in taken]})
 
 
 class AdminTwilioSubaccountsView(APIView):

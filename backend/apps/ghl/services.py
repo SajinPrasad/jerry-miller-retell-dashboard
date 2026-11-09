@@ -32,6 +32,24 @@ CONTACT_VERSION = 'v3'
 CUSTOM_VALUE_VERSION = 'v3'
 
 
+def hidden_location_ids() -> set[str]:
+    """Sub-accounts that are not clients: the agency's own, plus whatever `.env` excludes.
+
+    `AGENCY_LOCATION_ID` is Jerry's own location and has never been a client.
+    `EXCLUDED_GHL_LOCATION_IDS` is the hand-maintained list beside it - internal GHL accounts,
+    and accounts that run no Retell voice - so a sub-account that is not a voice client can be
+    kept off the Clients list without being deleted in GoHighLevel.
+
+    One function rather than two reads, because the sync and the Clients list have to agree:
+    an id hidden from the list but still synced would come back on the next refresh, which is
+    exactly the thing the setting exists to stop.
+    """
+    ids = {settings.AGENCY_LOCATION_ID, *settings.EXCLUDED_GHL_LOCATION_IDS}
+    # A blank `AGENCY_LOCATION_ID`, or a trailing comma in the env list, must not hide the
+    # sub-account whose id is the empty string - there isn't one, but `pop('')` would be a lie.
+    return {location_id.strip() for location_id in ids if location_id.strip()}
+
+
 class GHLOAuthService:
     def __init__(self, client: httpx.Client | None = None):
         self.client = client or httpx.Client(
@@ -273,10 +291,15 @@ class GHLOAuthService:
 
         A sub-account the app isn't installed on can't be minted a token, but it is still stored
         (tokenless) so it stays visible in the billing dashboard.
+
+        `hidden_location_ids()` is dropped before any of that: an excluded sub-account is not
+        read for its owner, not minted a token, and not stored - and one already stored is
+        deactivated by the same sweep that retires a sub-account GHL no longer reports.
         """
         agency_token = self.get_agency_token(agency)
         installed = self._installed_locations(agency_token, agency.company_id)
-        installed.pop(settings.AGENCY_LOCATION_ID, None)
+        for hidden in hidden_location_ids():
+            installed.pop(hidden, None)
 
         for location_id, name in installed.items():
             # Read for every sub-account, not only the ones being minted a token: an owner who

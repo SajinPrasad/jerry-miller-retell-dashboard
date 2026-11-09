@@ -3,6 +3,9 @@
 Nothing is stored. Both endpoints read the live provider account so an agency admin picks a
 real agent or subaccount instead of pasting an id into a text box. The Stripe customer is not
 among them: it is matched automatically from the sub-account owner's email, never picked.
+
+The agent list is also narrowed by what is already mapped: `?location_id=` says who is being
+configured, and an agent on another client's mapping is left out. See `agent_ids_mapped_elsewhere`.
 """
 
 import httpx
@@ -12,6 +15,7 @@ from django.conf import settings
 from django.urls import reverse
 
 from apps.ghl.tests.test_sso import VECTOR_AGENCY, VECTOR_LOCATION, make_agency
+from apps.rebilling.tests.test_services import make_client
 
 pytestmark = pytest.mark.django_db
 
@@ -19,8 +23,8 @@ RETELL_URL = f'{settings.RETELL_API_BASE_URL}/v2/list-agents'
 TWILIO_URL = f'{settings.TWILIO_API_BASE_URL}/2010-04-01/Accounts.json'
 
 
-def get(client, name, blob=VECTOR_AGENCY):
-    return client.get(reverse(f'rebilling:{name}'), HTTP_X_GHL_SESSION=blob)
+def get(client, name, blob=VECTOR_AGENCY, **params):
+    return client.get(reverse(f'rebilling:{name}'), params, HTTP_X_GHL_SESSION=blob)
 
 
 def agent(agent_id, agent_name='Front desk'):
@@ -101,6 +105,83 @@ def test_a_failing_retell_call_is_a_502(client):
     response = get(client, 'admin-retell-agents')
 
     assert response.status_code == 502
+
+
+# --- an agent belongs to one client ---------------------------------------------------------
+
+
+def mock_two_agents():
+    return respx.post(RETELL_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                'items': [agent('agent_1', 'After hours'), agent('agent_2', 'Service calls')],
+                'has_more': False,
+            },
+        )
+    )
+
+
+def offered(client, location_id=None):
+    params = {'location_id': location_id} if location_id is not None else {}
+    return [row['agent_id'] for row in get(client, 'admin-retell-agents', **params).data['agents']]
+
+
+@respx.mock
+def test_an_agent_mapped_to_another_client_is_not_offered(client):
+    """A call is matched to a client by its agent id, so the same agent on two mappings bills
+    whichever of them the query answers with first. The picker does not allow setting that up."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent_1'])
+    mock_two_agents()
+
+    assert offered(client, 'loc2') == ['agent_2']
+
+
+@respx.mock
+def test_a_client_is_still_offered_the_agents_it_is_already_mapped_to(client):
+    """Its own agents stay in its own list - that is what the picker marks "Added", and what
+    keeps an existing mapping editable rather than frozen."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent_1'])
+    mock_two_agents()
+
+    assert offered(client, 'loc1') == ['agent_1', 'agent_2']
+
+
+@respx.mock
+def test_an_agent_freed_on_one_client_is_offered_to_the_others_again(client):
+    """The list is read fresh on every open, so removing an agent and saving releases it."""
+    make_agency()
+    mapping = make_client('loc1', retell_agent_ids=['agent_1'])
+    mock_two_agents()
+
+    assert offered(client, 'loc2') == ['agent_2']
+
+    mapping.retell_agent_ids = []
+    mapping.save(update_fields=['retell_agent_ids'])
+
+    assert offered(client, 'loc2') == ['agent_1', 'agent_2']
+
+
+@respx.mock
+def test_without_a_location_id_every_mapped_agent_is_left_out(client):
+    """There is no current client to make the exception for, so nothing mapped is on offer."""
+    make_agency()
+    make_client('loc1', retell_agent_ids=['agent_1'])
+    mock_two_agents()
+
+    assert offered(client) == ['agent_2']
+
+
+@respx.mock
+def test_a_client_with_no_mapping_yet_is_offered_everything_free(client):
+    """Setting up a client nobody has mapped: its own `location_id` matches no mapping, which
+    must read as "nothing of its own", not as "every agent is someone else's"."""
+    make_agency()
+    mock_two_agents()
+
+    assert offered(client, 'loc-new') == ['agent_1', 'agent_2']
 
 
 # --- Twilio subaccounts --------------------------------------------------------------------

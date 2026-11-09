@@ -12,6 +12,10 @@ GHL_CLIENT_SECRET = 'secret'
 GHL_APP_ID = 'app123'
 GHL_APP_SSO_KEY = 'test-sso-secret'
 AGENCY_LOCATION_ID = 'agency-loc'
+# Pinned empty: the Clients list tests assert which sub-accounts come back, and a developer's
+# own `.env` must not be able to hide one of them. The tests that cover the exclusion set it
+# themselves with `override_settings`.
+EXCLUDED_GHL_LOCATION_IDS: list[str] = []
 GHL_REDIRECT_URI = 'http://testserver/api/oauth/callback/'
 GHL_INSTALL_URL_BASE = 'https://marketplace.example.com'
 FRONTEND_URL = 'http://frontend.test'
