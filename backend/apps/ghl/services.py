@@ -33,20 +33,20 @@ CUSTOM_VALUE_VERSION = 'v3'
 
 
 def hidden_location_ids() -> set[str]:
-    """Sub-accounts that are not clients: the agency's own, plus whatever `.env` excludes.
+    """Sub-accounts kept off the Clients list by `.env`.
 
-    `AGENCY_LOCATION_ID` is Jerry's own location and has never been a client.
-    `EXCLUDED_GHL_LOCATION_IDS` is the hand-maintained list beside it - internal GHL accounts,
-    and accounts that run no Retell voice - so a sub-account that is not a voice client can be
-    kept off the Clients list without being deleted in GoHighLevel.
+    `EXCLUDED_GHL_LOCATION_IDS` lists internal or non-Retell accounts to exclude.
+    `AGENCY_LOCATION_ID` is not hidden automatically: add it to `EXCLUDED_GHL_LOCATION_IDS` only if
+    the agency's own main location should stay off the Clients list too.
+    Accounts not listed there stay visible without manual database changes in GoHighLevel.
 
     One function rather than two reads, because the sync and the Clients list have to agree:
     an id hidden from the list but still synced would come back on the next refresh, which is
     exactly the thing the setting exists to stop.
     """
-    ids = {settings.AGENCY_LOCATION_ID, *settings.EXCLUDED_GHL_LOCATION_IDS}
-    # A blank `AGENCY_LOCATION_ID`, or a trailing comma in the env list, must not hide the
-    # sub-account whose id is the empty string - there isn't one, but `pop('')` would be a lie.
+    ids = set(settings.EXCLUDED_GHL_LOCATION_IDS)
+    # A trailing comma in the env list must not hide the sub-account whose id is the empty string.
+    # There is no empty-id location, so dropping blanks avoids hiding anything by accident.
     return {location_id.strip() for location_id in ids if location_id.strip()}
 
 
@@ -125,9 +125,9 @@ class GHLOAuthService:
     def get_main_location_token(self) -> str:
         """A Location-class token for the agency's own main sub-account.
 
-        That is where the billing contacts live. It is deliberately not in the client list -
-        `sync_locations` drops it - so there is no stored row to read a token off, and storing
-        one would put the agency's own location in the billing dashboard as if it were a client.
+        That is where the billing contacts live. Minted fresh rather than read off a synced row, so
+        contact writes work even if the main location is excluded or has not synced yet.
+        The write does not depend on storing a row for it.
         An agency token is not an alternative: GHL refuses a Company-class token on `/contacts/`.
         """
         agency = self.get_agency()

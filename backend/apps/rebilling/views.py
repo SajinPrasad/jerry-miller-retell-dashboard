@@ -108,7 +108,7 @@ class GHLCardWebhookView(APIView):
     workflow runs in the agency's main account, where the billing contacts live, so
     `{{location.id}}` resolves to the main account rather than to the client's own sub-account;
     `{{contact.email}}` is then the only thing in the payload that names a client. The
-    sub-account id is still tried first, because it is exact - the email is the fallback.
+    sub-account id is still tried first (skipping `AGENCY_LOCATION_ID`), then the email.
 
     What it is told is never taken on trust: Stripe is re-read, and only Stripe's answer clears
     the request. Answers quickly and empty, like the other two webhooks, because GHL retries
@@ -156,7 +156,7 @@ class GHLCardWebhookView(APIView):
 
     @staticmethod
     def _clients_for(location_id: str, email: str) -> list[ClientMapping]:
-        """The clients this webhook is about: by sub-account first, then by billing email.
+        """The clients this webhook is about: sub-account first (not main account), then email.
 
         The email match is case-insensitive, because the address is typed into GoHighLevel by
         hand and Stripe is matched on it the same way. It can answer with more than one client
@@ -164,7 +164,7 @@ class GHLCardWebhookView(APIView):
         one Stripe customer - and all of them are cleared, because the card that arrived is on
         that customer and every one of them is now answered.
         """
-        if location_id:
+        if location_id and location_id != settings.AGENCY_LOCATION_ID:
             client = ClientMapping.objects.filter(location_id=location_id).first()
             if client is not None:
                 return [client]

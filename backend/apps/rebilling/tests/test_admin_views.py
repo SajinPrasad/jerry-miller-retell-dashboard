@@ -202,8 +202,20 @@ def test_an_excluded_sub_account_is_hidden_even_when_it_is_already_mapped(client
     assert [row['location_id'] for row in rows] == ['loc1']
 
 
-def test_the_agency_s_own_location_is_not_listed(client):
-    """It is not a client, however it came to be stored as a sub-account row."""
+def test_the_agency_s_own_location_is_listed_like_any_client(client):
+    """Unless excluded in `.env`, the agency's main location can be mapped and billed too."""
+    make_agency()
+    make_location('loc1', 'Cool Breeze HVAC')
+    make_location(settings.AGENCY_LOCATION_ID, 'SurPro Labs AI')
+
+    rows = get_clients(client).json()['clients']
+
+    assert [row['location_id'] for row in rows] == ['loc1', settings.AGENCY_LOCATION_ID]
+
+
+@override_settings(EXCLUDED_GHL_LOCATION_IDS=[settings.AGENCY_LOCATION_ID])
+def test_the_agency_s_own_location_can_still_be_excluded(client):
+    """Adding `AGENCY_LOCATION_ID` to `EXCLUDED_GHL_LOCATION_IDS` hides it like any other id."""
     make_agency()
     make_location('loc1', 'Cool Breeze HVAC')
     make_location(settings.AGENCY_LOCATION_ID, 'SurPro Labs AI')

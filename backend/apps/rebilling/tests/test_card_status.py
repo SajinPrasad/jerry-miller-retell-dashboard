@@ -444,6 +444,46 @@ def test_the_main_accounts_location_id_falls_back_to_the_email(api, fake):
     assert client.card_requested_at is None
 
 
+def test_the_main_accounts_location_id_falls_back_to_email_even_when_agency_mapped(api, fake):
+    """Mapping the agency itself must not hijack another client's main-account card webhook."""
+    agency = with_card(
+        django_settings.AGENCY_LOCATION_ID,
+        billing_email='agency@surpro.test',
+        customer='cus_agency',
+    )
+    client = with_card()
+    fake.customer_records['cus_known'] = WITH_CARD
+    fake.customer_records['cus_agency'] = WITH_CARD
+
+    response = card_saved(api, email=EMAIL, locationId=django_settings.AGENCY_LOCATION_ID)
+
+    assert response.status_code == 204
+    client.refresh_from_db()
+    agency.refresh_from_db()
+    assert client.card_requested_at is None
+    assert agency.card_requested_at == REQUESTED_AT
+
+
+def test_the_main_account_itself_clears_by_its_own_billing_email(api, fake):
+    agency = with_card(
+        django_settings.AGENCY_LOCATION_ID,
+        billing_email='agency@surpro.test',
+        customer='cus_agency',
+    )
+    other = with_card('loc1')
+    fake.customer_records['cus_agency'] = WITH_CARD
+
+    response = card_saved(
+        api, email='agency@surpro.test', locationId=django_settings.AGENCY_LOCATION_ID
+    )
+
+    assert response.status_code == 204
+    agency.refresh_from_db()
+    other.refresh_from_db()
+    assert agency.card_requested_at is None
+    assert other.card_requested_at == REQUESTED_AT
+
+
 def test_the_email_alone_is_enough(api, fake):
     client = with_card()
     fake.customer_records['cus_known'] = WITH_CARD

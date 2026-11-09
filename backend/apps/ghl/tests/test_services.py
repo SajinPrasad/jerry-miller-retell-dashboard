@@ -260,7 +260,7 @@ def test_sync_keeps_fresh_tokens_and_deactivates_uninstalled(service):
 @override_settings(AGENCY_LOCATION_ID='agency-loc', EXCLUDED_GHL_LOCATION_IDS=[' loc9 ', ''])
 def test_hidden_location_ids_trims_its_entries_and_drops_the_blanks():
     """A trailing comma in `.env` must not hide the sub-account whose id is the empty string."""
-    assert hidden_location_ids() == {'agency-loc', 'loc9'}
+    assert hidden_location_ids() == {'loc9'}
 
 
 @pytest.mark.django_db
@@ -295,6 +295,25 @@ def test_sync_deactivates_a_sub_account_excluded_after_it_was_stored(service):
     service.sync_locations(agency)
 
     assert not GHLOAuthToken.objects.get(location_id='loc2').is_active
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_sync_stores_the_agency_location_when_not_excluded(service):
+    """The main account can run Retell voice too, so sync keeps it unless `.env` excludes it."""
+    agency = make_agency()
+    mock_installed(('loc1', 'Cool Breeze HVAC'), (settings.AGENCY_LOCATION_ID, 'SurPro Labs AI'))
+    minted = mock_location_token()
+
+    service.sync_locations(agency)
+
+    stored = GHLOAuthToken.objects.filter(is_agency=False)
+    assert set(stored.values_list('location_id', flat=True)) == {
+        'loc1',
+        settings.AGENCY_LOCATION_ID,
+    }
+    minted_ids = {parse_qs(call.request.content.decode())['locationId'][0] for call in minted.calls}
+    assert minted_ids == {'loc1', settings.AGENCY_LOCATION_ID}
 
 
 @pytest.mark.django_db
@@ -530,7 +549,7 @@ def test_a_rejected_contact_field_write_says_why(service):
 @pytest.mark.django_db
 @respx.mock
 def test_the_main_account_token_is_minted_fresh_and_never_stored(service):
-    """Storing it would put the agency's own location in the billing dashboard as a client."""
+    """Contact writes mint a main-account token on demand without creating a location row."""
     make_agency()
     mock_location_token()
     mock_contact()

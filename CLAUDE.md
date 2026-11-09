@@ -34,10 +34,10 @@ The user has had to strip out over-engineering before. Build the simplest thing 
 
 ## GHL onboarding (Task 1, built)
 
-Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL install screen -> GHL redirects to `GET /api/oauth/callback/` -> backend exchanges the code for the agency token (`user_type=Company`; rejected if installed on a sub-account; the agency row stores `AGENCY_LOCATION_ID` as its `location_id`, and sync skips that location), then syncs sub-accounts, then redirects to `FRONTEND_URL/onboarding?status=connected` (or `?error=install_cancelled|install_failed`).
+Agency admin opens `/onboarding` (React) -> "Connect to GoHighLevel" -> GHL install screen -> GHL redirects to `GET /api/oauth/callback/` -> backend exchanges the code for the agency token (`user_type=Company`; rejected if installed on a sub-account; the agency row stores `AGENCY_LOCATION_ID` as its `location_id`), then syncs installed locations (including `AGENCY_LOCATION_ID` unless listed in `EXCLUDED_GHL_LOCATION_IDS`), then redirects to `FRONTEND_URL/onboarding?status=connected` (or `?error=install_cancelled|install_failed`).
 
 - **Model** `GHLOAuthToken` (`apps/ghl/models.py`), fixed fields: `company_id`, `location_id` (blank on the agency row), `name`, `is_agency`, `is_active`, `access_token`, `refresh_token` (agency row only), `expires_at`. Tokens are Fernet-encrypted (`FIELD_ENCRYPTION_KEY`).
-- **Service** `GHLOAuthService` (`apps/ghl/services.py`): `install_url`, `exchange_code`, `get_agency`, `get_agency_token` (refreshes within 5 min of expiry; refresh tokens are single-use, so it locks the row), `get_location_token(location_id)` (re-mints from the agency token when expiring), `sync_locations` (`GET /oauth/installed-locations`, then `POST /oauth/location-token` - kebab-case, `Version: v3` - per new, expired or **tokenless** sub-account; deactivates sub-accounts no longer listed, and sub-accounts newly excluded). `hidden_location_ids()` is what it drops first: `AGENCY_LOCATION_ID` plus the comma-separated `EXCLUDED_GHL_LOCATION_IDS`, so an internal or non-Retell sub-account is never read, minted or stored. `needs_refresh` is true for an empty `access_token` whatever its expiry, so a sub-account whose mint failed is retried on the next sync instead of sitting behind the placeholder expiry.
+- **Service** `GHLOAuthService` (`apps/ghl/services.py`): `install_url`, `exchange_code`, `get_agency`, `get_agency_token` (refreshes within 5 min of expiry; refresh tokens are single-use, so it locks the row), `get_location_token(location_id)` (re-mints from the agency token when expiring), `sync_locations` (`GET /oauth/installed-locations`, then `POST /oauth/location-token` - kebab-case, `Version: v3` - per new, expired or **tokenless** sub-account; deactivates sub-accounts no longer listed, and sub-accounts newly excluded). `hidden_location_ids()` is what it drops first: the comma-separated `EXCLUDED_GHL_LOCATION_IDS`, so an internal or non-Retell account (including `AGENCY_LOCATION_ID` only if listed there) is never read, minted or stored. `needs_refresh` is true for an empty `access_token` whatever its expiry, so a sub-account whose mint failed is retried on the next sync instead of sitting behind the placeholder expiry.
 - **Endpoints:** `GET /api/ghl/onboarding/` (install link, agency, sub-accounts; no tokens), `POST /api/ghl/onboarding/sync/`, `GET /api/oauth/callback/`.
 - **Marketplace app config:** redirect URI = `GHL_REDIRECT_URI`, scopes = `GHL_SCOPES`, target user = Agency, auto-install on future sub-accounts. The Custom Page needs the **Shared Secret** (`GHL_APP_SSO_KEY`); SSO is not an OAuth scope, so `GHL_SCOPES` is unchanged.
 - **New sub-accounts show up two ways:** the agency admin can click "Refresh clients" on `/admin` (`POST /api/rebilling/admin/clients/sync/`, agency scope only), and GHL's own `LocationCreate` webhook calls `POST /api/ghl/webhooks/location-created/` the moment Jerry creates one - available only to agency-level apps, which is what this one is. Both just call `sync_locations` again; neither reads the location fields off the webhook payload directly, so there's one code path for discovering a sub-account, not two. The webhook verifies `X-GHL-Signature` (Ed25519) against `GHL_WEBHOOK_PUBLIC_KEY` - GHL's own public key, published in its docs and the same for every app, not a per-app secret - and always answers 200/401/400 quickly so GHL doesn't retry; a sync failure is logged and left for the next webhook, manual refresh or install callback to catch.
@@ -92,8 +92,8 @@ read-only.
   sub-account-facing `UnmappedNotice`) - `canEdit` (`!isSubAccount`) picks which a given viewer
   gets. `ClientMapping` also has a plain Django admin registration now, as a fallback to the page.
 - **Internal sub-accounts are kept off the Clients list.** `EXCLUDED_GHL_LOCATION_IDS` (comma-
-  separated, empty by default) is read through `hidden_location_ids()` in `apps/ghl/services.py`,
-  alongside `AGENCY_LOCATION_ID`. `sync_locations` drops those ids before it reads or stores
+  separated, empty by default) is read through `hidden_location_ids()` in `apps/ghl/services.py`.
+  `AGENCY_LOCATION_ID` itself is listed unless added there. `sync_locations` drops excluded ids before reading or storing
   anything, and `client_rows()` filters them out of **both** halves of the list - the sub-account
   pass and the mapped-but-unsynced pass - so excluding an id that is already stored or already
   mapped takes effect on the next page load, and "Refresh clients" does not bring it back.
@@ -328,8 +328,8 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     contact in the **main account** (`AGENCY_LOCATION_ID`), found by `billing_email`. That tag is
     what starts Jerry's GHL workflow. `GHLOAuthService.add_contact_tag()` does the search
     (`GET /contacts/search/duplicate`) and the add (`POST /contacts/{id}/tags`, `{"tags": [...]}`),
-    both `Version: v3`, on a Location-class token minted on demand by `get_main_location_token()`
-    and **not stored** - a stored row would show the agency's own location as a client, and an
+    both `Version: v3`, on a Location-class token minted on demand by `get_main_location_token()`.
+    (not saved by the write itself, so contact writes work whether or not the main account synced); an
     agency token is refused by `/contacts/`. The **add** endpoint, not `PUT /contacts/{id}` with a
     `tags` array, which replaces every tag on the contact. A tag rather than a custom field
     because the word itself addresses it: nothing to create in GHL first, no id in settings.
@@ -340,8 +340,8 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
     `GHL_CARD_WEBHOOK_TOKEN` in `X-Card-Webhook-Token`, and **a blank setting refuses everything**.
     Its body is `{"email": "{{contact.email}}", "locationId": "{{location.id}}"}` and **either may
     identify the client**: the workflow runs in the main account, so `{{location.id}}` resolves to
-    the main account rather than the client's sub-account. The sub-account id is tried first
-    because it is exact, then `billing_email` case-insensitively - which can match more than one
+    the main account rather than the client's sub-account. Genuine sub-account ids are tried first
+    (excluding `AGENCY_LOCATION_ID` so mapping the agency cannot hijack other clients), then `billing_email` case-insensitively - which can match more than one
     client (two sub-accounts, one owner, one Stripe customer), and all of them are cleared. 400
     only when neither is given. Its claim is never believed - Stripe is re-read, and only Stripe's
     answer clears `ClientMapping.card_requested_at`, which is the one thing stored because it is

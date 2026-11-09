@@ -319,8 +319,8 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
 - `sync_locations(agency)` calls `GET /oauth/installed-locations` with the `Version: v3` header
   (the default `2021-07-28` returns 404 for this endpoint), then `POST /oauth/location-token`
   (kebab-case, also `Version: v3`) for each sub-account. It skips everything
-  `hidden_location_ids()` names - `AGENCY_LOCATION_ID` plus `EXCLUDED_GHL_LOCATION_IDS` (see
-  §6.12) - before it reads an owner or mints a token. If a
+  `hidden_location_ids()` names (`EXCLUDED_GHL_LOCATION_IDS`, see §6.12; `AGENCY_LOCATION_ID` itself
+  is now listed like any client unless included there) before it reads an owner or mints a token. If a
   sub-account's token can't be minted, it stores the row anyway with an empty `access_token` and a
   future `expires_at` (so it appears in the admin page) — and because **an empty `access_token`
   makes `needs_refresh` true whatever that expiry says**, the next sync tries to mint it again
@@ -1009,8 +1009,8 @@ matched nothing.
 Jerry's GoHighLevel workflow emailing them a form. `GHLOAuthService.add_contact_tag(email, tag)` finds the
 contact by email in the **main account** (`GET /contacts/search/duplicate`) and adds the tag (`POST
 /contacts/{id}/tags`, `{"tags": [tag]}`), both `Version: v3`, both on a Location-class token minted on
-demand by `get_main_location_token()` and deliberately **not stored** — a stored row would show the
-agency's own location in the billing dashboard as a client, and an agency token is refused by `/contacts/`
+demand by `get_main_location_token()` (contact writes mint on demand without depending on synced rows —
+the main account is still listed if not in `EXCLUDED_GHL_LOCATION_IDS`), and an agency token is refused by `/contacts/`
 outright. The **add-tags** endpoint, not `PUT /contacts/{id}` with a `tags` array: that one replaces every
 tag the contact carries. Unlike the rebilling status write, this one **raises**: a human pressed a button,
 so a failure is shown, not logged.
@@ -1038,7 +1038,7 @@ with `hmac.compare_digest`. **A blank setting refuses everything.**
 Its body is `{"email": "{{contact.email}}", "locationId": "{{location.id}}"}` and **either may identify the
 client.** The workflow runs in the agency's main account, where the billing contacts live, so
 `{{location.id}}` resolves to the *main account* rather than to the client's own sub-account, and the email
-is then the only thing in the payload naming a client. `_clients_for()` tries the sub-account id first
+is then the only thing in the payload naming a client. `_clients_for()` tries genuine sub-account ids first (skipping `AGENCY_LOCATION_ID` so mapping the main account does not intercept every client webhook)
 because it is exact, and falls back to `billing_email__iexact`. The email match can answer with **more than
 one client** — two sub-accounts owned by the same person share a billing email and therefore the one Stripe
 customer — and every one of them is cleared, because the card that arrived is on that customer.

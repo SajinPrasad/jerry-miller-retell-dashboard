@@ -92,11 +92,11 @@ CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS', default=[])
 GHL_CLIENT_ID = env('GHL_CLIENT_ID', default='')
 GHL_CLIENT_SECRET = env('GHL_CLIENT_SECRET', default='')
 GHL_APP_ID = env('GHL_APP_ID', default='')
-# Jerry's agency location id; identifies the agency row and is skipped when syncing clients.
+# Jerry's agency main location id; used for agency SSO scope and shared billing contacts.
 AGENCY_LOCATION_ID = env('AGENCY_LOCATION_ID', default='')
-# Sub-accounts that must never appear in the agency Clients list: internal GHL accounts, and
-# accounts that run no Retell voice at all. Comma-separated location ids. `AGENCY_LOCATION_ID`
-# is always hidden as well and does not need repeating here.
+# Sub-accounts kept off the Clients list: internal GHL accounts, and accounts that run no Retell
+# voice at all. Comma-separated location ids (empty by default). Add `AGENCY_LOCATION_ID` here
+# only if the agency's own main location should stay hidden as well.
 EXCLUDED_GHL_LOCATION_IDS = env.list('EXCLUDED_GHL_LOCATION_IDS', default=[])
 GHL_API_BASE_URL = env('GHL_API_BASE_URL', default='https://services.leadconnectorhq.com')
 GHL_API_VERSION = env('GHL_API_VERSION', default='2021-07-28')
