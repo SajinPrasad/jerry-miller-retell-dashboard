@@ -21,6 +21,7 @@ from django.db.models import Max, Q, Sum
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
+from apps.audit import recording
 from apps.ghl.models import GHLOAuthToken
 from apps.ghl.services import hidden_location_ids
 
@@ -113,6 +114,7 @@ def store_call(call: dict) -> bool:
             call.get('agent_id'),
             call.get('from_number'),
             call.get('to_number'),
+            extra={'context': {'call_id': call_id, 'agent_id': call.get('agent_id')}},
         )
         return True
 
@@ -187,7 +189,12 @@ class RetellReconciliationService:
                 call = self._request('GET', f'/v2/get-call/{record.call_id}')
             except RetellError:
                 # One bad call shouldn't end the run; tomorrow's audit tries again.
-                logger.warning('retell: could not fetch call %s', record.call_id)
+                logger.warning(
+                    'retell: could not fetch call %s',
+                    record.call_id,
+                    exc_info=True,
+                    extra={'context': {'call_id': record.call_id}},
+                )
                 continue
             record.duration_ms = _duration_ms(call)
             record.retell_cost_cents = _cost_cents(call)
@@ -248,6 +255,12 @@ class RetellReconciliationService:
             response = self.client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            # Retell puts the reason in the body; the status line alone isn't diagnosable.
+            raise RetellError(
+                f'Retell {method} {path} failed: {exc.response.status_code} '
+                f'{exc.response.text[:500]}'
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             # Includes 429. The window covers two days, so the next run picks up whatever this
             # one missed rather than us retrying in a loop here.
@@ -294,7 +307,17 @@ class TwilioUsageService:
                 # One client's bad day must not cost the others theirs, and tomorrow's run
                 # re-reads the same window anyway.
                 logger.warning(
-                    'twilio: usage pull failed for %s', client.location_id, exc_info=True
+                    'twilio: usage pull failed for %s',
+                    client.location_id,
+                    exc_info=True,
+                    extra={
+                        'context': {
+                            'location_id': client.location_id,
+                            'subaccount': client.twilio_subaccount_sid,
+                            'start_date': str(start_date),
+                            'end_date': str(end_date),
+                        }
+                    },
                 )
                 result['failed'] += 1
                 continue
@@ -340,7 +363,9 @@ class TwilioUsageService:
         usage_date = record.get('start_date')
         if not usage_date:
             logger.warning(
-                'twilio: usage record without a start_date for %s, ignored', client.location_id
+                'twilio: usage record without a start_date for %s, ignored',
+                client.location_id,
+                extra={'context': {'location_id': client.location_id, 'record': record}},
             )
             return None
 
@@ -393,6 +418,11 @@ class TwilioUsageService:
             )
             response.raise_for_status()
             return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise TwilioError(
+                f'Twilio {method} {path} failed: {exc.response.status_code} '
+                f'{exc.response.text[:500]}'
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             # Includes 429. Retrying here would stack requests behind a limit we can't see, and
             # the rolling window re-reads the same days tomorrow.
@@ -844,7 +874,11 @@ def _retell_agents(mapping: ClientMapping) -> list[dict]:
             for agent in RetellReconciliationService().list_agents()
         }
     except RetellError:
-        logger.exception('rebilling: Retell agent list failed while naming %s', mapping.location_id)
+        logger.exception(
+            'rebilling: Retell agent list failed while naming %s',
+            mapping.location_id,
+            extra={'context': {'location_id': mapping.location_id}},
+        )
 
     return [
         {'agent_id': agent_id, 'agent_name': names.get(agent_id) or ''} for agent_id in agent_ids
@@ -1051,12 +1085,14 @@ def calculate_bills(month: str | None = None) -> dict:
             total_cents += bill.total_cents
             logger.info('billing: Bill(%s, %s, %d¢)', client.location_id, period, bill.total_cents)
 
-    return {
+    result = {
         'period': period,
         'bills_created': created,
         'already_billed': already_billed,
         'total_cents': total_cents,
     }
+    recording.record('billing.calculate_run', billing_period=period, detail=result)
+    return result
 
 
 def _bill_one_client(client: ClientMapping, period: str, start: date, end: date) -> Bill | None:
@@ -1133,6 +1169,13 @@ def _retell_line(client: ClientMapping, start: date, end: date) -> dict | None:
                     client.location_id,
                     call.started_at.date(),
                     call.call_id,
+                    extra={
+                        'context': {
+                            'location_id': client.location_id,
+                            'call_id': call.call_id,
+                            'date': str(call.started_at.date()),
+                        }
+                    },
                 )
                 continue
             voice_rate_cents = DEFAULT_VOICE_RATE_CENTS
@@ -1182,6 +1225,12 @@ def _twilio_line(client: ClientMapping, start: date, end: date) -> dict | None:
                 'billing: no rate for %s on %s, Twilio day left out of this bill',
                 client.location_id,
                 day.usage_date,
+                extra={
+                    'context': {
+                        'location_id': client.location_id,
+                        'date': str(day.usage_date),
+                    }
+                },
             )
             continue
         minutes += day.usage_minutes

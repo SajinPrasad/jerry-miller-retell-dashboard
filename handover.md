@@ -19,7 +19,7 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `106cdb1`. Do not commit or push unless asked.
+**Branch.** `main`. The last commit is `5f4d2a9`. Working tree is clean (nothing uncommitted). Do not commit or push unless asked.
 
 > ### This branch is not the Phase 9 redesign
 >
@@ -59,6 +59,43 @@ Companion docs:
 
 **Already committed, newest first:**
 
+- `5f4d2a9` — **Main agency location is self-added to the sync when `installed-locations` omits it.**
+  `_add_main_location()` inserts `AGENCY_LOCATION_ID` into the synced set (named via
+  `GET /locations/{id}`, falling back to whatever name is already stored, never to blank) only
+  when GHL's own listing leaves it out. `hidden_location_ids()` still gets the last word, so
+  adding the agency id to `EXCLUDED_GHL_LOCATION_IDS` hides it again.
+- `404e281` — **The agency's main location is no longer auto-hidden.** `hidden_location_ids()`
+  dropped its implicit `AGENCY_LOCATION_ID` exclusion (§6.12) — the main location now syncs and
+  can appear in the Clients list like any other sub-account, unless explicitly added to
+  `EXCLUDED_GHL_LOCATION_IDS`. The card-saved webhook's `_clients_for()` now skips
+  `AGENCY_LOCATION_ID` explicitly when matching by sub-account id, so a payload carrying the main
+  account's location id falls through to the email match instead of silently matching nothing.
+- `97a661d` — **`EXCLUDED_GHL_LOCATION_IDS` and per-client Retell agent picker filtering.** New
+  `.env` setting hides listed sub-accounts from the Clients list (§6.12). The "Add a Retell
+  agent" picker (admin **and** `/admin/preview`) now excludes any agent already mapped to a
+  *different* client, so one agent can't be assigned to two clients at once; a client's own
+  already-mapped agents still show cleanly on its own page.
+- `3db2f3a` — Frontend-only: `/admin/preview` demo data now shows `failed` and `retrying` sample
+  states directly in the client table/detail, not just `paid`/`charging`.
+- `5223da6` — **Request card now tags instead of writing a custom field; the card webhook accepts
+  email as a fallback.** `GHL_CARD_STATUS_CUSTOM_FIELD_ID` is gone; `add_contact_tag()` adds
+  `collect card information` to the billing contact in the main account instead. See the settled
+  facts above and §6.11/§17.1b.
+- `b36d70a` — **The rebilling status field now writes `OFF`/`ON`, not `failed`/`active`** — the
+  live `GHL_RETELL_STATUS_CUSTOM_FIELD_ID` field turned out to be a `SINGLE_OPTIONS` picklist with
+  exactly those two options. See §6.10b.
+- `976ac75` — Live-verification fix: the declining test card switched from
+  `pm_card_chargeDeclined` (which fails at `PaymentMethod.attach`, before an invoice exists) to
+  `pm_card_chargeCustomerFail` (attaches cleanly, declines at charge time), so
+  `verify_live_billing`'s failed-path scenario actually produces a bill for the retry sweep to act
+  on.
+- `77c4c70` — **`verify_live_billing` / `verify_live_billing_cleanup` management commands.**
+  Reversible live-Stripe-test-mode verification of the paid and failed billing paths, run against
+  two real GHL sub-accounts whose location ids and client names are hard-coded in source. Stripe
+  calls are hard-gated to `sk_test_` keys; the GoHighLevel writes these commands make against the
+  real sub-accounts have no equivalent gate.
+- `5b6a1a7` — Admin UI fix (`ClientBrowser`'s dark background now fills the full viewport) plus a
+  handover.md pass reconciling the doc with the commits above it.
 - `106cdb1` — **GHL location-token fix.** `sync_locations` calls `POST /oauth/location-token`
   (kebab-case, `Version: v3`) instead of the old path — confirmed live, 201 Created (see the
   settled facts above). `needs_refresh` is now true for an empty `access_token` regardless of its
@@ -122,13 +159,16 @@ Companion docs:
 - Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
   — Twilio minutes are no longer billed or shown anywhere, behind `TWILIO_BILLING_ENABLED`.
 
-**Test status (last run, this state):**
+**Test status (last recorded run, as of `5223da6`):**
 
-- Backend: `pytest`: **444 passed**.
-- Frontend: `npm test -- --run`: **107 passed** in 3 files.
-- `./node_modules/.bin/tsc -b` (in `frontend/`): exit 0. `npx oxlint src`: clean.
+- Backend: `pytest`: **458 passed**.
 - `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
 - `manage.py makemigrations --check --dry-run`: "No changes detected".
+
+Three commits since (`97a661d`, `404e281`, `5f4d2a9`) added further backend and frontend tests
+(GHL location-sync, admin views, card status, agent-picker filtering) without a freshly recorded
+pass count at the time this section was last edited — re-run `pytest` and
+`npm test -- --run` before relying on an exact number.
 
 **Stripe charging has run live** (settled facts above): the single account, the registered
 webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have

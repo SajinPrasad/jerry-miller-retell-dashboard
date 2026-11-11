@@ -24,12 +24,14 @@ INSTALLED_APPS = [
     'django_filters',
     # Local apps
     'apps.common',
+    'apps.audit',
     'apps.ghl',
     'apps.dashboards',
     'apps.rebilling',
 ]
 
 MIDDLEWARE = [
+    'apps.audit.middleware.RequestContextMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
@@ -208,6 +210,43 @@ GHL_RETELL_AGENT_CUSTOM_VALUE_NAME = env(
 # entered a card. A workflow's webhook is not signed by GHL, so this is the only thing that
 # authenticates it; blank refuses every request rather than accepting any.
 GHL_CARD_WEBHOOK_TOKEN = env('GHL_CARD_WEBHOOK_TOKEN', default='')
+
+# Logging. One JSON line per record on stdout: under systemd the journal collects it for Gunicorn,
+# the Celery worker and Celery beat alike (see CLAUDE.md for retention). Credentials are redacted
+# before any handler sees a record; warnings and errors are also kept in `audit.ErrorLog`, so
+# they outlive the journal. Celery is pointed at this same config in `config/celery.py`.
+LOG_LEVEL = env('LOG_LEVEL', default='INFO')
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'filters': {'redact': {'()': 'apps.audit.logs.RedactingFilter'}},
+    'formatters': {'json': {'()': 'apps.audit.logs.JsonFormatter'}},
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+            'stream': 'ext://sys.stdout',
+            'formatter': 'json',
+            'filters': ['redact'],
+        },
+        'database': {
+            'class': 'apps.audit.logs.DatabaseHandler',
+            'level': 'WARNING',
+            'filters': ['redact'],
+        },
+    },
+    'root': {'handlers': ['console', 'database'], 'level': LOG_LEVEL},
+    'loggers': {
+        # One INFO line per outbound request would drown the journal; failures are logged by the
+        # services themselves, with the response body.
+        'httpx': {'level': 'WARNING'},
+        # Bot noise: in the journal, never in the table.
+        'django.security.DisallowedHost': {
+            'handlers': ['console'],
+            'level': 'WARNING',
+            'propagate': False,
+        },
+    },
+}
 
 # Background jobs
 CELERY_BROKER_URL = env('REDIS_URL', default='redis://localhost:6379/0')

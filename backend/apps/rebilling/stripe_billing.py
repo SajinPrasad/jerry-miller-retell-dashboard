@@ -31,6 +31,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+from apps.audit import recording
 from apps.ghl.exceptions import GHLError
 from apps.ghl.services import GHLOAuthService
 
@@ -50,6 +51,60 @@ from .models import (
 from .services import month_window
 
 logger = logging.getLogger(__name__)
+
+
+def _ctx(bill: Bill) -> dict:
+    """The ids a failed billing operation is looked up by, for a log call's `extra`."""
+    return {
+        'context': {
+            'location_id': bill.client.location_id,
+            'bill_id': bill.pk,
+            'period': bill.billing_period,
+            'invoice_id': bill.stripe_invoice_id,
+            'status': bill.status,
+            'retry_count': bill.retry_count,
+        }
+    }
+
+
+def _attempt(bill: Bill, trigger: str, outcome: str, **detail) -> None:
+    """Audit one attempt to take the card: what started it and what Stripe answered."""
+    recording.record(
+        'stripe.payment_attempted',
+        model='rebilling.Bill',
+        object_id=bill.pk,
+        location_id=bill.client.location_id,
+        billing_period=bill.billing_period,
+        detail={
+            'trigger': trigger,
+            'outcome': outcome,
+            'invoice_id': bill.stripe_invoice_id,
+            'retry_count': bill.retry_count,
+            **detail,
+        },
+    )
+
+
+def _bill_event(action: str, bill: Bill, **detail) -> None:
+    recording.record(
+        action,
+        model='rebilling.Bill',
+        object_id=bill.pk,
+        location_id=bill.client.location_id,
+        billing_period=bill.billing_period,
+        detail=detail,
+    )
+
+
+def _client_event(action: str, client: ClientMapping, **detail) -> None:
+    recording.record(
+        action,
+        model='rebilling.ClientMapping',
+        object_id=client.pk,
+        location_id=client.location_id,
+        detail=detail,
+    )
+
 
 # Every amount sent to Stripe is an integer number of cents of this currency, which is the one
 # Jerry bills in. Not a setting: it does not vary by environment, it varies by business.
@@ -166,7 +221,11 @@ def customer_facts(client: ClientMapping) -> dict:
     except StripeBillingError:
         return _facts('', '', NO_CUSTOMER)
     except stripe.StripeError:
-        logger.exception('stripe: could not match a customer for %s', client.location_id)
+        logger.exception(
+            'stripe: could not match a customer for %s',
+            client.location_id,
+            extra={'context': {'location_id': client.location_id}},
+        )
         return _facts('', '', CARD_UNKNOWN)
 
     _configure()
@@ -178,7 +237,11 @@ def customer_facts(client: ClientMapping) -> dict:
             expand=['invoice_settings.default_payment_method'],
         )
     except stripe.StripeError:
-        logger.exception('stripe: could not read customer %s', customer)
+        logger.exception(
+            'stripe: could not read customer %s',
+            customer,
+            extra={'context': {'location_id': client.location_id, 'customer': customer}},
+        )
         return _facts(customer, '', CARD_UNKNOWN)
 
     status, brand, last4 = _card(record, customer)
@@ -230,8 +293,17 @@ def _promote_attached_card(customer: str):
         # A transient network error or rate limit, not Stripe's answer about the card. Logged
         # and swallowed rather than raised, so it degrades to whatever the caller already does
         # when there is nothing to promote - the same way a down Stripe degrades elsewhere here.
-        logger.warning('stripe: could not promote an attached card for %s', customer, exc_info=True)
+        logger.warning(
+            'stripe: could not promote an attached card for %s',
+            customer,
+            exc_info=True,
+            extra={'context': {'customer': customer}},
+        )
         return None
+    recording.record(
+        'stripe.default_card_promoted',
+        detail={'customer': customer, 'payment_method': method.id},
+    )
     return method
 
 
@@ -254,6 +326,7 @@ def request_card(client: ClientMapping) -> None:
     GHLOAuthService().add_contact_tag(client.billing_email, GHL_CARD_REQUEST_TAG)
     client.card_requested_at = timezone.now()
     client.save(update_fields=['card_requested_at'])
+    _client_event('card.requested', client, tag=GHL_CARD_REQUEST_TAG)
 
 
 def clear_card_request(client: ClientMapping) -> bool:
@@ -270,6 +343,49 @@ def clear_card_request(client: ClientMapping) -> bool:
         client.card_requested_at = None
         client.save(update_fields=['card_requested_at'])
     return True
+
+
+def clients_for_card_webhook(location_id: str, email: str) -> list[ClientMapping]:
+    """The clients a card webhook is about: sub-account first (not main account), then email.
+
+    The email match is case-insensitive, because the address is typed into GoHighLevel by hand
+    and Stripe is matched on it the same way. It can answer with more than one client - two
+    sub-accounts owned by the same person share a billing email, and therefore the one Stripe
+    customer - and all of them are cleared, because the card that arrived is on that customer and
+    every one of them is now answered.
+    """
+    if location_id and location_id != settings.AGENCY_LOCATION_ID:
+        client = ClientMapping.objects.filter(location_id=location_id).first()
+        if client is not None:
+            return [client]
+    if email:
+        return list(ClientMapping.objects.filter(billing_email__iexact=email))
+    return []
+
+
+def handle_card_webhook(payload: dict) -> int:
+    """Act on a card workflow's `{"email", "locationId"}` body. Returns how many clients matched.
+
+    Shared by the webhook view and by a replay of a stored delivery. Zero is not an error: the
+    workflow may run for contacts that are not billed here.
+    """
+    location_id = str((payload or {}).get('locationId') or '').strip()
+    email = str((payload or {}).get('email') or '').strip()
+    clients = clients_for_card_webhook(location_id, email)
+    if not clients:
+        logger.info(
+            'rebilling: card webhook matched no client (location %r, email %r)', location_id, email
+        )
+        return 0
+
+    for client in clients:
+        if not clear_card_request(client):
+            logger.warning(
+                'rebilling: %s reported a saved card, but Stripe still has none',
+                client.location_id,
+                extra={'context': {'location_id': client.location_id}},
+            )
+    return len(clients)
 
 
 def _assert_chargeable(customer: str) -> None:
@@ -346,6 +462,9 @@ def charge_bills(month: str | None = None) -> dict:
 
     for bill in bills:
         if bill.client.billing_mode != AUTO_CHARGE:
+            _bill_event(
+                'bill.not_charged', bill, reason=f'billing mode is {bill.client.billing_mode}'
+            )
             result['skipped'] += 1
             continue
         if (
@@ -362,9 +481,11 @@ def charge_bills(month: str | None = None) -> dict:
                 'not charged',
                 bill.client.location_id,
                 period,
+                extra=_ctx(bill),
             )
             bill.failure_reason = reason
             bill.save(update_fields=['failure_reason'])
+            _bill_event('bill.not_charged', bill, reason=reason)
             result['twilio_paused'] += 1
             continue
         if bill.total_cents < MINIMUM_CHARGE_CENTS:
@@ -376,6 +497,13 @@ def charge_bills(month: str | None = None) -> dict:
                 period,
                 MINIMUM_CHARGE_CENTS,
             )
+            _bill_event(
+                'bill.not_charged',
+                bill,
+                reason='under the Stripe minimum',
+                total_cents=bill.total_cents,
+                minimum_cents=MINIMUM_CHARGE_CENTS,
+            )
             result['too_small'] += 1
             continue
         try:
@@ -386,7 +514,9 @@ def charge_bills(month: str | None = None) -> dict:
                 bill.client.location_id,
                 period,
                 exc_info=True,
+                extra=_ctx(bill),
             )
+            _bill_event('bill.charge_failed', bill, error=str(exc)[:500])
             # On the bill, not only in the log: "why was this one not charged" is a question
             # the admin page and Phase 6's alerting both have to answer later.
             bill.failure_reason = str(exc)[:255]
@@ -400,6 +530,7 @@ def charge_bills(month: str | None = None) -> dict:
         elif bill.status in (RETRYING, FAILED):
             result['declined'] += 1
 
+    recording.record('billing.charge_run', billing_period=period, detail=result)
     return result
 
 
@@ -437,6 +568,7 @@ def _charge_one(bill: Bill) -> None:
     )
     bill.stripe_invoice_id = invoice.id
     bill.save(update_fields=['stripe_invoice_id'])
+    _bill_event('stripe.invoice_created', bill, invoice_id=invoice.id, customer=customer)
 
     for line in bill.lines.all():
         stripe.InvoiceItem.create(
@@ -453,6 +585,16 @@ def _charge_one(bill: Bill) -> None:
     # and `auto_advance` is what hands the retry schedule over with it.
     stripe.Invoice.finalize_invoice(
         invoice.id, auto_advance=True, idempotency_key=f'{key}-finalize'
+    )
+    _bill_event(
+        'stripe.invoice_finalized',
+        bill,
+        invoice_id=invoice.id,
+        total_cents=bill.total_cents,
+        lines=[
+            {'type': line.line_type, 'minutes': line.quantity_minutes, 'cents': line.bill_cents}
+            for line in bill.lines.all()
+        ],
     )
 
     # `charging` before the card is attempted rather than after, so that a crash or a timeout
@@ -492,10 +634,11 @@ def _collect_now(bill: Bill, invoice_id: str, key: str) -> None:
         # The card was reached and refused. That is an outcome, not a failure of the run: the
         # bill goes onto the retry schedule now rather than when `invoice.payment_failed`
         # arrives, and the webhook that follows finds it already there (`apply_event`).
+        _attempt(bill, 'initial', 'declined', code=_stripe_reason(exc))
         if _still_charging(bill):
             record_failure(bill, _stripe_reason(exc))
         return
-    except stripe.StripeError:
+    except stripe.StripeError as exc:
         # Stripe was not reached, or would not answer. Whether the card was charged is not known
         # here, so nothing is written over `charging`: the webhook and Stripe's own schedule
         # settle this bill, exactly as they did before the card was taken immediately.
@@ -504,13 +647,17 @@ def _collect_now(bill: Bill, invoice_id: str, key: str) -> None:
             bill.client.location_id,
             bill.billing_period,
             exc_info=True,
+            extra=_ctx(bill),
         )
+        _attempt(bill, 'initial', 'not_made', code=_stripe_reason(exc))
         return
 
     if invoice.status == 'paid':
+        _attempt(bill, 'initial', 'paid')
         if _still_charging(bill):
             _mark_paid(bill, paid_at=timezone.now())
         return
+    _attempt(bill, 'initial', 'not_collected', invoice_status=invoice.status)
 
     # Stripe took the request without an error and the invoice is still not paid, which is how a
     # payment the client has to act on themselves comes back. Recorded the same way the retry
@@ -619,6 +766,7 @@ def record_failure(bill: Bill, reason: str, now: datetime | None = None) -> None
             bill.client.location_id,
             bill.billing_period,
             reason,
+            extra=_ctx(bill),
         )
     else:
         bill.status = RETRYING
@@ -631,6 +779,7 @@ def record_failure(bill: Bill, reason: str, now: datetime | None = None) -> None
             bill.retry_count + 1,
             settings.BILLING_MAX_RETRIES,
             bill.next_retry_at.isoformat(),
+            extra=_ctx(bill),
         )
     bill.save(update_fields=['status', 'failure_reason', 'next_retry_at'])
     if bill.status == FAILED:
@@ -704,11 +853,17 @@ def pause_voice(client: ClientMapping) -> None:
             client.location_id, custom_value['id'], '', name=custom_value.get('name') or ''
         )
     except GHLError as exc:
-        logger.exception('billing: could not pause voice for %s', client.location_id)
+        logger.exception(
+            'billing: could not pause voice for %s',
+            client.location_id,
+            extra={'context': {'location_id': client.location_id}},
+        )
+        _client_event('voice.pause_failed', client, error=str(exc))
         _record_voice_sync(client, paused_at=client.voice_paused_at, error=str(exc))
         return
 
     logger.info('billing: voice paused for %s', client.location_id)
+    _client_event('voice.paused', client, captured_agent_id=client.retell_routing_agent_id)
     _record_voice_sync(client, paused_at=timezone.now(), error='')
 
 
@@ -725,7 +880,9 @@ def resume_voice(client: ClientMapping) -> None:
         logger.warning(
             'billing: no Retell agent id to restore for %s, so its voice stays paused',
             client.location_id,
+            extra={'context': {'location_id': client.location_id}},
         )
+        _client_event('voice.resume_skipped', client, reason='no agent id to restore')
         _record_voice_sync(
             client,
             paused_at=client.voice_paused_at,
@@ -742,11 +899,17 @@ def resume_voice(client: ClientMapping) -> None:
             name=custom_value.get('name') or '',
         )
     except GHLError as exc:
-        logger.exception('billing: could not resume voice for %s', client.location_id)
+        logger.exception(
+            'billing: could not resume voice for %s',
+            client.location_id,
+            extra={'context': {'location_id': client.location_id, 'agent_id': agent_id}},
+        )
+        _client_event('voice.resume_failed', client, agent_id=agent_id, error=str(exc))
         _record_voice_sync(client, paused_at=client.voice_paused_at, error=str(exc))
         return
 
     logger.info('billing: voice resumed for %s on agent %s', client.location_id, agent_id)
+    _client_event('voice.resumed', client, agent_id=agent_id)
     _record_voice_sync(client, paused_at=None, error='')
 
 
@@ -796,6 +959,7 @@ def _set_dunning_status(client: ClientMapping, value: str) -> None:
             'billing: %s has no billing email, so its status could not be set to %s',
             client.location_id,
             value,
+            extra={'context': {'location_id': client.location_id, 'value': value}},
         )
         return
 
@@ -803,10 +967,16 @@ def _set_dunning_status(client: ClientMapping, value: str) -> None:
         GHLOAuthService().set_contact_field(
             client.billing_email, settings.GHL_RETELL_STATUS_CUSTOM_FIELD_ID, value
         )
-    except GHLError:
+    except GHLError as exc:
         logger.exception(
-            'billing: could not set the rebilling status to %s for %s', value, client.location_id
+            'billing: could not set the rebilling status to %s for %s',
+            value,
+            client.location_id,
+            extra={'context': {'location_id': client.location_id, 'value': value}},
         )
+        _client_event('ghl.dunning_status_failed', client, value=value, error=str(exc))
+        return
+    _client_event('ghl.dunning_status_set', client, value=value)
 
 
 def retry_due_bills(now: datetime | None = None) -> dict:
@@ -858,14 +1028,18 @@ def _retry_one(bill: Bill, now: datetime) -> str:
             bill.client.location_id,
             bill.billing_period,
             exc_info=True,
+            extra=_ctx(bill),
         )
+        _attempt(bill, 'auto_retry', 'declined', code=_stripe_reason(exc))
         record_failure(bill, _stripe_reason(exc), now)
         return bill.status
 
     if invoice.status == 'paid':
+        _attempt(bill, 'auto_retry', 'paid')
         _mark_paid(bill, paid_at=now)
         return PAID
 
+    _attempt(bill, 'auto_retry', 'not_collected', invoice_status=invoice.status)
     record_failure(bill, NOT_COLLECTED_REASON, now)
     return bill.status
 
@@ -939,6 +1113,7 @@ def retry_now(bill_pk: int, now: datetime | None = None) -> Bill:
             invoice = _pay_open_invoice(bill)
         except stripe.CardError as exc:
             # Reached the card and was refused: an outcome, recorded and handed back.
+            _attempt(bill, 'manual_retry', 'declined', code=_stripe_reason(exc))
             record_failure(bill, _stripe_reason(exc), now)
             return bill
         except stripe.StripeError as exc:
@@ -949,12 +1124,15 @@ def retry_now(bill_pk: int, now: datetime | None = None) -> Bill:
                 bill.client.location_id,
                 bill.billing_period,
                 exc_info=True,
+                extra=_ctx(bill),
             )
             raise StripeBillingError(_stripe_reason(exc)) from exc
 
         if invoice.status == 'paid':
+            _attempt(bill, 'manual_retry', 'paid')
             _mark_paid(bill, paid_at=now)
         else:
+            _attempt(bill, 'manual_retry', 'not_collected', invoice_status=invoice.status)
             record_failure(bill, NOT_COLLECTED_REASON, now)
         return bill
 
@@ -981,7 +1159,12 @@ def _failure_reason(event) -> str:
         _configure()
         intent = stripe.PaymentIntent.retrieve(intent_id)
     except stripe.StripeError:
-        logger.warning('billing: could not read payment intent %s', intent_id, exc_info=True)
+        logger.warning(
+            'billing: could not read payment intent %s',
+            intent_id,
+            exc_info=True,
+            extra={'context': {'payment_intent': intent_id}},
+        )
         return FALLBACK_FAILURE_REASON
 
     error = getattr(intent, 'last_payment_error', None)

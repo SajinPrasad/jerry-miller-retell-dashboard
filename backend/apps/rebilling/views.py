@@ -10,6 +10,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from retell.lib import verify
 
+from apps.audit import recording
+from apps.audit.models import WebhookEvent
 from apps.ghl import sso
 from apps.ghl.exceptions import GHLError
 from apps.ghl.models import GHLOAuthToken
@@ -33,7 +35,7 @@ from .services import (
     sync_billing_emails,
     voice_row,
 )
-from .stripe_billing import apply_event, clear_card_request, read_event, request_card, retry_now
+from .stripe_billing import apply_event, handle_card_webhook, read_event, request_card, retry_now
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +58,32 @@ class RetellWebhookView(APIView):
         signature = request.headers.get('X-Retell-Signature', '')
         if not verify(raw_body.decode(), settings.RETELL_API_KEY, signature):
             logger.warning('retell: webhook signature rejected')
+            recording.webhook_rejected(WebhookEvent.RETELL, 'Signature rejected.')
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
             payload = json.loads(raw_body)
         except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            recording.webhook_rejected(
+                WebhookEvent.RETELL, 'Body is not a JSON object.', signature_valid=True
+            )
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        if payload.get('event') == 'call_ended':
-            store_call(payload.get('call') or {})
+        call = payload.get('call')
+        call = call if isinstance(call, dict) else {}
+        event = recording.webhook_received(
+            WebhookEvent.RETELL,
+            payload,
+            event_type=payload.get('event', ''),
+            event_id=call.get('call_id', ''),
+        )
+        with recording.processing(event):
+            if payload.get('event') == 'call_ended':
+                store_call(call)
+            else:
+                recording.webhook_status(event, WebhookEvent.IGNORED)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -88,11 +107,21 @@ class StripeWebhookView(APIView):
             event = read_event(raw_body, signature)
         except stripe.SignatureVerificationError:
             logger.warning('stripe: webhook signature rejected')
+            recording.webhook_rejected(WebhookEvent.STRIPE, 'Signature rejected.')
             return Response(status=status.HTTP_401_UNAUTHORIZED)
         except ValueError:
+            recording.webhook_rejected(WebhookEvent.STRIPE, 'Body is not an event.')
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        apply_event(event)
+        stored = recording.webhook_received(
+            WebhookEvent.STRIPE,
+            json.loads(raw_body),
+            event_type=event['type'],
+            event_id=event['id'],
+        )
+        with recording.processing(stored):
+            if not apply_event(event):
+                recording.webhook_status(stored, WebhookEvent.IGNORED)
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -124,53 +153,30 @@ class GHLCardWebhookView(APIView):
         sent = request.headers.get('X-Card-Webhook-Token', '')
         if not expected or not hmac.compare_digest(sent, expected):
             logger.warning('rebilling: card webhook token rejected')
+            recording.webhook_rejected(WebhookEvent.GHL_CARD, 'Token rejected.')
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
             payload = json.loads(request.body)
         except ValueError:
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        location_id = ((payload or {}).get('locationId') or '').strip()
-        email = ((payload or {}).get('email') or '').strip()
-        if not location_id and not email:
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        clients = self._clients_for(location_id, email)
-        if not clients:
-            # Not an error: this workflow may run for contacts that are not billed here.
-            logger.info(
-                'rebilling: card webhook matched no client (location %r, email %r)',
-                location_id,
-                email,
+            payload = None
+        if not isinstance(payload, dict):
+            recording.webhook_rejected(
+                WebhookEvent.GHL_CARD, 'Body is not a JSON object.', signature_valid=True
             )
-            return Response(status=status.HTTP_204_NO_CONTENT)
+            return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        for client in clients:
-            if not clear_card_request(client):
-                logger.warning(
-                    'rebilling: %s reported a saved card, but Stripe still has none',
-                    client.location_id,
-                )
+        location_id = str(payload.get('locationId') or '').strip()
+        email = str(payload.get('email') or '').strip()
+        stored = recording.webhook_received(WebhookEvent.GHL_CARD, payload, event_type='card_saved')
+        if not location_id and not email:
+            recording.webhook_status(stored, WebhookEvent.REJECTED, 'Neither email nor location.')
+            return Response(status=status.HTTP_400_BAD_REQUEST)
+
+        with recording.processing(stored):
+            if handle_card_webhook(payload) == 0:
+                recording.webhook_status(stored, WebhookEvent.IGNORED, 'Matched no client.')
         return Response(status=status.HTTP_204_NO_CONTENT)
-
-    @staticmethod
-    def _clients_for(location_id: str, email: str) -> list[ClientMapping]:
-        """The clients this webhook is about: sub-account first (not main account), then email.
-
-        The email match is case-insensitive, because the address is typed into GoHighLevel by
-        hand and Stripe is matched on it the same way. It can answer with more than one client
-        - two sub-accounts owned by the same person share a billing email, and therefore the
-        one Stripe customer - and all of them are cleared, because the card that arrived is on
-        that customer and every one of them is now answered.
-        """
-        if location_id and location_id != settings.AGENCY_LOCATION_ID:
-            client = ClientMapping.objects.filter(location_id=location_id).first()
-            if client is not None:
-                return [client]
-        if email:
-            return list(ClientMapping.objects.filter(billing_email__iexact=email))
-        return []
 
 
 def _clients_response(context, request) -> Response:
@@ -403,7 +409,18 @@ class AdminClientCardRequestView(APIView):
         try:
             request_card(mapping)
         except GHLError as exc:
-            logger.exception('rebilling: card request failed for %s', location_id)
+            logger.exception(
+                'rebilling: card request failed for %s',
+                location_id,
+                extra={'context': {'location_id': location_id}},
+            )
+            recording.record(
+                'card.request_failed',
+                model='rebilling.ClientMapping',
+                object_id=mapping.pk,
+                location_id=location_id,
+                detail={'error': str(exc)},
+            )
             return Response({'detail': str(exc)}, status=status.HTTP_502_BAD_GATEWAY)
 
         return Response({'card': billing_facts(mapping)['card']})
@@ -457,7 +474,23 @@ class AdminClientRetryChargeView(APIView):
         except StripeBillingError as exc:
             # The attempt could not be made. `retry_now` rolled it back, so the bill still has
             # the retry count and schedule it had before the button was pressed.
-            logger.exception('rebilling: manual retry failed for %s %s', location_id, period)
+            logger.exception(
+                'rebilling: manual retry failed for %s %s',
+                location_id,
+                period,
+                extra={
+                    'context': {'location_id': location_id, 'period': period, 'bill_id': bill.pk}
+                },
+            )
+            # Written here, outside `retry_now`'s transaction, which rolled back.
+            recording.record(
+                'stripe.payment_attempted',
+                model='rebilling.Bill',
+                object_id=bill.pk,
+                location_id=location_id,
+                billing_period=period,
+                detail={'trigger': 'manual_retry', 'outcome': 'not_made', 'error': str(exc)},
+            )
             return Response(
                 {'detail': f'Stripe could not be reached: {exc}'},
                 status=status.HTTP_502_BAD_GATEWAY,

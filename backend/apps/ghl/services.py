@@ -326,7 +326,12 @@ class GHLOAuthService:
             except GHLError as exc:
                 # Still store the sub-account so it shows up in the dashboard; it just has no
                 # token to call GHL with until the app is installed on it.
-                logger.warning('ghl: could not get a token for location %s: %s', location_id, exc)
+                logger.warning(
+                    'ghl: could not get a token for location %s: %s',
+                    location_id,
+                    exc,
+                    extra={'context': {'location_id': location_id}},
+                )
                 token_fields = {
                     'access_token': '',
                     'expires_at': timezone.now() + timedelta(days=1),
@@ -390,7 +395,12 @@ class GHLOAuthService:
         try:
             body = self._request('GET', f'/locations/{location_id}', token=agency_token)
         except GHLError as exc:
-            logger.warning('ghl: could not read details for location %s: %s', location_id, exc)
+            logger.warning(
+                'ghl: could not read details for location %s: %s',
+                location_id,
+                exc,
+                extra={'context': {'location_id': location_id}},
+            )
             return {}
 
         location = body.get('location') or {}
@@ -435,7 +445,12 @@ class GHLOAuthService:
         try:
             body = self._request('GET', f'/locations/{location_id}', token=agency_token)
         except GHLError as exc:
-            logger.warning('ghl: could not read the main location %s: %s', location_id, exc)
+            logger.warning(
+                'ghl: could not read the main location %s: %s',
+                location_id,
+                exc,
+                extra={'context': {'location_id': location_id}},
+            )
             stored = GHLOAuthToken.objects.filter(is_agency=False, location_id=location_id).first()
             return stored.name if stored else ''
         return (body.get('location') or {}).get('name') or ''

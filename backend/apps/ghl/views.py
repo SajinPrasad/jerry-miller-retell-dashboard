@@ -12,6 +12,9 @@ from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from apps.audit import recording
+from apps.audit.models import WebhookEvent
+
 from . import sso
 from .exceptions import GHLError, GHLNotConnectedError
 from .models import GHLOAuthToken
@@ -98,6 +101,18 @@ def _verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
         return False
 
 
+def sync_for_location_created(payload: dict) -> bool:
+    """Re-sync the sub-accounts if this is a `LocationCreate` event. False for anything else.
+
+    Raises `GHLError` if the sync fails: the webhook view records it, and a replay retries it.
+    """
+    if payload.get('type') != LOCATION_CREATE_EVENT:
+        return False
+    service = GHLOAuthService()
+    service.sync_locations(service.get_agency())
+    return True
+
+
 class LocationCreatedWebhookView(APIView):
     """POST /api/ghl/webhooks/location-created/: GHL's `LocationCreate` event.
 
@@ -118,19 +133,37 @@ class LocationCreatedWebhookView(APIView):
         signature = request.headers.get('X-GHL-Signature', '')
         if not _verify_webhook_signature(raw_body, signature):
             logger.warning('ghl: webhook signature rejected')
+            recording.webhook_rejected(WebhookEvent.GHL, 'Signature rejected.')
             return Response(status=status.HTTP_401_UNAUTHORIZED)
 
         try:
             payload = json.loads(raw_body)
         except ValueError:
+            payload = None
+        if not isinstance(payload, dict):
+            recording.webhook_rejected(
+                WebhookEvent.GHL, 'Body is not a JSON object.', signature_valid=True
+            )
             return Response(status=status.HTTP_400_BAD_REQUEST)
 
-        if payload.get('type') == LOCATION_CREATE_EVENT:
-            service = GHLOAuthService()
+        stored = recording.webhook_received(
+            WebhookEvent.GHL,
+            payload,
+            event_type=payload.get('type', ''),
+            event_id=payload.get('webhookId', ''),
+        )
+        with recording.processing(stored):
             try:
-                service.sync_locations(service.get_agency())
-            except GHLError:
-                logger.exception('ghl: webhook-triggered location sync failed')
+                if not sync_for_location_created(payload):
+                    recording.webhook_status(stored, WebhookEvent.IGNORED)
+            except GHLError as exc:
+                # Still answered 200 (GHL retries anything else), but the delivery is kept as
+                # failed with the reason, so a replay can finish the sync.
+                logger.exception(
+                    'ghl: webhook-triggered location sync failed',
+                    extra={'context': {'webhook_event': stored.pk}},
+                )
+                recording.webhook_failed(stored, exc)
 
         return Response(status=status.HTTP_200_OK)
 

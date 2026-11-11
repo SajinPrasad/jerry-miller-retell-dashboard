@@ -5,6 +5,14 @@ SECRET_KEY = 'test-secret-key'
 PASSWORD_HASHERS = ['django.contrib.auth.hashers.MD5PasswordHasher']
 DATABASES = {'default': {'ENGINE': 'django.db.backends.sqlite3', 'NAME': ':memory:'}}
 MIDDLEWARE = [m for m in MIDDLEWARE if 'whitenoise' not in m]
+# No database handler in tests: it is exercised directly by the audit tests, and would otherwise
+# write a row for every warning a test provokes on purpose.
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {'null': {'class': 'logging.NullHandler'}},
+    'root': {'handlers': ['null'], 'level': 'WARNING'},
+}
 
 FIELD_ENCRYPTION_KEY = 'EtcfOijPUSsIbUZiNn5_-4X7P4Jf2lwWGAbpGZR15VU='
 GHL_CLIENT_ID = 'app123-abc'

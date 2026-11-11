@@ -397,8 +397,56 @@ Phases and open questions live in `local_folder/plan.md`; cross-platform contrad
   attempt that never happened. A manual attempt takes the next retry number, sharing the sweep's
   counter and therefore its idempotency keys; a `failed` bill can be retried as often as staff
   like without being put back on a schedule.
-- **Not built yet:** no alerts beyond a log line. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
+- **Not built yet:** no alerts - failures are recorded (see the audit section) but nothing notifies anyone. A mapping is set up or edited from the agency admin page (see above) or, as a fallback, the Django admin; rates are saved from that page too.
 - **Verify on the first real call:** whether `call_ended` carries `duration_ms` and `call_cost` (the docs' own definition implies yes; the sample payload doesn't show it), and that no agent overrides the account-level webhook URL. For Twilio: that Retell minutes appear only under the `trunking-*` categories and never under `calls`. **Nothing here has run against a live Twilio or Retell account** — every test mocks both.
+
+## Logging, webhook record and audit trail (`apps/audit`, built)
+
+Four tables, one config. **No alerting yet** (Phase 6) - this is the record alerts will read.
+
+- **Logs.** `LOGGING` (`config/settings/base.py`) writes one JSON line per record to stdout:
+  `ts, level, logger, message, request_id, actor, context, exception`. Under systemd the journal
+  collects it for Gunicorn, the Celery worker and Celery beat; `config/celery.py` points Celery at
+  the same config (`setup_logging`) so there is one format and no doubled lines. `LOG_LEVEL` env,
+  default INFO. `request_id` ties a request's log lines, webhook record and audit rows together
+  (`RequestContextMiddleware`; Nginx can pass `X-Request-ID`). Structured context goes in
+  `logger.x(..., extra={'context': {...}})` - ids and amounts, never credentials.
+- **Redaction** (`audit/redaction.py`): every configured secret's literal value, credential shapes
+  (Stripe keys, bearer tokens, JWTs, the SSO `Salted__` blob, OAuth `code=`), and any key *named*
+  like a credential. Applied to messages and tracebacks before any handler, and to stored context.
+- **`ErrorLog`**: every WARNING+ from `apps.*` and every ERROR+ from anywhere, with traceback,
+  context, request id and actor. Outlives the journal. Written by a handler that never raises and
+  skips a transaction that has already failed.
+- **`TaskRun`**: one row per Celery execution (beat or not): start, finish, status, result dict,
+  traceback. A task that raised is `failure`; a missing row for a scheduled hour is a task that
+  never ran.
+- **`WebhookEvent`**: every Retell, Stripe, GHL and card-workflow delivery, stored **before** it is
+  processed, then marked `processed` / `ignored` / `failed` (traceback) / `rejected` (bad
+  signature or token - no body kept). Retell's transcript, recording links and analysis are
+  stripped; credential-named keys are blanked; nothing else is. Replay with
+  `manage.py replay_webhook <id>...` or `--failed` - the same handler runs again (all are
+  idempotent) and the replay is itself audited. If the delivery cannot be *stored* the view
+  fails, so the sender retries.
+- **`AuditEvent`** (append-only): who (`user:<GHL id>` + name/email from the SSO blob,
+  `webhook:<source>`, `celery:<task>`, `cli:<os user>`, `system`), what, which client/period,
+  `before`/`after` of only the changed fields, and the `WebhookEvent` that caused it. Written by
+  `pre_save`/`post_save` receivers for `Bill`, `BillLine`, `RateHistory`, `ClientMapping`
+  (`bill.status_changed` for transitions), so a new save site is covered without a call. Explicit
+  rows for what is not a field change: `stripe.invoice_created`/`_finalized`,
+  `stripe.payment_attempted` (`trigger` initial/auto_retry/manual_retry, `outcome`),
+  `stripe.default_card_promoted`, `bill.not_charged`/`charge_failed`, `billing.charge_run`/
+  `calculate_run`, `card.requested`/`request_failed`, `voice.paused`/`resumed`/`*_failed`/
+  `resume_skipped`, `ghl.dunning_status_set`/`_failed`, `webhook.replayed`.
+  A rolled-back transaction rolls its audit rows back with it (the change did not happen); a
+  failure that *causes* the rollback is written outside it (`AdminClientRetryChargeView`).
+- **Inspect:** Django admin, read-only (`/admin/` on the backend). Retention: the four tables are
+  never purged (a few MB a month).
+- **Server setup (not in the repo):** journald keeps ~90 days if `/etc/systemd/journald.conf.d/
+  surpro.conf` has `[Journal] Storage=persistent`, `SystemMaxUse=2G`, `MaxRetentionSec=90day`
+  (`journalctl --disk-usage` to check). Give each unit `SyslogIdentifier=` (e.g. `surpro-web`,
+  `surpro-worker`, `surpro-beat`) and read with `journalctl -u surpro-worker -o cat | jq`. Nginx
+  keeps its own files under `logrotate`; its access log holds the OAuth callback's single-use
+  `?code=`, so do not add request headers (`X-GHL-Session`) to its `log_format`.
 
 ## Structure
 
@@ -408,6 +456,7 @@ backend/                Django 5.2 + DRF
   config/celery.py      Celery app; scheduled jobs in settings CELERY_BEAT_SCHEDULE
   apps/ghl/             Task 1: GHL onboarding (OAuth install, agency + sub-account tokens)
   apps/common/          EncryptedTextField for secrets
+  apps/audit/           Logging, webhook record, audit trail, Celery run record, replay
   apps/dashboards/      Tasks 2-3: KPI aggregation + settings endpoints
   apps/rebilling/       Task 4: Retell webhook + audit, Twilio daily pull, rates (Ph. 1, 2, 2b)
   requirements/         *.in (edit) -> *.txt (pip-compile output, committed)

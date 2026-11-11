@@ -26,6 +26,8 @@ from django.conf import settings
 from rest_framework import status
 from rest_framework.exceptions import APIException
 
+from apps.audit import context as audit_context
+
 from .models import GHLOAuthToken
 
 # The header the admin page sends the blob in. Never logged: it is a credential.
@@ -113,6 +115,10 @@ def context_from_blob(blob: str) -> SSOContext:
         # GHL sealed this `companyId`, so unlike the install check — which only rejects a
         # sub-account install — this really does pin the session to Jerry's agency.
         raise WrongAgencyError()
+    # Everything this request changes is recorded against the person GHL says is acting.
+    audit_context.set_actor(
+        f'user:{context.user_id}', f'{context.user_name} <{context.email}>'.strip()
+    )
     return context
 
 
