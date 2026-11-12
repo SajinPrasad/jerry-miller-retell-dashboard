@@ -258,14 +258,20 @@ CELERY_BEAT_SCHEDULE = {
         'task': 'apps.rebilling.tasks.reconcile_retell_calls',
         'schedule': crontab(hour=3, minute=0),
     },
-    # Offset from the Retell audit so the two upstreams aren't hit at the same moment.
-    'pull-twilio-usage': {
-        'task': 'apps.rebilling.tasks.pull_twilio_usage',
-        'schedule': crontab(hour=3, minute=30),
-    },
+    # Paused while Twilio billing is off (TWILIO_BILLING_ENABLED): only Retell is billed.
+    # 'pull-twilio-usage': {
+    #     'task': 'apps.rebilling.tasks.pull_twilio_usage',
+    #     'schedule': crontab(hour=3, minute=30),
+    # },
     # Hourly, so a retry is at most an hour late. Only bills already due are touched.
     'retry-failed-charges': {
         'task': 'apps.rebilling.tasks.retry_failed_charges',
         'schedule': crontab(minute=15),
+    },
+    # The monthly close, for the month that just ended. An hour after the Retell audit so that
+    # night's calls are already reconciled; `run_monthly_billing` works out which month itself.
+    'run-monthly-billing': {
+        'task': 'apps.rebilling.tasks.run_monthly_billing',
+        'schedule': crontab(hour=4, minute=0, day_of_month=1),
     },
 }

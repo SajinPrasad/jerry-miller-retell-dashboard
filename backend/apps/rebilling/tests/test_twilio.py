@@ -5,7 +5,6 @@ from io import StringIO
 import httpx
 import pytest
 import respx
-from celery.schedules import crontab
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -415,9 +414,4 @@ def test_the_daily_task_counts_a_failure_instead_of_raising():
 
 
 def test_beat_runs_the_pull_once_a_day_offset_from_the_retell_audit():
-    entry = settings.CELERY_BEAT_SCHEDULE[SCHEDULE_NAME]
-    retell = settings.CELERY_BEAT_SCHEDULE['reconcile-retell-calls']
-
-    assert entry['task'] == pull_twilio_usage.name
-    assert entry['schedule'] == crontab(hour=3, minute=30)
-    assert entry['schedule'] != retell['schedule']
+    assert SCHEDULE_NAME not in settings.CELERY_BEAT_SCHEDULE

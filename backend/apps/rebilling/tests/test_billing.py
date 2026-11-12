@@ -20,7 +20,7 @@ from apps.rebilling.models import (
     RetellCall,
     TwilioUsageDay,
 )
-from apps.rebilling.services import calculate_bills
+from apps.rebilling.services import calculate_bills, previous_billing_period
 
 from .test_services import make_client
 
@@ -67,6 +67,7 @@ def test_retell_line_bills_at_the_rate_in_effect():
         'period': MONTH,
         'bills_created': 1,
         'already_billed': 0,
+        'failed': 0,
         'total_cents': 50,  # 2 minutes * 25c
     }
     bill = Bill.objects.get(client=client, billing_period=MONTH)
@@ -332,6 +333,33 @@ def test_two_clients_bill_independently():
     assert Bill.objects.get(client=branwynn, billing_period=MONTH).total_cents == 40
 
 
+def test_one_clients_failure_does_not_stop_the_others(monkeypatch):
+    broken = make_client('loc1', client_name='Broken HVAC')
+    fine = make_client('loc2', client_name='Fine HVAC')
+    RateHistory.objects.create(client=broken, start_date=date(2026, 1, 1))
+    RateHistory.objects.create(client=fine, start_date=date(2026, 1, 1))
+    add_call(broken, 'call1', duration_ms=60_000)
+    add_call(fine, 'call2', duration_ms=60_000)
+
+    import apps.rebilling.services as services_module
+
+    real_bill_one_client = services_module._bill_one_client
+
+    def flaky(client, period, start, end):
+        if client == broken:
+            raise RuntimeError('boom')
+        return real_bill_one_client(client, period, start, end)
+
+    monkeypatch.setattr(services_module, '_bill_one_client', flaky)
+
+    result = calculate_bills(MONTH)
+
+    assert result['bills_created'] == 1
+    assert result['failed'] == 1
+    assert not Bill.objects.filter(client=broken, billing_period=MONTH).exists()
+    assert Bill.objects.filter(client=fine, billing_period=MONTH).exists()
+
+
 @override_settings(TWILIO_BILLING_ENABLED=True)
 def test_deleting_a_bill_never_deletes_the_underlying_records():
     client = make_client(twilio_subaccount_sid='ACchild')
@@ -380,7 +408,10 @@ def test_command_reports_what_it_did():
     out = StringIO()
     call_command('calculate_bills', '--month', MONTH, stdout=out)
 
-    assert 'Billing 2026-03: 1 bill(s) created, 0 already billed, 25¢ total.' in out.getvalue()
+    assert (
+        'Billing 2026-03: 1 bill(s) created, 0 already billed, 0 failed, 25¢ total.'
+        in out.getvalue()
+    )
 
 
 def test_command_rejects_a_bad_month():
@@ -393,3 +424,18 @@ def test_command_defaults_to_the_current_month():
     result = calculate_bills(None)
     assert result['bills_created'] == 0
     assert result['period']  # some YYYY-MM was picked without raising
+
+
+# --- previous_billing_period, for the monthly task --------------------------------------------
+
+
+def test_previous_billing_period_is_last_month():
+    assert previous_billing_period(date(2026, 4, 1)) == '2026-03'
+
+
+def test_previous_billing_period_crosses_a_year_boundary():
+    assert previous_billing_period(date(2026, 1, 1)) == '2025-12'
+
+
+def test_previous_billing_period_is_well_defined_on_any_day_of_the_month():
+    assert previous_billing_period(date(2026, 3, 15)) == '2026-02'

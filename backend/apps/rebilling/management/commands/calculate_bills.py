@@ -17,5 +17,5 @@ class Command(BaseCommand):
 
         self.stdout.write(
             'Billing {period}: {bills_created} bill(s) created, {already_billed} already '
-            'billed, {total_cents}¢ total.'.format(**result)
+            'billed, {failed} failed, {total_cents}¢ total.'.format(**result)
         )

@@ -206,6 +206,21 @@ describe('AdminPreviewPage', () => {
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
+  it('shows a green Paid badge beside the client name once the bill for the month is paid', async () => {
+    const user = userEvent.setup()
+
+    render(<AdminPreviewPage />)
+    await user.click(await screen.findByRole('button', { name: 'Cool Breeze HVAC' }))
+
+    // Still this month: an estimate, not a bill - no badge yet.
+    expect(screen.queryByText('Paid', { selector: 'h2 .pill' })).not.toBeInTheDocument()
+
+    await user.selectOptions(monthSelect(), LAST_MONTH)
+
+    const badge = await screen.findByText('Paid', { selector: 'h2 .pill' })
+    expect(badge).toHaveClass('pill', 'ok')
+  })
+
   it('searches the sample agent list without calling Retell', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch')
     const user = userEvent.setup()

@@ -1408,6 +1408,7 @@ describe('AdminPage', () => {
     expect(tile('Paid').getByText('$0.47')).toBeInTheDocument()
     expect(screen.queryByText('Estimated', { selector: '.tile-label' })).not.toBeInTheDocument()
     expect(screen.getByText(/Billed and paid in full/)).toBeInTheDocument()
+    expect(screen.getByText('Paid', { selector: 'h2 .pill' })).toHaveClass('pill', 'ok')
   })
 
   it('says a bill is still waiting on Stripe', async () => {

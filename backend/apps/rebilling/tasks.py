@@ -4,8 +4,13 @@ import logging
 
 from celery import shared_task
 
-from .services import RetellReconciliationService, TwilioUsageService
-from .stripe_billing import retry_due_bills
+from .services import (
+    RetellReconciliationService,
+    TwilioUsageService,
+    calculate_bills,
+    previous_billing_period,
+)
+from .stripe_billing import charge_bills, retry_due_bills
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +36,24 @@ def pull_twilio_usage() -> dict:
     """
     result = TwilioUsageService().pull()
     logger.info('twilio: daily usage pull finished %s', result)
+    return result
+
+
+@shared_task
+def run_monthly_billing() -> dict:
+    """The monthly close, on Celery beat: calculate and charge bills for the month that just
+    ended. Same work as `manage.py calculate_bills` and `manage.py charge_bills`, chained.
+
+    Scheduled 04:00 UTC on the 1st, an hour after the Retell audit, so the final night of the
+    closing month is already reconciled before it is billed. Each step isolates a single client's
+    failure from the rest of the run on its own
+    (`calculate_bills`, `charge_bills`); this only chains the two for the period that just ended.
+    """
+    period = previous_billing_period()
+    calculated = calculate_bills(period)
+    charged = charge_bills(period)
+    result = {'period': period, 'calculated': calculated, 'charged': charged}
+    logger.info('billing: monthly run finished %s', result)
     return result
 
 

@@ -234,7 +234,15 @@ export default function ClientDetail({
       {activeTab === 'overview' && (
         <div role="tabpanel" id="tabpanel-overview" aria-labelledby="tab-overview">
           <section className="card">
-            <h2>{detail.client_name}</h2>
+            <h2>
+              {detail.client_name}
+              {bill?.status === 'paid' && (
+                <>
+                  {' '}
+                  <span className="pill ok">Paid</span>
+                </>
+              )}
+            </h2>
             <p className="muted">
               <code>{detail.location_id}</code>
               {!detail.active && <span className="pill">Billing paused</span>}

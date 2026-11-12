@@ -667,6 +667,17 @@ def month_window(month: str | None) -> tuple[date, date]:
     return date(year, number, 1), date(year, number, calendar.monthrange(year, number)[1])
 
 
+def previous_billing_period(today: date | None = None) -> str:
+    """The 'YYYY-MM' billing period that just ended, as of `today` (defaults to today).
+
+    For the monthly close, scheduled on the 1st: that is always last month, regardless of how
+    many days the month before it had.
+    """
+    today = today or timezone.now().date()
+    last_day_of_previous_month = today.replace(day=1) - timedelta(days=1)
+    return f'{last_day_of_previous_month.year:04d}-{last_day_of_previous_month.month:02d}'
+
+
 def client_rows(start: date, end: date, location_id: str | None = None) -> list[dict]:
     """Every onboarded sub-account, with its mapping, rates and usage for the window.
 
@@ -1066,12 +1077,16 @@ def calculate_bills(month: str | None = None) -> dict:
     period: a client already billed for this period is left untouched, so re-running a month
     that has already been billed changes nothing. A client with nothing billable from either
     source in the period gets no bill at all — a zero bill is never created.
+
+    One client's failure is logged and counted, never allowed to end the run for the others: a
+    monthly run that stopped at the first bad client would leave every client after it unbilled.
     """
     start, end = month_window(month)
     period = f'{start.year:04d}-{start.month:02d}'
 
     created = 0
     already_billed = 0
+    failed = 0
     total_cents = 0
 
     for client in ClientMapping.objects.filter(active=True):
@@ -1079,7 +1094,24 @@ def calculate_bills(month: str | None = None) -> dict:
             already_billed += 1
             continue
 
-        bill = _bill_one_client(client, period, start, end)
+        try:
+            bill = _bill_one_client(client, period, start, end)
+        except Exception:
+            logger.warning(
+                'billing: could not calculate a bill for %s, %s',
+                client.location_id,
+                period,
+                exc_info=True,
+                extra={'context': {'location_id': client.location_id, 'period': period}},
+            )
+            recording.record(
+                'billing.calculate_failed',
+                location_id=client.location_id,
+                billing_period=period,
+            )
+            failed += 1
+            continue
+
         if bill is not None:
             created += 1
             total_cents += bill.total_cents
@@ -1089,6 +1121,7 @@ def calculate_bills(month: str | None = None) -> dict:
         'period': period,
         'bills_created': created,
         'already_billed': already_billed,
+        'failed': failed,
         'total_cents': total_cents,
     }
     recording.record('billing.calculate_run', billing_period=period, detail=result)
