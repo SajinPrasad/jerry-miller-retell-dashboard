@@ -274,6 +274,54 @@ class GHLOAuthService:
             json=payload,
         )
 
+    def users(self, location_id: str) -> list[dict]:
+        """Every user in one sub-account, as GoHighLevel holds them.
+
+        What the HCP onboarding flow maps Housecall Pro employees onto (`apps/hcp`). Needs
+        `users.readonly`, which `GHL_SCOPES` carries.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/users/get-users
+        """
+        body = self._request(
+            'GET',
+            '/users/',
+            token=self._location_token(location_id),
+            params={'locationId': location_id},
+        )
+        return body.get('users') or []
+
+    def calendars(self, location_id: str) -> list[dict]:
+        """Every calendar in one sub-account.
+
+        The list entries are what the HCP onboarding flow offers for selection; it filters them
+        down to `calendarType == 'round_robin'` itself, because that filtering is an HCP rule
+        (the SOP's two-round-robin-calendars prerequisite), not something GHL asks of callers.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/calendars/get-calendars
+        """
+        body = self._request(
+            'GET',
+            '/calendars/',
+            token=self._location_token(location_id),
+            params={'locationId': location_id},
+        )
+        return body.get('calendars') or []
+
+    def calendar(self, location_id: str, calendar_id: str) -> dict:
+        """One calendar in full, including its `teamMembers`.
+
+        Read by id rather than picked out of `calendars()` on purpose: the team roster is what
+        decides whether an appointment will be accepted later, and the single-calendar endpoint
+        is the documented place it is published. A list entry that happened to omit `teamMembers`
+        would otherwise read as "this calendar has no team", which is the wrong answer to act on.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/calendars/get-calendar
+        """
+        body = self._request(
+            'GET', f'/calendars/{calendar_id}', token=self._location_token(location_id)
+        )
+        return body.get('calendar') or {}
+
     def _location_token(self, location_id: str) -> str:
         """That sub-account's own token. A client the app was never installed on has none."""
         try:

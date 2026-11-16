@@ -845,3 +845,92 @@ def test_a_rejected_custom_value_write_says_why(service):
 def test_a_custom_value_write_for_a_sub_account_with_no_token_is_an_error(service):
     with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
         service.set_custom_value('loc1', 'cv_agent1', '')
+
+
+# --- the sub-account's users and calendars (read by the HCP onboarding flow) -------------------
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_users_lists_the_sub_accounts_users(service):
+    make_location('loc1')
+    listing = respx.get(f'{BASE}/users/').mock(
+        return_value=httpx.Response(200, json={'users': [{'id': 'user-1', 'name': 'Ana Ruiz'}]})
+    )
+
+    assert service.users('loc1') == [{'id': 'user-1', 'name': 'Ana Ruiz'}]
+    request = listing.calls.last.request
+    # The sub-account's own token: the agency token cannot read a sub-account's users.
+    assert request.headers['Authorization'] == 'Bearer loc1-access'
+    assert dict(request.url.params) == {'locationId': 'loc1'}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_users_is_empty_when_ghl_sends_no_list(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/users/').mock(return_value=httpx.Response(200, json={}))
+
+    assert service.users('loc1') == []
+
+
+@pytest.mark.django_db
+def test_reading_users_for_a_sub_account_with_no_token_is_an_error(service):
+    with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
+        service.users('loc1')
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_calendars_lists_every_calendar_unfiltered(service):
+    """Filtering to round-robin is an HCP rule, so it happens in `apps/hcp`, not here."""
+    make_location('loc1')
+    listing = respx.get(f'{BASE}/calendars/').mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                'calendars': [
+                    {'id': 'cal-est', 'calendarType': 'round_robin'},
+                    {'id': 'cal-mine', 'calendarType': 'personal'},
+                ]
+            },
+        )
+    )
+
+    assert [c['id'] for c in service.calendars('loc1')] == ['cal-est', 'cal-mine']
+    assert dict(listing.calls.last.request.url.params) == {'locationId': 'loc1'}
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_calendar_reads_one_calendars_team(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/calendars/cal-est').mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                'calendar': {
+                    'id': 'cal-est',
+                    'name': 'Design Consultation',
+                    'teamMembers': [{'userId': 'user-1'}],
+                }
+            },
+        )
+    )
+
+    calendar = service.calendar('loc1', 'cal-est')
+
+    assert calendar['name'] == 'Design Consultation'
+    assert calendar['teamMembers'] == [{'userId': 'user-1'}]
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_calendar_read_that_fails_says_why(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/calendars/cal-gone').mock(
+        return_value=httpx.Response(404, json={'message': 'calendar not found'})
+    )
+
+    with pytest.raises(GHLError, match='calendar not found'):
+        service.calendar('loc1', 'cal-gone')

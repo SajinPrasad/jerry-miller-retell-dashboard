@@ -115,6 +115,9 @@ GHL_SCOPES = env(
             'oauth.readonly',
             'oauth.write',
             'locations.readonly',
+            # Reads the sub-account's users, so HCP employees can be mapped onto them
+            # (`apps/hcp` onboarding).
+            'users.readonly',
             'contacts.readonly',
             'opportunities.readonly',
             'calendars.readonly',
@@ -151,6 +154,14 @@ FIELD_ENCRYPTION_KEY = env('FIELD_ENCRYPTION_KEY', default='')
 
 # Where the OAuth callback sends the browser afterwards (the React app).
 FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:5173')
+
+# Housecall Pro integration (`apps/hcp`). No global credential: each connected company has its
+# own admin-generated API key, stored encrypted on `HCPAccount.api_key`, so only the base URL and
+# timeout are configured here.
+HCP_API_BASE_URL = env('HCP_API_BASE_URL', default='https://api.housecallpro.com')
+HCP_REQUEST_TIMEOUT = env.int('HCP_REQUEST_TIMEOUT', default=30)
+# How many employees one `GET /employees` page asks for during onboarding.
+HCP_PAGE_SIZE = env.int('HCP_PAGE_SIZE', default=50)
 
 # Retell voice rebilling (Task 4). The same key verifies webhook signatures, so it must be the
 # API key carrying the webhook badge in the Retell dashboard.

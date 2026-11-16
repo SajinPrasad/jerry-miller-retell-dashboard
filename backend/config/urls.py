@@ -9,4 +9,5 @@ urlpatterns = [
     path('api/ghl/', include('apps.ghl.urls')),
     path('api/dashboards/', include('apps.dashboards.urls')),
     path('api/rebilling/', include('apps.rebilling.urls')),
+    path('api/hcp/', include('apps.hcp.urls')),
 ]
