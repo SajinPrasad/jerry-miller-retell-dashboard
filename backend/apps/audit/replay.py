@@ -40,6 +40,24 @@ def _replay_ghl(payload: dict) -> str:
     return 'synced' if sync_for_location_created(payload) else 'ignored'
 
 
+def _replay_hcp(payload: dict) -> str:
+    """Re-run an HCP delivery through the same task that first received it.
+
+    Called synchronously rather than queued: a replay is run by a person at a terminal who
+    wants to see what came of it, and `.delay()` would answer before anything happened.
+
+    `webhook_event_id` is left out on purpose - `replay()` already owns settling this event's
+    status, and letting the task settle it too would have the two disagree.
+    """
+    from apps.hcp.webhooks import task_for
+
+    task = task_for(str(payload.get('event') or ''))
+    if task is None:
+        return 'ignored'
+    outcome = task(payload)
+    return 'ignored' if outcome in {'ignored', 'skipped'} else outcome
+
+
 def _replay_card(payload: dict) -> str:
     from apps.rebilling.stripe_billing import handle_card_webhook
 
@@ -52,6 +70,7 @@ HANDLERS = {
     WebhookEvent.STRIPE: _replay_stripe,
     WebhookEvent.GHL: _replay_ghl,
     WebhookEvent.GHL_CARD: _replay_card,
+    WebhookEvent.HCP: _replay_hcp,
 }
 
 

@@ -322,6 +322,20 @@ class GHLOAuthService:
         )
         return body.get('calendar') or {}
 
+    def request_for_location(
+        self, method: str, path: str, location_id: str, version: str | None = None, **kwargs
+    ) -> dict:
+        """Any GHL request, sent with one sub-account's own token.
+
+        The seam `apps/hcp` writes through (`services/ghl_objects.py`). Exposed rather than
+        letting that app build its own `httpx` calls, so token minting, the `Version` header and
+        turning a non-2xx into a `GHLError` keep happening in exactly one place - the HCP sync
+        writes to half a dozen GHL endpoints, and a second request path is how those two drift.
+        """
+        return self._request(
+            method, path, token=self._location_token(location_id), version=version, **kwargs
+        )
+
     def _location_token(self, location_id: str) -> str:
         """That sub-account's own token. A client the app was never installed on has none."""
         try:
@@ -538,6 +552,10 @@ class GHLOAuthService:
         try:
             response = self.client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
+            # A successful DELETE answers 204, or 200 with nothing in it. That is a result, not
+            # a broken body, so it is `{}` rather than the parse error `.json()` would raise.
+            if not response.content:
+                return {}
             return response.json()
         except httpx.HTTPStatusError as exc:
             # GHL puts the real reason in the body; the status line alone isn't diagnosable.

@@ -125,6 +125,46 @@ class HCPClient:
         """
         return HCPCompany.from_payload(self._request('GET', '/company'))
 
+    def get_job(self, job_id: str) -> dict:
+        """One job in full.
+
+        The webhook body carries the job already, but not always completely - several
+        `job.*` events send a trimmed object. Re-reading makes every job handler work from the
+        same complete shape rather than one that depends on which event woke it.
+        """
+        return self._entity(self._request('GET', f'/jobs/{job_id}'), 'job')
+
+    def get_job_line_items(self, job_id: str) -> list[dict]:
+        """A job's line items, which is the list the reconciliation diffs against."""
+        return self._rows(self._request('GET', f'/jobs/{job_id}/line_items'), 'line_items')
+
+    def get_job_invoices(self, job_id: str) -> list[dict]:
+        return self._rows(self._request('GET', f'/jobs/{job_id}/invoices'), 'invoices')
+
+    def get_estimate(self, estimate_id: str) -> dict:
+        return self._entity(self._request('GET', f'/estimates/{estimate_id}'), 'estimate')
+
+    def get_customer(self, customer_id: str) -> dict:
+        return self._entity(self._request('GET', f'/customers/{customer_id}'), 'customer')
+
+    @staticmethod
+    def _entity(body: dict, key: str) -> dict:
+        """HCP nests a single entity under its own name on some endpoints and returns it flat on
+        others. Take whichever has an id.
+        """
+        nested = body.get(key)
+        if isinstance(nested, dict) and nested.get('id'):
+            return nested
+        return body
+
+    @staticmethod
+    def _rows(body: dict, key: str) -> list[dict]:
+        rows = body.get(key)
+        if not isinstance(rows, list):
+            # Some list endpoints answer `{"data": [...]}`; fall back before giving up.
+            rows = body.get('data')
+        return [row for row in rows if isinstance(row, dict)] if isinstance(rows, list) else []
+
     def get_employees(self) -> list[HCPEmployee]:
         """Every employee of the company, across however many pages HCP returns them in."""
         page_size = settings.HCP_PAGE_SIZE

@@ -1,9 +1,10 @@
 from django.urls import path
 
-from . import views
+from . import views, webhooks
 
 app_name = 'hcp'
 urlpatterns = [
+    path('webhooks/', webhooks.HCPWebhookView.as_view(), name='webhook'),
     path('accounts/', views.ConnectAccountView.as_view(), name='connect-account'),
     path(
         'accounts/<str:location_id>/status/',

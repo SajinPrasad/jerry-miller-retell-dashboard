@@ -16,11 +16,13 @@ class WebhookEvent(models.Model):
     STRIPE = 'stripe'
     GHL = 'ghl'
     GHL_CARD = 'ghl_card'
+    HCP = 'hcp'
     SOURCES = [
         (RETELL, 'Retell'),
         (STRIPE, 'Stripe'),
         (GHL, 'GoHighLevel'),
         (GHL_CARD, 'GoHighLevel card workflow'),
+        (HCP, 'Housecall Pro'),
     ]
 
     RECEIVED = 'received'
