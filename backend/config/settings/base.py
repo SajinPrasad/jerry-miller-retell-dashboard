@@ -28,6 +28,7 @@ INSTALLED_APPS = [
     'apps.ghl',
     'apps.dashboards',
     'apps.rebilling',
+    'apps.hcp',
 ]
 
 MIDDLEWARE = [
