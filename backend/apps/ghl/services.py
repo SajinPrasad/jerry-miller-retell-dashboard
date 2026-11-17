@@ -18,7 +18,9 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .exceptions import GHLError, GHLNotConnectedError
+from apps.common import backoff
+
+from .exceptions import GHLError, GHLNotConnectedError, GHLRateLimitError
 from .models import GHLOAuthToken
 
 logger = logging.getLogger(__name__)
@@ -51,10 +53,16 @@ def hidden_location_ids() -> set[str]:
 
 
 class GHLOAuthService:
-    def __init__(self, client: httpx.Client | None = None):
+    """`max_retries` is how many times a 429 is waited out and retried before it is raised.
+    Zero by default: a person at a screen is told instead. The HCP sync passes
+    `backoff.MAX_RETRIES`.
+    """
+
+    def __init__(self, client: httpx.Client | None = None, max_retries: int = 0):
         self.client = client or httpx.Client(
             base_url=settings.GHL_API_BASE_URL, timeout=settings.GHL_REQUEST_TIMEOUT
         )
+        self.max_retries = max_retries
 
     def install_url(self) -> str:
         params = {
@@ -546,6 +554,29 @@ class GHLOAuthService:
     def _request(
         self, method: str, path: str, token: str | None = None, version: str | None = None, **kwargs
     ) -> dict:
+        """One GHL call, waiting out a 429 up to `max_retries` times before raising it."""
+        attempt = 0
+        while True:
+            try:
+                return self._send(method, path, token, version, **kwargs)
+            except GHLRateLimitError as exc:
+                if attempt >= self.max_retries:
+                    raise
+                wait = backoff.wait_seconds(attempt, exc.retry_after)
+                logger.warning(
+                    'ghl: rate limited on %s %s; retry %s of %s in %.1fs',
+                    method,
+                    path,
+                    attempt + 1,
+                    self.max_retries,
+                    wait,
+                )
+                backoff.pause(wait)
+                attempt += 1
+
+    def _send(
+        self, method: str, path: str, token: str | None, version: str | None, **kwargs
+    ) -> dict:
         headers = {'Accept': 'application/json', 'Version': version or settings.GHL_API_VERSION}
         if token:
             headers['Authorization'] = f'Bearer {token}'
@@ -558,6 +589,11 @@ class GHLOAuthService:
                 return {}
             return response.json()
         except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise GHLRateLimitError(
+                    f'GHL {method} {path} was rate limited.',
+                    retry_after=_retry_after(exc.response),
+                ) from exc
             # GHL puts the real reason in the body; the status line alone isn't diagnosable.
             raise GHLError(
                 f'GHL {method} {path} failed: {exc.response.status_code} {exc.response.text[:500]}'
@@ -578,3 +614,18 @@ class GHLOAuthService:
     @staticmethod
     def _expires_at(data: dict):
         return timezone.now() + timedelta(seconds=int(data.get('expires_in', 0)))
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    """How long GHL asked us to wait, in seconds: `Retry-After`, else the interval its rate-limit
+    headers describe (`X-RateLimit-Interval-Milliseconds`). `None` when it sent neither, which
+    leaves the wait to the exponential schedule.
+    """
+    for header, scale in (('Retry-After', 1), ('X-RateLimit-Interval-Milliseconds', 1000)):
+        try:
+            seconds = float(response.headers.get(header, '')) / scale
+        except ValueError:
+            continue
+        if seconds >= 0:
+            return seconds
+    return None

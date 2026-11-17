@@ -36,4 +36,9 @@ urlpatterns = [
         views.CalendarSettingsView.as_view(),
         name='calendar-settings',
     ),
+    path(
+        'accounts/<str:location_id>/activate/',
+        views.ActivateView.as_view(),
+        name='activate',
+    ),
 ]

@@ -14,6 +14,18 @@ from django.db.models import Q
 
 from apps.common.encryption import EncryptedTextField
 
+# Values for `HCPAccount.backfill_status`.
+BACKFILL_IDLE = 'idle'
+BACKFILL_RUNNING = 'running'
+BACKFILL_COMPLETED = 'completed'
+BACKFILL_FAILED = 'failed'
+BACKFILL_STATUSES = [
+    (BACKFILL_IDLE, 'Idle'),
+    (BACKFILL_RUNNING, 'Running'),
+    (BACKFILL_COMPLETED, 'Completed'),
+    (BACKFILL_FAILED, 'Failed'),
+]
+
 # Values for `Job.source` / `JobLineItem.source`: which system created the record.
 SOURCE_HCP = 'hcp'
 SOURCE_GHL = 'ghl'
@@ -50,6 +62,15 @@ class HCPAccount(models.Model):
     timezone = models.CharField(max_length=100, blank=True, default='')
     # Flipped on only once onboarding (Phase 2) completes employee mapping and calendar setup.
     is_active = models.BooleanField(default=False)
+    # Where the activation backfill (`services/backfill.py`) has got to: `backfill_stage` is the
+    # stage running (or that stopped), `backfill_progress` the per-stage outcome counts so far,
+    # e.g. {'customers': {'synced': 40}}. Only the status and these two are kept - enough for a
+    # page to show progress and to refuse a second `activate` while one is running.
+    backfill_status = models.CharField(
+        max_length=20, choices=BACKFILL_STATUSES, default=BACKFILL_IDLE
+    )
+    backfill_stage = models.CharField(max_length=20, blank=True, default='')
+    backfill_progress = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

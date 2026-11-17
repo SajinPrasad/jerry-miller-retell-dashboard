@@ -19,12 +19,14 @@ Docs: https://docs.housecallpro.com/docs/housecall-public-api
 """
 
 import logging
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import Any
 
 import httpx
 from django.conf import settings
 
+from apps.common import backoff
 from apps.hcp.exceptions import HCPAuthError, HCPError, HCPRateLimitError
 
 logger = logging.getLogger(__name__)
@@ -34,8 +36,8 @@ logger = logging.getLogger(__name__)
 INVALID_KEY_STATUSES = frozenset({401, 403})
 TOO_MANY_REQUESTS = 429
 
-# A page count no onboarding read should ever reach. A guard, not a limit: HCP paginates
-# `GET /employees`, and a malformed page counter must not spin this loop forever.
+# A page count no read should ever reach. A guard, not a limit: HCP paginates its list
+# endpoints, and a malformed page counter must not spin the loop forever.
 MAX_PAGES = 200
 
 
@@ -109,10 +111,15 @@ class HCPClient:
     `client` is injectable so tests (and anything that wants connection reuse across several
     calls) can hand in their own `httpx.Client`; left out, one is built per instance against
     `HCP_API_BASE_URL` with `HCP_REQUEST_TIMEOUT`.
+
+    `max_retries` is how many times a 429 is waited out and retried before it is raised. Zero
+    by default: onboarding is a person at a screen, who is told and can click again. The
+    background sync and backfill pass `backoff.MAX_RETRIES`.
     """
 
-    def __init__(self, api_key: str, client: httpx.Client | None = None):
+    def __init__(self, api_key: str, client: httpx.Client | None = None, max_retries: int = 0):
         self.api_key = api_key
+        self.max_retries = max_retries
         self.client = client or httpx.Client(
             base_url=settings.HCP_API_BASE_URL, timeout=settings.HCP_REQUEST_TIMEOUT
         )
@@ -146,6 +153,18 @@ class HCPClient:
 
     def get_customer(self, customer_id: str) -> dict:
         return self._entity(self._request('GET', f'/customers/{customer_id}'), 'customer')
+
+    def iter_customers(self) -> Iterator[dict]:
+        return self._paged('/customers', 'customers')
+
+    def iter_leads(self) -> Iterator[dict]:
+        return self._paged('/leads', 'leads')
+
+    def iter_estimates(self) -> Iterator[dict]:
+        return self._paged('/estimates', 'estimates')
+
+    def iter_jobs(self) -> Iterator[dict]:
+        return self._paged('/jobs', 'jobs')
 
     def get_job_appointments(self, job_id: str) -> list[dict]:
         """Every appointment on one job - the Phase 4 job-appointment push reads this when it
@@ -224,40 +243,70 @@ class HCPClient:
 
     def get_employees(self) -> list[HCPEmployee]:
         """Every employee of the company, across however many pages HCP returns them in."""
+        employees = (
+            HCPEmployee.from_payload(row) for row in self._paged('/employees', 'employees')
+        )
+        return [employee for employee in employees if employee is not None]
+
+    def _paged(self, path: str, key: str) -> Iterator[dict]:
+        """Every row of a paged HCP list, one page at a time.
+
+        Lazy, so a backfill starts mapping the first page while the rest is still unread.
+        Deduplicated by id: HCP's paging is offset-based, so a record added between two page
+        reads shifts the window and can hand the same row back twice.
+        """
         page_size = settings.HCP_PAGE_SIZE
-        employees: list[HCPEmployee] = []
         seen: set[str] = set()
 
         for page in range(1, MAX_PAGES + 1):
-            body = self._request('GET', '/employees', params={'page': page, 'page_size': page_size})
-            rows = body.get('employees')
+            body = self._request('GET', path, params={'page': page, 'page_size': page_size})
+            rows = body.get(key)
             if not isinstance(rows, list) or not rows:
-                break
+                return
 
             for row in rows:
                 if not isinstance(row, dict):
                     continue
-                employee = HCPEmployee.from_payload(row)
-                # Deduplicated by id: HCP's paging is offset-based, so an employee added between
-                # two page reads shifts the window and can hand the same row back twice.
-                if employee is not None and employee.id not in seen:
-                    seen.add(employee.id)
-                    employees.append(employee)
+                row_id = _text(row.get('id'))
+                if row_id:
+                    if row_id in seen:
+                        continue
+                    seen.add(row_id)
+                yield row
 
             total_pages = body.get('total_pages')
             if isinstance(total_pages, int) and page >= total_pages:
-                break
+                return
             # No `total_pages` in the body: a short page is the end of the list.
             if len(rows) < page_size:
-                break
-        else:
-            logger.warning('hcp: stopped reading employees at the %s-page guard', MAX_PAGES)
+                return
 
-        return employees
+        logger.warning('hcp: stopped reading %s at the %s-page guard', path, MAX_PAGES)
 
     # --- HCP calls -----------------------------------------------------------------------
 
     def _request(self, method: str, path: str, **kwargs) -> dict:
+        """One HCP call, waiting out a 429 up to `max_retries` times before raising it."""
+        attempt = 0
+        while True:
+            try:
+                return self._send(method, path, **kwargs)
+            except HCPRateLimitError as exc:
+                if attempt >= self.max_retries:
+                    raise
+                wait = backoff.wait_seconds(attempt, exc.retry_after)
+                logger.warning(
+                    'hcp: rate limited on %s %s; retry %s of %s in %.1fs',
+                    method,
+                    path,
+                    attempt + 1,
+                    self.max_retries,
+                    wait,
+                )
+                backoff.pause(wait)
+                attempt += 1
+
+    def _send(self, method: str, path: str, **kwargs) -> dict:
         headers = {
             'Accept': 'application/json',
             # `Token`, not `Bearer`: HCP's own scheme for these static per-company keys.
@@ -266,7 +315,9 @@ class HCPClient:
         try:
             response = self.client.request(method, path, headers=headers, **kwargs)
             response.raise_for_status()
-            body = response.json()
+            # A successful DELETE answers 204, or 200 with nothing in it. That is a result,
+            # not a broken body, so it is `{}` rather than the parse error `.json()` would raise.
+            body = response.json() if response.content else {}
         except httpx.TimeoutException as exc:
             raise HCPError(f'HCP {method} {path} timed out.') from exc
         except httpx.HTTPStatusError as exc:

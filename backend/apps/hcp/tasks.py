@@ -13,12 +13,15 @@ is fixed, which works because every handler is an upsert.
 
 import logging
 
-from celery import shared_task
+from celery import chain, shared_task
+from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 
 from apps.audit import recording
 from apps.audit.models import WebhookEvent
 from apps.hcp import constants
 from apps.hcp.models import HCPAccount, Job
+from apps.hcp.services import backfill
 from apps.hcp.services.sync import IGNORED, SKIPPED, HCPToGHLSync
 
 logger = logging.getLogger(__name__)
@@ -132,3 +135,41 @@ def sync_job_appointment(payload: dict, webhook_event_id: int | None = None) -> 
         return sync.sync_job_appointment(_entity(body, 'job'), appointment)
 
     return _run(webhook_event_id, payload, handle)
+
+
+# --- activation: the historical backfill ------------------------------------------------------
+
+
+def start_backfill(location_id: str) -> None:
+    """Queue the four backfill stages in order, then the activation that follows them.
+
+    A chain, so a stage that raises stops everything after it and the account stays inactive.
+    Starting it again is safe: every stage is an upsert.
+    """
+    started_at = timezone.now().isoformat()
+    chain(
+        *(backfill_stage.si(location_id, stage) for stage in backfill.STAGES),
+        finish_backfill.si(location_id, started_at),
+    ).delay()
+
+
+@shared_task
+def backfill_stage(location_id: str, stage: str) -> dict:
+    """One stage. If it aborts the backfill is marked `failed` - the chain stops with it, so
+    nothing else would - and `activate` may be called again."""
+    account = HCPAccount.objects.get(location_id=location_id)
+    try:
+        return backfill.Backfill(account).run_stage(stage)
+    except Exception:
+        backfill.mark_failed(location_id)
+        raise
+
+
+@shared_task
+def finish_backfill(location_id: str, started_at: str) -> dict:
+    account = HCPAccount.objects.get(location_id=location_id)
+    try:
+        return backfill.activate(account, parse_datetime(started_at))
+    except Exception:
+        backfill.mark_failed(location_id)
+        raise

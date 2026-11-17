@@ -26,6 +26,7 @@ import logging
 
 from django.db import transaction
 
+from apps.common import backoff
 from apps.ghl.exceptions import GHLError
 from apps.ghl.services import GHLOAuthService
 from apps.hcp.constants import (
@@ -84,7 +85,7 @@ class HCPToGHLSync:
         self.account = account
         self.location_id = account.location_id
         self.ghl = ghl or GHLObjects(account.location_id, service=service)
-        self.hcp = hcp or HCPClient(account.api_key)
+        self.hcp = hcp or HCPClient(account.api_key, max_retries=backoff.MAX_RETRIES)
 
     # --- customers ---------------------------------------------------------------------
 

@@ -19,14 +19,15 @@ from rest_framework.views import APIView
 
 from apps.ghl import sso
 from apps.ghl.exceptions import GHLError
+from apps.hcp import tasks
 from apps.hcp.exceptions import HCPAuthError, HCPConfigurationError, HCPError, HCPRateLimitError
-from apps.hcp.models import HCPAccount
+from apps.hcp.models import BACKFILL_RUNNING, HCPAccount
 from apps.hcp.serializers import (
     CalendarSettingsSerializer,
     ConnectAccountSerializer,
     EmployeeMappingsSerializer,
 )
-from apps.hcp.services import onboarding
+from apps.hcp.services import backfill, onboarding
 
 logger = logging.getLogger(__name__)
 
@@ -227,3 +228,31 @@ class CalendarSettingsView(_HCPView):
             return _ghl_failure('calendar settings')
 
         return Response(onboarding.onboarding_status(location_id))
+
+
+class ActivateView(_HCPView):
+    """POST /api/hcp/accounts/<location_id>/activate/: step 4, backfill history and go live.
+
+    Answers 202 straight away: the backfill can take hours on a large account, so it runs in
+    the background and the account only turns `active` when it has finished. Until then the
+    status reads `backfilling`, with the stage and counts so far.
+
+    409 while a backfill is already running. A `failed` one may be started again.
+    """
+
+    def post(self, request, location_id):
+        self.guard(request, location_id)
+        account = self.account(location_id)
+        if account.backfill_status == BACKFILL_RUNNING:
+            return Response(
+                {'detail': 'The backfill is already running.', 'code': 'backfill_running'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            onboarding.check_ready_to_activate(location_id)
+        except HCPConfigurationError as exc:
+            return _configuration_failure(exc)
+
+        backfill.mark_running(account)
+        tasks.start_backfill(location_id)
+        return Response(onboarding.onboarding_status(location_id), status=status.HTTP_202_ACCEPTED)

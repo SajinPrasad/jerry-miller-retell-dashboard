@@ -10,11 +10,15 @@ from its own documentation (`local_folder/hcp_plan.md`, Open Question 1): third-
 disagree on both the header name and the algorithm, and the reference project verifies nothing
 at all. Rather than implement a guess that would look like security without being any, this
 endpoint accepts the delivery, records it, and acts only on payloads whose `company_id` matches
-an account that is already connected *and* activated. An attacker who knows a company id can
-therefore cause a mirror of data they would have to already have; they cannot reach another
-sub-account or write anything of their own choosing. This is a known, temporary gap, tracked as
-Open Question 1 in `local_folder/hcp_plan.md`; it closes the moment the real scheme is
-confirmed against a live delivery.
+an account that is already connected *and* activated.
+
+That is a weak gate, and the risk should be read as it is: a company id is an identifier, not a
+secret. Anyone who knows an active company's id can POST a payload of their own making, and the
+handlers write its fields into that client's GHL contacts, custom-object records and calendar.
+The id does confine the writes to that one sub-account. It does nothing about what they say.
+
+Accepted as a known pre-production risk, to be closed by confirming the real signing scheme
+against a live delivery (Open Question 1). Do not ship to a client on real data before then.
 """
 
 import json

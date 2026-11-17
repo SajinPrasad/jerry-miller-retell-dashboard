@@ -21,6 +21,7 @@ takes effect without a restart, and a run is short.
 
 import logging
 
+from apps.common import backoff
 from apps.ghl.exceptions import GHLError
 from apps.ghl.services import GHLOAuthService
 from apps.hcp.constants import HCP_CUSTOMER_ID_FIELD, HCP_CUSTOMER_NOTE_FIELD
@@ -42,7 +43,7 @@ class GHLObjects:
 
     def __init__(self, location_id: str, service: GHLOAuthService | None = None):
         self.location_id = location_id
-        self.service = service or GHLOAuthService()
+        self.service = service or GHLOAuthService(max_retries=backoff.MAX_RETRIES)
         self._object_ids: dict[str, str] | None = None
         self._association_ids: dict[tuple[str, str], str] | None = None
         self._contact_fields: dict[str, str] | None = None

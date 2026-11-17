@@ -9,7 +9,8 @@ Steps"):
    user, one-to-one in both directions.
 3. **Configure calendars** - pick the two round-robin calendars (one for estimates, one for
    jobs) and the fallback users, *and prove every mapped user is on both calendar teams*.
-4. **Activate** - Phase 2 stops before this; `is_active` is flipped by the backfill step.
+4. **Activate** - `check_ready_to_activate` gates it; the backfill (`services/backfill.py`)
+   pulls the company's history and then flips `is_active`.
 
 Step 3's team check is the reason this module exists rather than the views doing it inline. The
 SOP is explicit that a user missing from a calendar team does not fail loudly: GHL rejects that
@@ -24,7 +25,12 @@ from django.db import IntegrityError, transaction
 
 from apps.ghl.services import GHLOAuthService
 from apps.hcp.exceptions import HCPConfigurationError
-from apps.hcp.models import HCPAccount, HCPCalendarSettings, HCPEmployeeMapping
+from apps.hcp.models import (
+    BACKFILL_RUNNING,
+    HCPAccount,
+    HCPCalendarSettings,
+    HCPEmployeeMapping,
+)
 from apps.hcp.services.hcp_client import HCPClient
 
 logger = logging.getLogger(__name__)
@@ -38,6 +44,7 @@ NOT_CONNECTED = 'not_connected'
 NEEDS_EMPLOYEE_MAPPING = 'needs_employee_mapping'
 NEEDS_CALENDAR_SETTINGS = 'needs_calendar_settings'
 READY_TO_ACTIVATE = 'ready_to_activate'
+BACKFILLING = 'backfilling'
 ACTIVE = 'active'
 
 
@@ -376,6 +383,28 @@ def _team_member_ids(calendar: dict) -> set[str]:
     }
 
 
+# --- activation -------------------------------------------------------------------------------
+
+
+def check_ready_to_activate(location_id: str) -> None:
+    """Raise `HCPConfigurationError` unless every earlier onboarding step is complete.
+
+    Activation pulls the company's whole history through the employee mappings and calendar
+    settings, so running it before they exist would book appointments against nothing.
+    """
+    state = onboarding_status(location_id)['state']
+    if state == READY_TO_ACTIVATE:
+        return
+    reasons = {
+        NOT_CONNECTED: 'Connect Housecall Pro first.',
+        NEEDS_EMPLOYEE_MAPPING: 'Map the Housecall Pro employees first.',
+        NEEDS_CALENDAR_SETTINGS: 'Configure the calendars first.',
+        BACKFILLING: 'The backfill is already running.',
+        ACTIVE: 'This account is already active.',
+    }
+    raise HCPConfigurationError(reasons[state])
+
+
 # --- status -----------------------------------------------------------------------------------
 
 
@@ -391,6 +420,7 @@ def onboarding_status(location_id: str) -> dict:
             'location_id': location_id,
             'state': NOT_CONNECTED,
             'is_active': False,
+            'backfill': None,
             'account': None,
             'employee_mappings': [],
             'calendar_settings': None,
@@ -406,6 +436,8 @@ def onboarding_status(location_id: str) -> dict:
 
     if account.is_active:
         state = ACTIVE
+    elif account.backfill_status == BACKFILL_RUNNING:
+        state = BACKFILLING
     elif not mappings:
         state = NEEDS_EMPLOYEE_MAPPING
     elif not configured:
@@ -417,6 +449,12 @@ def onboarding_status(location_id: str) -> dict:
         'location_id': location_id,
         'state': state,
         'is_active': account.is_active,
+        # Where the activation backfill is; `progress` is per-stage outcome counts so far.
+        'backfill': {
+            'status': account.backfill_status,
+            'stage': account.backfill_stage,
+            'progress': account.backfill_progress,
+        },
         'account': {
             # Never the API key. It is a credential, and nothing on the page needs to read it
             # back - a replacement is pasted in whole.

@@ -28,12 +28,14 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `feat/hcp-integration`, at `1a20914` — the Housecall Pro integration (§6A), Phases 1-3
-built. All code is committed; the only uncommitted change is this documentation pass itself
-(`handover.md` and `CLAUDE.md`, 17 Nov 2026), held for approval. **Nothing on this branch has been
-pushed**; every HCP commit is local only, by instruction. `main` is at `6c22760` and is a direct
-ancestor of this branch, so nothing on `main` is missing from here. Do not commit or push unless
-asked.
+**Branch.** `feat/hcp-integration`, last commit `ac4a8ef` — the Housecall Pro integration (§6A).
+Phases 1-4 are committed (`68eb69c`, `17df1bd`, `1a20914`, `e3f10b3`, then a docs commit). **On top
+of that, uncommitted in the working tree:** activate-and-backfill (§6A.7) and Phase 5's rate-limit
+backoff (§6A.9), with their tests, plus this file. **Nothing on this branch has been pushed**;
+every HCP commit is local only, by instruction. `main` has moved on to `973d6bd` (a SaaS client
+count endpoint, `feat(ghl)`), one commit this branch does not contain; the two are otherwise
+the same history. Do not commit or push unless asked. `CLAUDE.md` on this branch still describes
+Phases 1-3 and was not updated in this pass.
 
 > **The docs commit for `6c22760` is not on `main`.** `a6bf36a`
 > ("docs: update CLAUDE.md and handover.md for automated billing schedule") was written on
@@ -83,6 +85,17 @@ asked.
 
 *On `feat/hcp-integration` (local only, never pushed):*
 
+- **Uncommitted: activate-and-backfill and Phase 5 backoff.** `POST /api/hcp/accounts/<location_id>/activate/`
+  queues a Celery chain that pulls a company's customers, leads, estimates and jobs through the
+  same handlers the webhook uses, then flips `is_active` and replays the deliveries held back
+  meanwhile (§6A.7). A 429 from HCP or GHL is now waited out and retried by the HCP sync paths
+  (§6A.9), and `HCPClient` accepts the empty 204 a delete answers with. `HCPAccount` now records the
+  backfill's status, stage and progress (migration `0002`), so a second `activate` while one runs
+  is a 409 and `GET .../status/` reads `backfilling`. 54 new tests (980 total).
+- `e3f10b3` — **HCP Phase 4: GHL → HCP reverse sync.** `POST /api/hcp/webhooks/ghl/`, Ed25519-
+  verified, drives contacts (two-way, address create-only), leads/estimates/jobs (create-only),
+  job line items (two-way) and appointments (time and mapped technician only). 95 new tests. See
+  §6A.8.
 - `1a20914` — **HCP Phase 3: the inbound webhook, the event dispatch table and the entity
   handlers.** `POST /api/hcp/webhooks/` records every delivery through `apps.audit` before acting
   on it, queues a Celery task and answers 200. Customer, lead, estimate, job, job-line-item and
@@ -215,13 +228,14 @@ asked.
 - Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
   — Twilio minutes are no longer billed or shown anywhere, behind `TWILIO_BILLING_ENABLED`.
 
-**Test status (run on 17 Nov 2026 at `1a20914`, working tree clean):**
+**Test status (run on 17 Nov 2026 on `feat/hcp-integration`):**
 
-- Backend: `pytest`: **831 passed** (555 at `68eb69c`, 661 at `17df1bd`, 831 at `1a20914` — the
-  HCP phases added 30, 106 and 231 tests respectively, with zero regressions at each step).
-- Frontend: `npm test -- --run`: **112 passed**, 3 files.
-- `ruff check .` and `ruff format --check .`: clean (125 files).
-- `manage.py makemigrations --check --dry-run`: "No changes detected".
+- Backend: `pytest`: **926 passed** at `ac4a8ef` (the baseline before this pass), **980 passed**
+  with the uncommitted activation, backfill and backoff work (54 new tests, no regressions).
+- Frontend: `npm test -- --run`: **112 passed**, 3 files, as recorded at `1a20914`; **not re-run**
+  in this pass, which touched no frontend file.
+- `ruff check .` and `ruff format --check .`: clean (140 files).
+- `manage.py makemigrations --check --dry-run`: "No changes detected". `manage.py check`: clean.
 
 **Stripe charging has run live** (settled facts above): the single account, the registered
 webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have
@@ -233,9 +247,8 @@ bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script)
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table. On the
-HCP side (§6A): the activate-and-backfill step that closes onboarding, the GHL → HCP reverse sync,
-and every phase after it in `local_folder/hcp_plan.md`. There is **no frontend for HCP at all** —
-Phases 1-3 are backend and API only.
+HCP side (§6A.10): the conflict-resolution half of Phase 5, per-record sync state, alerting and the
+rollout. There is **no frontend for HCP at all** — Phases 1-5 are backend and API only.
 
 **Not merged into `main`:**
 
@@ -303,7 +316,7 @@ Twilio field. **The product is Retell AI minutes only.**
 | 2 | Agency dashboard: MRR, live clients, leads by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (the `client-dashboard` feature folder is empty) |
 | 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8, 10 built, and the monthly run is now automatic (`6c22760`).** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
-| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-3 built** on `feat/hcp-integration` (local, unpushed): models, onboarding API, inbound webhook and entity handlers. Backend only — no UI. Activate-and-backfill, the reverse GHL → HCP sync and everything after it are not started |
+| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-4 built, activation/backfill and Phase 5 backoff in the working tree** on `feat/hcp-integration` (local, unpushed): models, onboarding API including activation, both webhooks, both sync directions, rate-limit backoff. Backend only — no UI. Conflict resolution, alerting and rollout are not started |
 
 Task 5 was not in the original four-task brief; it arrived separately and is planned in
 `local_folder/hcp_plan.md`. It shares `apps/ghl`'s OAuth service and `apps/audit`'s webhook
@@ -342,9 +355,11 @@ dashboard/
                               retry_failed_charges, backfill_default_rates, verify_live_billing(_cleanup)
         migrations/           0001 to 0009 (see §6.2)
         tests/                one module per concern, plus conftest.py (shared guards)
-      hcp/                  Task 5: Housecall Pro -> GoHighLevel sync (§6A). Phases 1-3
+      hcp/                  Task 5: Housecall Pro -> GoHighLevel sync (§6A). Phases 1-5 (part)
         models.py  constants.py  exceptions.py  serializers.py  views.py  urls.py  webhooks.py  tasks.py
-        services/             hcp_client.py, onboarding.py, sync.py, mapping.py, ghl_objects.py
+        ghl_webhooks.py  reverse_tasks.py
+        services/             hcp_client.py, onboarding.py, backfill.py, sync.py, mapping.py,
+                              ghl_objects.py, reverse_sync.py, reverse_mapping.py
         migrations/           0001_initial
         tests/                one module per concern, plus conftest.py and fixtures.py
       dashboards/           Tasks 2-3: EMPTY scaffold
@@ -671,7 +686,7 @@ them. Do not apply Retell's rounding rule to Twilio.
 `0006_bill_charged_at_and_failure_reason`, `0007_bill_retry_schedule`,
 `0008_client_mapping_card_requested_at`, `0009_client_mapping_voice_routing` — nine in all. The
 other apps: `apps/audit` has `0001_initial` and `0002_alter_webhookevent_source` (the second adds
-the `hcp` source, `1a20914`), and `apps/hcp` has `0001_initial` (§6A.4). After any model change,
+the `hcp` source, `1a20914`), and `apps/hcp` has `0001_initial` and `0002_account_backfill_state` (§6A.4). After any model change,
 `makemigrations --check --dry-run` must report "No changes detected".
 
 `0006` is written defensively. Another branch (`feat/ghl-billing-with-stripe-fallback`) also adds a
@@ -1210,7 +1225,7 @@ can work.
 
 ---
 
-## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-3 built)
+## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-4 built; activation and Phase 5 backoff uncommitted)
 
 **On `feat/hcp-integration` only, local and unpushed.** Everything in this section is in
 `backend/apps/hcp/` and none of it is on `main` yet. The plan it follows, with its open
@@ -1228,8 +1243,9 @@ the matching GoHighLevel sub-account — contacts for customers, custom-object r
 round-robin calendar appointments for scheduling — so the GHL side can run marketing and
 automations off real job data.
 
-It is **one-way, HCP → GHL**, in the built phases. The reverse direction is a later phase and is
-not started.
+It is **asymmetric two-way**: everything flows HCP → GHL (§6A.3, §6A.5), and a small, deliberate
+part flows back GHL → HCP (§6A.8) — HCP is the system of record for anything it has declared
+itself primary for.
 
 **No tie-in to rebilling.** Job and invoice amounts are mirrored as display data. Nothing here
 feeds `apps/rebilling`, creates a bill, or touches Stripe.
@@ -1247,7 +1263,7 @@ Four steps, in the SOP's own order, in `apps/hcp/services/onboarding.py`. The st
    user, one-to-one in **both** directions (`HCPEmployeeMapping`'s double-unique constraint).
 3. **Configure calendars.** Pick the estimate and job round-robin calendars and the fallback
    users, and prove every mapped GHL user is on **both** calendar teams.
-4. **Activate.** Not built — see §6A.7.
+4. **Activate.** Pulls the company's history, then switches the account on — see §6A.7.
 
 **HCP has no OAuth.** The credential is a static API key an admin generates in the HCP UI
 (My Apps → API Key Management) and is shown once. It travels as `Authorization: Token {api_key}`,
@@ -1297,10 +1313,14 @@ check, and deliberately **not** recorded — one row per URL check would bury th
 from its own documentation (`hcp_plan.md`, Open Question 1): third-party guides disagree on both
 the header name and the algorithm, and the reference project verifies nothing at all. Rather than
 ship a guess that looks like security without being any, the endpoint acts only on payloads whose
-`company_id` matches an account that is already connected **and** activated. An attacker who knows
-a company id can cause a mirror of data they would have to already have; they cannot reach another
-sub-account or write anything of their own choosing. **Closing this needs one real webhook delivery
-pulled from a live HCP account** — see §15 and §16.
+`company_id` matches an account that is already connected **and** activated. **That is a weak
+gate, and it should be read as one:** a company id is an identifier, not a secret, and the
+handlers write the payload's fields straight into that client's GHL contacts, records and
+calendar. Anyone who knows an active company's id can post data of their own making into that one
+sub-account — the id confines *where* they can write, not *what*. Accepted as a known
+pre-production risk (decided 17 Nov 2026); do not run it against a client's real data until the
+signing scheme is confirmed. **Closing this needs one real webhook delivery pulled from a live
+HCP account** — see §15 and §16.
 
 **Events are HCP's vocabulary, not ours**, and live in `apps/hcp/constants.py`. They are
 transcribed from the reference project's own `hcp_webhook` view, which is effectively the only
@@ -1318,7 +1338,7 @@ An event type nothing handles is recorded, marked `IGNORED`, and answered 200 �
 
 **An inactive account's events are recorded and ignored, not applied.** A live event landing ahead
 of the historical records it belongs with would be worse than a gap. They are kept as deliveries,
-so replay applies them once the activate-and-backfill step exists (§6A.7).
+so they can be applied once the account is active: activation replays them itself (§6A.7).
 
 ### 6A.4 The models (Phase 1, `68eb69c`)
 
@@ -1328,7 +1348,7 @@ Thirteen, in `apps/hcp/models.py`, migration `0001_initial`. `location_id` is a 
 
 | Model | What it holds |
 |---|---|
-| `HCPAccount` | One connected HCP company ↔ one GHL sub-account. Encrypted `api_key`, `is_active` |
+| `HCPAccount` | One connected HCP company ↔ one GHL sub-account. Encrypted `api_key`, `is_active`, and the activation backfill's `backfill_status` (`idle`/`running`/`completed`/`failed`), `backfill_stage` and `backfill_progress` (per-stage outcome counts; migration `0002`) |
 | `HCPEmployeeMapping` | One HCP employee ↔ one GHL user, per location. Unique in **both** directions |
 | `HCPCalendarSettings` | The estimate and job round-robin calendars and their fallback users |
 | `IntegratedContact` | An HCP customer ↔ a GHL contact |
@@ -1407,15 +1427,134 @@ without a restart.
   (30), `HCP_PAGE_SIZE` (50). There is **no account-wide HCP credential** — the key is per company
   and lives encrypted in the database, so none of it is in `.env`.
 
-### 6A.7 What is not built
+### 6A.7 Activation and the backfill (Phase 2 step 4; uncommitted)
 
-- **Step 4 of onboarding: activate and backfill.** `is_active` is never flipped, so a connected
-  account records events and applies none of them. This is the gap between what exists and a
-  working integration.
-- **The reverse direction, GHL → HCP**, and every phase after it in `hcp_plan.md` (conflict
-  resolution and rate limits, observability, alerting, rollout).
-- **Any UI.** The endpoints exist; no screen calls them.
-- **Webhook authenticity** (§6A.3, §15, §16).
+`POST /api/hcp/accounts/<location_id>/activate/`, behind the same GHL SSO session as the other
+onboarding endpoints (agency scope any sub-account, a sub-account only its own). It answers
+**202** with the onboarding status and does the work in the background.
+
+- **Gate.** `onboarding.check_ready_to_activate` requires the state to be `ready_to_activate`;
+  otherwise 400 with a plain reason (connect first, map employees first, configure calendars first,
+  already active). A call while `backfill_status` is `running` is a **409** (`code:
+  backfill_running`); one after `failed` is allowed and starts clean.
+- **The chain.** `tasks.start_backfill` queues a Celery chain: four `backfill_stage` tasks
+  (customers → leads → estimates → jobs, the dependency order) and then `finish_backfill`.
+  `services/backfill.py::Backfill.run_stage` reads each list from HCP (`HCPClient.iter_customers`,
+  `iter_leads`, `iter_estimates`, `iter_jobs`, paged lazily and de-duplicated by id) and feeds every
+  record through `HCPToGHLSync` — **the same handlers the webhook uses**, one code path per entity.
+  A job additionally reconciles its line items and books each of its appointments; its line items
+  are **read from HCP, not taken from the list row**, because reconciliation deletes whatever is
+  missing and an empty list there could mean "none" or "not included". An estimate books its own
+  appointment inside `sync_estimate`.
+- **The account stays `is_active=False` for the whole backfill, on purpose.** A live event applied
+  mid-way could land ahead of the customer or estimate it belongs to. So both webhooks record and
+  ignore meanwhile.
+- **Backfill state lives on `HCPAccount`.** `activate` sets `backfill_status='running'` and clears
+  stage and progress before queuing the chain. Each stage records `backfill_stage` as it starts and
+  its outcome counts in `backfill_progress` (every 25 records and at the end), so
+  `GET /status/` returns `state: "backfilling"` and `backfill: {status, stage, progress}` — the
+  data a progress screen needs. A stage that aborts, or a failing `finish_backfill`, sets
+  `failed`; `finish_backfill` succeeding sets `completed` and `is_active=True` in one save. A
+  `failed` account reads `ready_to_activate` again, with `backfill.status == "failed"` and the
+  stage it stopped at.
+- **Switching on.** `backfill.activate` sets `is_active=True`, then replays every HCP delivery for
+  that company that was recorded `ignored` since activation started, oldest first, through
+  `apps.audit.replay` (each replay is itself audited). One replay failing is counted and the rest
+  still run. GHL-side deliveries recorded in the window are **not** replayed: nearly all are echoes
+  of the backfill's own writes, but a genuine human edit in GHL during the backfill is not carried
+  to HCP.
+- **Failure behaviour.**
+  - A record HCP or GHL refuses (`HCPError`, `GHLError`) is counted as `failed`, logged at WARNING
+    with its id (so it lands in `ErrorLog`), and the stage carries on. The per-stage counts are the
+    task's result, kept in `TaskRun`.
+  - A rejected API key, a 429 from HCP **or GHL** that outlasts the backoff (§6A.9), or any other
+    exception stops the stage; the chain stops with it, the backfill is marked `failed` and the
+    account stays inactive. Run `activate` again — every stage is an upsert.
+  - **Activation goes ahead even when some records `failed`.** There is no per-record sync-state
+    table to retry from (Phase 1 left `SyncState` out, Open Question 6), so such a record is only
+    repaired by the next HCP event for that entity.
+- **Known limits.** The double-activate guard is the `running` status, not a lock: if a worker is
+  killed mid-backfill no task runs to set `failed`, the status stays `running` and `activate`
+  answers 409 until someone resets `backfill_status` by hand (Django admin or shell). A replayed
+  held delivery can be older than the
+  backfill's own read of the same entity and overwrite it with the older state until the next
+  event. Pacing is strictly one record at a time per account, which is the "conservative backfill
+  pacing" accepted for Open Question 6; nothing sleeps between records beyond the 429 backoff.
+
+### 6A.8 The reverse direction, GHL → HCP (Phase 4, `e3f10b3`)
+
+`POST /api/hcp/webhooks/ghl/` (`ghl_webhooks.py`). Unlike the HCP-side webhook it is
+**signature-verified**: GHL's Ed25519 scheme is settled and already in production use for
+`LocationCreate`, so `apps.ghl.views.verify_webhook_signature` is reused. It records the delivery
+through `apps.audit` first, then queues a task in `reverse_tasks.py`, which runs
+`services/reverse_sync.py::GHLToHCPSync`. Field mapping is pure functions in
+`services/reverse_mapping.py`. No models or migrations.
+
+**Registration (not verified live):** the marketplace app must subscribe this URL to
+`ContactCreate`, `ContactUpdate`, `RecordCreate`, `RecordUpdate`, `RecordDelete`,
+`AppointmentUpdate` and `AppointmentDelete`.
+
+The asymmetry is enforced in the dispatch table itself, so an update for a create-only object is
+absent rather than a handler that does nothing:
+
+| GHL object | Flows to HCP |
+|---|---|
+| Contact | create and update; an **address** only on create |
+| Lead, Estimate, Job | **create only** — HCP owns every field once it exists |
+| Job line item | create, update and delete, once the job exists and is synced |
+| Appointment | start/end time, and a reassignment only to a mapped, non-default technician |
+
+**Loop protection.** Every Phase 3 write to GHL bounces back as a webhook. Three guards stop it
+becoming a second write to HCP: create-only objects never dispatch an update; a creation checks
+whether the incoming record already carries the HCP id (Phase 3 writes it in the same call) or a
+link row exists; two-way entities diff against the local mirror, send only what differs, and write
+the new values onto the local row either way, so the first echo compares clean. Appointments also
+reject a webhook whose timestamp is no newer than `AppointmentIntegration.external_updated_at`.
+
+**Gated on activation, like the forward direction.** `reverse_tasks._run` ignores an account that is
+not `is_active`. `hcp_plan.md` says Phase 4 does not depend on activation; **it does**, so this
+direction was inert until §6A.7 existed. A job appointment with only a default technician sends the
+time change with the employees already on the appointment resent unchanged (HCP refuses an update
+with none) and skips the technician write.
+
+### 6A.9 Rate limits and backing off (Phase 5, uncommitted)
+
+`apps/common/backoff.py` is the one place the schedule lives: up to `MAX_RETRIES` (3) retries,
+waiting the server's own `Retry-After` when it sent one, otherwise 1 s, 2 s, 4 s, and **never more
+than 30 s** for a single wait. It is **opt-in**: `HCPClient(max_retries=...)` and
+`GHLOAuthService(max_retries=...)` both default to 0, because onboarding and the billing pages are
+a person at a screen who should be told, not kept waiting. The HCP-side code opts in:
+`HCPToGHLSync`, `GHLToHCPSync` (so the backfill and both webhooks) and `GHLObjects`' default
+service.
+
+- **GHL.** A 429 is now `GHLRateLimitError` (a `GHLError`), carrying `retry_after` from
+  `Retry-After`, else `X-RateLimit-Interval-Milliseconds`. Those header names come from third-party
+  sources, not GHL's own current docs (`hcp_plan.md`, rate-limit row); the schedule works without
+  them. It reacts to a 429 only — it does not read the remaining-requests counters ahead of time.
+- **HCP.** No limits are published, so there is nothing to tune against: a 429 is waited out the
+  same way, and the backfill's one-record-at-a-time pace is the concurrency cap. A 429 that outlasts
+  the retries raises `HCPRateLimitError`; on a webhook task that leaves the delivery `failed` and
+  replayable.
+- **Empty responses.** `HCPClient` now treats a body-less 200 or 204 as `{}`, which is what a
+  delete answers with. This closes the uncertainty recorded against `delete_job_appointment` and
+  `delete_job_line_item`.
+
+### 6A.10 What is not built
+
+- **The conflict-resolution half of Phase 5.** The stale-write guard (skip a forward write older
+  than what is stored) exists only for appointments in the reverse direction, not for contacts or
+  line items going HCP → GHL. Dedup is the Phase 1 unique constraints. No cap on concurrent webhook
+  tasks per location.
+- **Phase 6 and 7:** per-record sync state (and a retry-only-the-failed path) and alerting.
+  `apps.audit` is the whole of observability. Open Question 5 was answered as Option A: no alerting.
+- **Phase 9, rollout.** No pilot, no feature flag.
+- **Any UI.** The endpoints exist; no screen calls them, including `activate`.
+- **Webhook authenticity of the HCP-side webhook** (§6A.3, §15, §16), accepted as a known
+  pre-production risk.
+- **Nothing here has run against a live Housecall Pro or GHL sub-account.** Unverified: HCP's list
+  endpoints and their `page`/`page_size` paging (taken from the reference project), the shape of a
+  job row in `GET /jobs`, whether the reverse webhook is registered with its seven subscriptions,
+  and whether `users.readonly` has been added.
 - **One thing that could not be verified:** GHL's official docs do not publish the full
   `GET /calendars/` list-response schema, so `teamMembers` is read from `GET /calendars/{id}` (the
   documented single-calendar endpoint) rather than trusting the list entries. Worth confirming
@@ -1586,8 +1725,9 @@ npm run build                        # tsc -b && vite build -> dist/
   sample HCP webhook payloads, one module per concern. HCP and GHL HTTP are both mocked with
   `respx`; nothing in it has ever reached a live Housecall Pro account.
 
-**Counts (run 17 Nov 2026 at `1a20914`):** backend **831 passed** (`apps/audit`, `apps/ghl`,
-`apps/rebilling`, `apps/hcp`). Frontend **112 passed**, 3 files.
+**Counts (run 17 Nov 2026 on `feat/hcp-integration`):** backend **980 passed** (`apps/audit`,
+`apps/ghl`, `apps/rebilling`, `apps/hcp`; 926 at `ac4a8ef`). Frontend **112 passed**, 3 files, as
+last recorded — not re-run.
 
 | File | Covers |
 |---|---|
@@ -1718,7 +1858,7 @@ repeated here.
   confirmed built? See `local_folder/GHL_Snapshot_Specification.md`.
 - **Which sub-accounts get HCP sync** — a single pilot client, or any client who also uses HCP?
   This is Open Question 2 in `hcp_plan.md` and it decides whether a self-serve connect screen is
-  needed at all. Phases 1-3 assume an internal, per-location setup behind agency SSO.
+  needed at all. The answer given is multi-client, per `location_id`, set up internally behind agency SSO.
 
 **Business questions for Jerry:**
 
@@ -1793,10 +1933,10 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
 - **The HCP webhook endpoint is unauthenticated** (§6A.3). It is bounded — it acts only on a
   `company_id` belonging to an already-connected, already-activated account — but it is a real,
   named gap and it closes the moment HCP's signing scheme is confirmed (§15).
-- **HCP sync cannot actually run yet.** `is_active` is never flipped, because the activate-and-
-  backfill step is not built (§6A.7): a connected account records its deliveries and applies none
-  of them. Nothing is lost — replay applies them once that step exists — but until then the
-  integration mirrors nothing.
+- **HCP activation can leave records behind.** Activation goes ahead when individual records
+  `failed`, and there is no per-record sync state to retry from (§6A.7), so such a record is only
+  repaired by the next event for it. A worker killed mid-backfill leaves `backfill_status` at
+  `running`, which blocks `activate` (409) until reset by hand.
 - **Nothing in HCP has run against a live Housecall Pro or a live sub-account.** Every test is a
   mocked fixture. The event names themselves are transcribed from the reference project rather
   than from HCP's documentation, so an event family HCP has since renamed would be silently
@@ -2122,6 +2262,8 @@ On `feat/hcp-integration`, on top of `6c22760` — **local only, never pushed** 
 | `68eb69c` | HCP Phase 1: `apps/hcp` skeleton, thirteen models, `0001_initial`, 30 tests |
 | `17df1bd` | HCP Phase 2: the HCP client, the onboarding endpoints, the calendar team check, 106 tests |
 | `1a20914` | HCP Phase 3: the inbound webhook, the dispatch table and the entity handlers, 231 tests |
+| `e3f10b3` | HCP Phase 4: GHL → HCP reverse sync, 95 tests |
+| `ac4a8ef` | Updated CLAUDE.md and handover |
 
 On `docs/handover-billing-schedule`, also off `6c22760` and also local:
 
@@ -2161,17 +2303,18 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
    `local_folder/hcp_reference_project_sop.md`, and `local_folder/GHL_Snapshot_Specification.md`
    for the GHL side.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **831 passed** (run 17 Nov 2026 at `1a20914`). From `frontend/`, run `npm test -- --run` and
+   **926 passed** at `ac4a8ef`, or **980** with the uncommitted activation and backoff work
+   (run 17 Nov 2026). From `frontend/`, run `npm test -- --run` and
    expect **112 passed**. Also run `ruff check .`, `ruff format --check .` and
    `manage.py makemigrations --check --dry-run`, and in `frontend/` `./node_modules/.bin/tsc -b`
    and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. The working branch is
-   `feat/hcp-integration`, clean at `1a20914`, sitting on `main` at `6c22760` (§0) unless new work is
-   in flight. **Nothing on this branch has been pushed, by instruction.**
+   `feat/hcp-integration` at `ac4a8ef` with uncommitted activation/backfill/backoff work (§0), one
+   commit behind `main` at `973d6bd`. **Nothing on this branch has been pushed, by instruction.**
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built, and the monthly
    charge now runs automatically (§6.6). Still open: the unassigned-call mapping UI, the bills table,
-   Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-3
-   built and stops short of activate-and-backfill, with no UI. Tasks 2 and 3 are not started.
+   Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-4
+   built, activation/backfill and the Phase 5 backoff in the working tree, no UI. Tasks 2 and 3 are not started.
    Don't start any of these without an explicit request. Ask first if the request is ambiguous. **Never make live
    API calls.**
 6. **This branch is not Phase 9.** `main` uses one shared `RETELL_API_KEY` and agent-id/phone matching
