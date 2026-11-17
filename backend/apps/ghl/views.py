@@ -87,9 +87,12 @@ class OAuthCallbackView(APIView):
         return _redirect_to_onboarding(status='connected')
 
 
-def _verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
+def verify_webhook_signature(raw_body: bytes, signature: str) -> bool:
     """GHL signs the webhook body with its own private key; this checks it against the matching
     public key (`GHL_WEBHOOK_PUBLIC_KEY`), which is the same for every marketplace app.
+
+    Public (not `_`-prefixed) because `apps/hcp`'s reverse-sync webhook verifies the same
+    signature on the same header and reuses this rather than opening a second implementation.
     """
     if not signature:
         return False
@@ -131,7 +134,7 @@ class LocationCreatedWebhookView(APIView):
         # Read before anything parses the stream: the signature covers the raw body.
         raw_body = request.body
         signature = request.headers.get('X-GHL-Signature', '')
-        if not _verify_webhook_signature(raw_body, signature):
+        if not verify_webhook_signature(raw_body, signature):
             logger.warning('ghl: webhook signature rejected')
             recording.webhook_rejected(WebhookEvent.GHL, 'Signature rejected.')
             return Response(status=status.HTTP_401_UNAUTHORIZED)

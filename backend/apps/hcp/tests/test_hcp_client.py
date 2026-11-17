@@ -4,6 +4,8 @@ Nothing here reaches Housecall Pro - `respx` intercepts at the httpx transport, 
 the client actually builds (path, headers, params) is what gets asserted on.
 """
 
+import json
+
 import httpx
 import pytest
 import respx
@@ -297,3 +299,95 @@ def test_get_employees_sends_the_page_parameters():
         'page': '1',
         'page_size': str(settings.HCP_PAGE_SIZE),
     }
+
+
+# --- Phase 4 writes (GHL -> HCP) ---------------------------------------------------------
+
+
+@respx.mock
+def test_create_customer_posts_to_customers():
+    route = respx.post(f'{BASE}/customers').mock(
+        return_value=httpx.Response(200, json={'customer': {'id': 'hcp-customer-1'}})
+    )
+
+    customer = HCPClient('hcp-key').create_customer({'first_name': 'Jane'})
+
+    assert customer['id'] == 'hcp-customer-1'
+    assert json.loads(route.calls.last.request.content) == {'first_name': 'Jane'}
+
+
+@respx.mock
+def test_update_customer_puts_to_the_customer_id():
+    respx.put(f'{BASE}/customers/hcp-customer-1').mock(
+        return_value=httpx.Response(200, json={'customer': {'id': 'hcp-customer-1'}})
+    )
+
+    HCPClient('hcp-key').update_customer('hcp-customer-1', {'email': 'jane@example.test'})
+
+
+@respx.mock
+def test_create_job_line_item_posts_under_the_job():
+    respx.post(f'{BASE}/jobs/hcp-job-1/line_items').mock(
+        return_value=httpx.Response(200, json={'line_item': {'id': 'hcp-li-1'}})
+    )
+
+    line_item = HCPClient('hcp-key').create_job_line_item('hcp-job-1', {'name': 'Filter'})
+
+    assert line_item['id'] == 'hcp-li-1'
+
+
+@respx.mock
+def test_delete_job_line_item_deletes_under_the_job():
+    route = respx.delete(f'{BASE}/jobs/hcp-job-1/line_items/hcp-li-1').mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    HCPClient('hcp-key').delete_job_line_item('hcp-job-1', 'hcp-li-1')
+
+    assert route.called
+
+
+@respx.mock
+def test_update_estimate_option_schedule_puts_the_nested_path():
+    route = respx.put(f'{BASE}/estimates/hcp-estimate-1/options/hcp-option-1/schedule').mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    HCPClient('hcp-key').update_estimate_option_schedule(
+        'hcp-estimate-1', 'hcp-option-1', {'start_time': '2026-11-20T15:00:00+00:00'}
+    )
+
+    assert route.called
+
+
+@respx.mock
+def test_update_job_appointment_puts_under_the_job():
+    respx.put(f'{BASE}/jobs/hcp-job-1/appointments/hcp-appt-1').mock(
+        return_value=httpx.Response(200, json={'appointment': {'id': 'hcp-appt-1'}})
+    )
+
+    HCPClient('hcp-key').update_job_appointment(
+        'hcp-job-1', 'hcp-appt-1', {'start_time': '2026-11-20T15:00:00+00:00'}
+    )
+
+
+@respx.mock
+def test_delete_job_appointment_deletes_under_the_job():
+    route = respx.delete(f'{BASE}/jobs/hcp-job-1/appointments/hcp-appt-1').mock(
+        return_value=httpx.Response(200, json={})
+    )
+
+    HCPClient('hcp-key').delete_job_appointment('hcp-job-1', 'hcp-appt-1')
+
+    assert route.called
+
+
+@respx.mock
+def test_get_job_appointments_reads_the_list():
+    respx.get(f'{BASE}/jobs/hcp-job-1/appointments').mock(
+        return_value=httpx.Response(200, json={'appointments': [{'id': 'hcp-appt-1'}]})
+    )
+
+    appointments = HCPClient('hcp-key').get_job_appointments('hcp-job-1')
+
+    assert appointments == [{'id': 'hcp-appt-1'}]

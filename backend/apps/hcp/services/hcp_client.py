@@ -147,6 +147,63 @@ class HCPClient:
     def get_customer(self, customer_id: str) -> dict:
         return self._entity(self._request('GET', f'/customers/{customer_id}'), 'customer')
 
+    def get_job_appointments(self, job_id: str) -> list[dict]:
+        """Every appointment on one job - the Phase 4 job-appointment push reads this when it
+        has no mapped technician of its own to send, because HCP refuses an appointment update
+        with no employee on it at all; resending whichever ids are already there satisfies that
+        without this app choosing an assignee.
+        """
+        return self._rows(self._request('GET', f'/jobs/{job_id}/appointments'), 'appointments')
+
+    # --- HCP writes (Phase 4: GHL -> HCP reverse sync) ------------------------------------
+
+    def create_customer(self, payload: dict) -> dict:
+        return self._entity(self._request('POST', '/customers', json=payload), 'customer')
+
+    def update_customer(self, customer_id: str, payload: dict) -> dict:
+        return self._entity(
+            self._request('PUT', f'/customers/{customer_id}', json=payload), 'customer'
+        )
+
+    def create_lead(self, payload: dict) -> dict:
+        return self._entity(self._request('POST', '/leads', json=payload), 'lead')
+
+    def create_estimate(self, payload: dict) -> dict:
+        return self._entity(self._request('POST', '/estimates', json=payload), 'estimate')
+
+    def create_job(self, payload: dict) -> dict:
+        return self._entity(self._request('POST', '/jobs', json=payload), 'job')
+
+    def create_job_line_item(self, job_id: str, payload: dict) -> dict:
+        return self._entity(
+            self._request('POST', f'/jobs/{job_id}/line_items', json=payload), 'line_item'
+        )
+
+    def update_job_line_item(self, job_id: str, line_item_id: str, payload: dict) -> dict:
+        return self._entity(
+            self._request('PUT', f'/jobs/{job_id}/line_items/{line_item_id}', json=payload),
+            'line_item',
+        )
+
+    def delete_job_line_item(self, job_id: str, line_item_id: str) -> None:
+        self._request('DELETE', f'/jobs/{job_id}/line_items/{line_item_id}')
+
+    def update_estimate_option_schedule(
+        self, estimate_id: str, option_id: str, payload: dict
+    ) -> dict:
+        return self._request(
+            'PUT', f'/estimates/{estimate_id}/options/{option_id}/schedule', json=payload
+        )
+
+    def update_job_appointment(self, job_id: str, appointment_id: str, payload: dict) -> dict:
+        return self._entity(
+            self._request('PUT', f'/jobs/{job_id}/appointments/{appointment_id}', json=payload),
+            'appointment',
+        )
+
+    def delete_job_appointment(self, job_id: str, appointment_id: str) -> None:
+        self._request('DELETE', f'/jobs/{job_id}/appointments/{appointment_id}')
+
     @staticmethod
     def _entity(body: dict, key: str) -> dict:
         """HCP nests a single entity under its own name on some endpoints and returns it flat on

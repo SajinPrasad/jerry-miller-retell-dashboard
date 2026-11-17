@@ -517,7 +517,7 @@ class TestEdgeCases:
         assert {e.status for e in events} == {'rejected'} and events.count() == 2
 
     def test_non_object_body_on_the_ghl_location_webhook_is_rejected(self, api, monkeypatch):
-        monkeypatch.setattr('apps.ghl.views._verify_webhook_signature', lambda body, sig: True)
+        monkeypatch.setattr('apps.ghl.views.verify_webhook_signature', lambda body, sig: True)
         response = api.post(
             '/api/ghl/webhooks/location-created/', data=b'[]', content_type='application/json'
         )

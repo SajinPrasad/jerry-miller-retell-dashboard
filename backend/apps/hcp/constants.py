@@ -90,6 +90,37 @@ ESTIMATES_OBJECT = 'custom_objects.estimates'
 JOBS_OBJECT = 'custom_objects.jobs'
 JOB_LINE_ITEMS_OBJECT = 'custom_objects.job_line_items'
 
+# --- GHL webhook events (Phase 4: GHL -> HCP reverse sync) --------------------------------
+#
+# GHL's own vocabulary, transcribed from the reference project's `luxiolab_webhook` view - the
+# one place that names these events against GHL's real, running webhook delivery, since GHL's
+# own docs describe the *shape* of a webhook but not which event types a marketplace app can
+# subscribe to. Record-level events carry an `objectKey` naming which custom object fired;
+# contact and appointment events do not need one.
+
+GHL_CONTACT_CREATE = 'ContactCreate'
+GHL_CONTACT_UPDATE = 'ContactUpdate'
+GHL_CONTACT_EVENTS = frozenset({GHL_CONTACT_CREATE, GHL_CONTACT_UPDATE})
+
+GHL_RECORD_CREATE = 'RecordCreate'
+GHL_RECORD_UPDATE = 'RecordUpdate'
+GHL_RECORD_DELETE = 'RecordDelete'
+
+# Lead/Estimate/Job are create-only in this direction (SOP: "updates ... are not supported from
+# [GHL] to Housecall Pro"), so only `RecordCreate` is ever handled for them - there is no
+# `RecordUpdate`/`RecordDelete` entry for these three object keys, which is what makes the
+# asymmetry self-enforcing: an update GHL sends for one of them simply has nothing to dispatch
+# to, rather than needing a per-event check to reject it.
+GHL_CREATE_ONLY_OBJECTS = frozenset({LEADS_OBJECT, ESTIMATES_OBJECT, JOBS_OBJECT})
+# Job line items are the one genuinely two-way custom object.
+GHL_TWO_WAY_OBJECTS = frozenset({JOB_LINE_ITEMS_OBJECT})
+
+GHL_APPOINTMENT_UPDATE = 'AppointmentUpdate'
+GHL_APPOINTMENT_DELETE = 'AppointmentDelete'
+# `AppointmentCreate` is never handled: the SOP is explicit that appointment creation stays
+# HCP-only in both directions, so there is no event name for it here at all.
+GHL_APPOINTMENT_EVENTS = frozenset({GHL_APPOINTMENT_UPDATE, GHL_APPOINTMENT_DELETE})
+
 # --- GHL contact custom fields (matched by name; the id differs per sub-account) ---------------
 
 HCP_CUSTOMER_ID_FIELD = 'HCP Customer ID'
