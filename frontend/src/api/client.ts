@@ -2,11 +2,16 @@ import { getSessionBlob } from '../lib/ghlSession'
 
 export class ApiError extends Error {
   readonly status: number
+  /** The error response's JSON body, when it had one. Most callers only need `status`; the
+   * Housecall Pro setup reads it for the backend's own reason (a missing calendar team member,
+   * a rejected API key). */
+  readonly body: unknown
 
-  constructor(status: number, path: string) {
+  constructor(status: number, path: string, body?: unknown) {
     super(`API ${status}: ${path}`)
     this.name = 'ApiError'
     this.status = status
+    this.body = body
   }
 }
 
@@ -24,6 +29,9 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   })
   // The status matters to the caller: a 401 means the session was refused, which is a different
   // thing from the request failing.
-  if (!res.ok) throw new ApiError(res.status, path)
+  if (!res.ok) {
+    const body: unknown = await res.json().catch(() => undefined)
+    throw new ApiError(res.status, path, body)
+  }
   return res.json() as Promise<T>
 }

@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import type {
   ClientDetail as Detail,
   ClientDetailResult,
@@ -6,6 +7,7 @@ import type {
 } from '../../types/admin'
 import ClientDetail from './ClientDetail'
 import ClientsTable from './ClientsTable'
+import HousecallProTab from './HousecallProTab'
 import MappingEditor from './MappingEditor'
 import MonthPicker from './MonthPicker'
 import { ClientDetailSkeleton, ClientsTableSkeleton } from './Skeleton'
@@ -166,24 +168,62 @@ function SetUpMapping({
   preview: boolean
   onSaved: (result: MappingResult) => void
 }) {
+  // Not yet set up for Retell billing says nothing about Housecall Pro, so its setup stays
+  // reachable from here. Opens on the mapping, which is what this screen is for.
+  const [tab, setTab] = useState<'mapping' | 'hcp'>('mapping')
+
   return (
-    <section className="card">
-      <h2>{clientName || 'This client'}</h2>
-      <p className="muted small">
-        {twilioEnabled
-          ? 'Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to start tracking usage.'
-          : 'Not set up for billing yet. Add its Retell agents to start tracking usage.'}
-      </p>
-      <MappingEditor
-        locationId={locationId}
-        clientName={clientName}
-        initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
-        agentNames={[]}
-        twilioEnabled={twilioEnabled}
-        preview={preview}
-        onSaved={onSaved}
-      />
-    </section>
+    <>
+      <div className="tabs" role="tablist" aria-label="Client sections">
+        <button
+          type="button"
+          role="tab"
+          id="tab-mapping"
+          aria-selected={tab === 'mapping'}
+          aria-controls="tabpanel-mapping"
+          className={`tab${tab === 'mapping' ? ' active' : ''}`}
+          onClick={() => setTab('mapping')}
+        >
+          Agent mapping
+        </button>
+        <button
+          type="button"
+          role="tab"
+          id="tab-hcp"
+          aria-selected={tab === 'hcp'}
+          aria-controls="tabpanel-hcp"
+          className={`tab${tab === 'hcp' ? ' active' : ''}`}
+          onClick={() => setTab('hcp')}
+        >
+          Housecall Pro
+        </button>
+      </div>
+      {tab === 'mapping' ? (
+        <div role="tabpanel" id="tabpanel-mapping" aria-labelledby="tab-mapping">
+          <section className="card">
+            <h2>{clientName || 'This client'}</h2>
+            <p className="muted small">
+              {twilioEnabled
+                ? 'Not set up for billing yet. Add its Retell agents, phone numbers and Twilio subaccount to start tracking usage.'
+                : 'Not set up for billing yet. Add its Retell agents to start tracking usage.'}
+            </p>
+            <MappingEditor
+              locationId={locationId}
+              clientName={clientName}
+              initial={{ twilio_subaccount_sid: '', retell_agent_ids: [], phone_numbers: [] }}
+              agentNames={[]}
+              twilioEnabled={twilioEnabled}
+              preview={preview}
+              onSaved={onSaved}
+            />
+          </section>
+        </div>
+      ) : (
+        <div role="tabpanel" id="tabpanel-hcp" aria-labelledby="tab-hcp">
+          <HousecallProTab locationId={locationId} preview={preview} />
+        </div>
+      )}
+    </>
   )
 }
 

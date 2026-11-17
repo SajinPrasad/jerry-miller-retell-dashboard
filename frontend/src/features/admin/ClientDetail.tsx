@@ -22,6 +22,7 @@ import {
   formatRate,
   marginCents,
 } from './format'
+import HousecallProTab from './HousecallProTab'
 import MappingEditor from './MappingEditor'
 
 interface Props {
@@ -129,7 +130,7 @@ export default function ClientDetail({
 
   // Remounted per client and per period (see `ClientBrowser`'s `key`), so a tab chosen on one
   // client's page is never carried into another's - every page opens on Overview & billing.
-  const [activeTab, setActiveTab] = useState<'overview' | 'mapping'>('overview')
+  const [activeTab, setActiveTab] = useState<'overview' | 'mapping' | 'hcp'>('overview')
 
   const voiceRate = centsFromInput(voiceInput)
   // The rates endpoint requires both rates whatever is on screen - they share one `RateHistory`
@@ -229,6 +230,20 @@ export default function ClientDetail({
         >
           Agent mapping
         </button>
+        {/* Setting up a client's Housecall Pro sync is an agency admin's job, like the mapping. */}
+        {canEdit && (
+          <button
+            type="button"
+            role="tab"
+            id="tab-hcp"
+            aria-selected={activeTab === 'hcp'}
+            aria-controls="tabpanel-hcp"
+            className={`tab${activeTab === 'hcp' ? ' active' : ''}`}
+            onClick={() => setActiveTab('hcp')}
+          >
+            Housecall Pro
+          </button>
+        )}
       </div>
 
       {activeTab === 'overview' && (
@@ -556,6 +571,12 @@ export default function ClientDetail({
               Billing mode: {detail.billing_mode === 'auto_charge' ? 'Auto charge' : 'Send invoice'}
             </p>
           </section>
+        </div>
+      )}
+
+      {activeTab === 'hcp' && canEdit && (
+        <div role="tabpanel" id="tabpanel-hcp" aria-labelledby="tab-hcp">
+          <HousecallProTab locationId={detail.location_id} preview={preview} />
         </div>
       )}
     </>

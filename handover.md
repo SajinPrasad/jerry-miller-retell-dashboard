@@ -28,14 +28,13 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `feat/hcp-integration`, last commit `ac4a8ef` — the Housecall Pro integration (§6A).
-Phases 1-4 are committed (`68eb69c`, `17df1bd`, `1a20914`, `e3f10b3`, then a docs commit). **On top
-of that, uncommitted in the working tree:** activate-and-backfill (§6A.7) and Phase 5's rate-limit
-backoff (§6A.9), with their tests, plus this file. **Nothing on this branch has been pushed**;
-every HCP commit is local only, by instruction. `main` has moved on to `973d6bd` (a SaaS client
-count endpoint, `feat(ghl)`), one commit this branch does not contain; the two are otherwise
-the same history. Do not commit or push unless asked. `CLAUDE.md` on this branch still describes
-Phases 1-3 and was not updated in this pass.
+**Branch.** `feat/hcp-integration` — the Housecall Pro integration (§6A). Committed: Phases 1-4
+(`68eb69c`, `17df1bd`, `1a20914`, `e3f10b3`, a docs commit `ac4a8ef`), then `d2332fa`
+(activate-and-backfill, the backfill state on `HCPAccount`, 429 backoff), then one commit adding the
+**frontend** (the Housecall Pro tab, §6A.11) and bringing `CLAUDE.md` and this file up to date.
+**Nothing on this branch has been pushed**; every HCP commit is local only, by instruction. `main`
+has moved on to `973d6bd` (a SaaS client count endpoint, `feat(ghl)`), one commit this branch does
+not contain; the two are otherwise the same history. Do not commit or push unless asked.
 
 > **The docs commit for `6c22760` is not on `main`.** `a6bf36a`
 > ("docs: update CLAUDE.md and handover.md for automated billing schedule") was written on
@@ -85,7 +84,12 @@ Phases 1-3 and was not updated in this pass.
 
 *On `feat/hcp-integration` (local only, never pushed):*
 
-- **Uncommitted: activate-and-backfill and Phase 5 backoff.** `POST /api/hcp/accounts/<location_id>/activate/`
+- **The Housecall Pro tab (frontend).** A third tab on a client's page and on the unmapped-client
+  screen, agency scope only: connect, employee mapping, calendars, activate with live backfill
+  progress and retry, and Edit employees / Edit calendars from the ready and active screens
+  (disabled while backfilling). Never calls `/api/hcp/` in `/admin/preview`. 25 new frontend tests
+  (137 total). See §6A.11.
+- `d2332fa` — **Activate-and-backfill and Phase 5 backoff.** `POST /api/hcp/accounts/<location_id>/activate/`
   queues a Celery chain that pulls a company's customers, leads, estimates and jobs through the
   same handlers the webhook uses, then flips `is_active` and replays the deliveries held back
   meanwhile (§6A.7). A 429 from HCP or GHL is now waited out and retried by the HCP sync paths
@@ -230,10 +234,10 @@ Phases 1-3 and was not updated in this pass.
 
 **Test status (run on 17 Nov 2026 on `feat/hcp-integration`):**
 
-- Backend: `pytest`: **926 passed** at `ac4a8ef` (the baseline before this pass), **980 passed**
-  with the uncommitted activation, backfill and backoff work (54 new tests, no regressions).
-- Frontend: `npm test -- --run`: **112 passed**, 3 files, as recorded at `1a20914`; **not re-run**
-  in this pass, which touched no frontend file.
+- Backend: `pytest`: **926 passed** at `ac4a8ef`, **980 passed** at `d2332fa` (54 new tests, no
+  regressions).
+- Frontend: `npm test -- --run`: **137 passed**, 4 files (112 before the Housecall Pro tab, plus 25).
+  `npm run build` (`tsc -b` and the Vite build) and `oxlint src` are clean.
 - `ruff check .` and `ruff format --check .`: clean (140 files).
 - `manage.py makemigrations --check --dry-run`: "No changes detected". `manage.py check`: clean.
 
@@ -248,7 +252,7 @@ bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script)
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
 and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table. On the
 HCP side (§6A.10): the conflict-resolution half of Phase 5, per-record sync state, alerting and the
-rollout. There is **no frontend for HCP at all** — Phases 1-5 are backend and API only.
+rollout. The frontend is the Housecall Pro tab (§6A.11); there is no other HCP screen.
 
 **Not merged into `main`:**
 
@@ -316,7 +320,7 @@ Twilio field. **The product is Retell AI minutes only.**
 | 2 | Agency dashboard: MRR, live clients, leads by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (the `client-dashboard` feature folder is empty) |
 | 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8, 10 built, and the monthly run is now automatic (`6c22760`).** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
-| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-4 built, activation/backfill and Phase 5 backoff in the working tree** on `feat/hcp-integration` (local, unpushed): models, onboarding API including activation, both webhooks, both sync directions, rate-limit backoff. Backend only — no UI. Conflict resolution, alerting and rollout are not started |
+| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-4, activation/backfill and Phase 5 backoff built** on `feat/hcp-integration` (local, unpushed): models, onboarding API including activation, both webhooks, both sync directions, rate-limit backoff, and the Housecall Pro tab in the admin page (§6A.11). Conflict resolution, alerting and rollout are not started |
 
 Task 5 was not in the original four-task brief; it arrived separately and is planned in
 `local_folder/hcp_plan.md`. It shares `apps/ghl`'s OAuth service and `apps/audit`'s webhook
@@ -434,7 +438,7 @@ own. `/api/hcp/webhooks/` is the exception and is unauthenticated — §6A.3.
 
 Frontend routes: `/onboarding` (GHL connect page), `/admin` (live admin page, needs GHL SSO),
 `/admin/preview` (sample data, development only). Anything else redirects to `/onboarding`.
-**There is no frontend for HCP** — Task 5's endpoints exist, the screens that would call them do not.
+The Housecall Pro setup screens are a tab inside the `/admin` client page, not a route of their own (§6A.11).
 
 ---
 
@@ -1225,7 +1229,7 @@ can work.
 
 ---
 
-## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-4 built; activation and Phase 5 backoff uncommitted)
+## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-4, activation, Phase 5 backoff and the setup UI built)
 
 **On `feat/hcp-integration` only, local and unpushed.** Everything in this section is in
 `backend/apps/hcp/` and none of it is on `main` yet. The plan it follows, with its open
@@ -1427,7 +1431,7 @@ without a restart.
   (30), `HCP_PAGE_SIZE` (50). There is **no account-wide HCP credential** — the key is per company
   and lives encrypted in the database, so none of it is in `.env`.
 
-### 6A.7 Activation and the backfill (Phase 2 step 4; uncommitted)
+### 6A.7 Activation and the backfill (Phase 2 step 4, `d2332fa`)
 
 `POST /api/hcp/accounts/<location_id>/activate/`, behind the same GHL SSO session as the other
 onboarding endpoints (agency scope any sub-account, a sub-account only its own). It answers
@@ -1517,7 +1521,7 @@ direction was inert until §6A.7 existed. A job appointment with only a default 
 time change with the employees already on the appointment resent unchanged (HCP refuses an update
 with none) and skips the technician write.
 
-### 6A.9 Rate limits and backing off (Phase 5, uncommitted)
+### 6A.9 Rate limits and backing off (Phase 5, `d2332fa`)
 
 `apps/common/backoff.py` is the one place the schedule lives: up to `MAX_RETRIES` (3) retries,
 waiting the server's own `Retry-After` when it sent one, otherwise 1 s, 2 s, 4 s, and **never more
@@ -1548,7 +1552,8 @@ service.
 - **Phase 6 and 7:** per-record sync state (and a retry-only-the-failed path) and alerting.
   `apps.audit` is the whole of observability. Open Question 5 was answered as Option A: no alerting.
 - **Phase 9, rollout.** No pilot, no feature flag.
-- **Any UI.** The endpoints exist; no screen calls them, including `activate`.
+
+- **A screen to replace the HCP API key.** The tab has no way back to the connect step (§6A.11).
 - **Webhook authenticity of the HCP-side webhook** (§6A.3, §15, §16), accepted as a known
   pre-production risk.
 - **Nothing here has run against a live Housecall Pro or GHL sub-account.** Unverified: HCP's list
@@ -1559,6 +1564,40 @@ service.
   `GET /calendars/` list-response schema, so `teamMembers` is read from `GET /calendars/{id}` (the
   documented single-calendar endpoint) rather than trusting the list entries. Worth confirming
   against a real sub-account.
+
+### 6A.11 The frontend: the Housecall Pro tab
+
+`frontend/src/features/admin/HousecallProTab.tsx` and `HcpSetupSteps.tsx`, with `api/hcp.ts`,
+`types/hcp.ts` and `hcpErrors.ts`. It is a **third tab, "Housecall Pro"**, on a client's page
+(`ClientDetail.tsx`) and also on the unmapped-client screen (`SetUpMapping` in `ClientBrowser.tsx`),
+so a client not yet set up for Retell billing can still be onboarded. **Agency scope only**, like
+the Retell mapping — a sub-account's own page does not show it, although the backend would allow a
+sub-account to configure its own location.
+
+- **Which step is showing is whatever `GET .../status/` says**, not page state: not_connected →
+  connect (`POST /api/hcp/accounts/`), needs_employee_mapping → employees (`GET .../employees/`,
+  `PUT .../employee-mappings/`), needs_calendar_settings → calendars (`GET .../calendars/`,
+  `PUT .../calendar-settings/`), ready_to_activate → activate (`POST .../activate/`), backfilling →
+  progress, active → summary. A reload, or another admin finishing a step, lands on the right one.
+- **Errors say what to do.** A rejected key (400), a rate limit (429) and HCP or GHL being down
+  (502) each get their own sentence; a calendar save refused over team membership lists who to add
+  to which calendar's team (`missing_team_members`). To read those bodies `ApiError` now keeps the
+  response's JSON as `body`.
+- **Employees:** each GHL user can be chosen once; at least one mapping is needed to save.
+  **Calendars:** the two must differ; the default user is required; the per-calendar users are
+  optional. The three user fields are employee-mapping ids, as the backend takes them.
+- **Backfill:** polls `GET .../status/` every 3 s while `backfilling` (stops when it is not), and
+  shows each stage as Waiting / Running / Stopped / Done with its outcome counts. After a failure
+  it says where the backfill stopped and offers **Retry activation**; a 409 (someone else started
+  it) just shows the running backfill.
+- **Editing earlier steps.** From the calendars step, "← Edit employees"; from the ready and active
+  screens, **Edit employees** and **Edit calendars**. These re-open the same two steps (prefilled,
+  with Cancel) and save through the same `PUT` endpoints. They are **disabled while backfilling**,
+  which reads those very mappings. Nothing goes back to the connect step, so a replaced API key has
+  no screen. Editing the employees of a live account can leave a calendar fallback user unset (the
+  backend nulls it); the calendars step then needs the default user chosen again.
+- **Preview:** `/admin/preview` shows a notice in this tab and never calls `/api/hcp/`.
+- **Tests:** `HousecallProTab.test.tsx`, 25 tests, `fetch` routed by method and path.
 
 ---
 
@@ -1613,9 +1652,10 @@ These are enforced in code, or are explicit requirements.
 
 - `frontend/src/App.tsx` holds the routes and `main.tsx` mounts them. The Vite config proxies `/api` to `:8000`.
 - Built: the `/onboarding` page (connect button, a status banner, the sub-account list, a sync button), and
-  the `/admin` and `/admin/preview` pages (§5, §6.9). The client detail page (`ClientDetail.tsx`) is two
-  tabs, **Overview & billing** and **Agent mapping** (§5.4/§5.7); `.tabs`/`.tab`/`.tab.active` in
-  `admin.css` style them.
+  the `/admin` and `/admin/preview` pages (§5, §6.9). The client detail page (`ClientDetail.tsx`) is
+  three tabs, **Overview & billing**, **Agent mapping** (§5.4/§5.7) and, for an agency admin,
+  **Housecall Pro** (§6A.11), which an unmapped client's screen shows too; `.tabs`/`.tab`/
+  `.tab.active` in `admin.css` style them.
 - Not built: the agency dashboard and the client dashboard (empty folders).
 - **Theme:** two themes, scoped by page. `/onboarding` stays the original light theme (white
   background, green accent, system-ui font) from `onboarding.css`/`index.css`'s `:root`. `/admin`
@@ -1726,8 +1766,8 @@ npm run build                        # tsc -b && vite build -> dist/
   `respx`; nothing in it has ever reached a live Housecall Pro account.
 
 **Counts (run 17 Nov 2026 on `feat/hcp-integration`):** backend **980 passed** (`apps/audit`,
-`apps/ghl`, `apps/rebilling`, `apps/hcp`; 926 at `ac4a8ef`). Frontend **112 passed**, 3 files, as
-last recorded — not re-run.
+`apps/ghl`, `apps/rebilling`, `apps/hcp`; 926 at `ac4a8ef`). Frontend **137 passed**, 4 files
+(`HousecallProTab.test.tsx` is the new one).
 
 | File | Covers |
 |---|---|
@@ -2264,6 +2304,8 @@ On `feat/hcp-integration`, on top of `6c22760` — **local only, never pushed** 
 | `1a20914` | HCP Phase 3: the inbound webhook, the dispatch table and the entity handlers, 231 tests |
 | `e3f10b3` | HCP Phase 4: GHL → HCP reverse sync, 95 tests |
 | `ac4a8ef` | Updated CLAUDE.md and handover |
+| `d2332fa` | HCP: activation backfill, backfill state, 429 backoff, 54 tests |
+| after `d2332fa` | HCP frontend: the Housecall Pro tab, 25 tests; CLAUDE.md and handover synced |
 
 On `docs/handover-billing-schedule`, also off `6c22760` and also local:
 
@@ -2303,18 +2345,17 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
    `local_folder/hcp_reference_project_sop.md`, and `local_folder/GHL_Snapshot_Specification.md`
    for the GHL side.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **926 passed** at `ac4a8ef`, or **980** with the uncommitted activation and backoff work
-   (run 17 Nov 2026). From `frontend/`, run `npm test -- --run` and
-   expect **112 passed**. Also run `ruff check .`, `ruff format --check .` and
+   **980 passed** at `d2332fa` (run 17 Nov 2026). From `frontend/`, run `npm test -- --run` and
+   expect **137 passed**. Also run `ruff check .`, `ruff format --check .` and
    `manage.py makemigrations --check --dry-run`, and in `frontend/` `./node_modules/.bin/tsc -b`
    and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. The working branch is
-   `feat/hcp-integration` at `ac4a8ef` with uncommitted activation/backfill/backoff work (§0), one
-   commit behind `main` at `973d6bd`. **Nothing on this branch has been pushed, by instruction.**
+   `feat/hcp-integration`, with the HCP work committed locally (§0), one commit behind `main` at
+   `973d6bd`. **Nothing on this branch has been pushed, by instruction.**
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built, and the monthly
    charge now runs automatically (§6.6). Still open: the unassigned-call mapping UI, the bills table,
    Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-4
-   built, activation/backfill and the Phase 5 backoff in the working tree, no UI. Tasks 2 and 3 are not started.
+   built, plus activation/backfill, the Phase 5 backoff and the Housecall Pro tab (§6A.11). Tasks 2 and 3 are not started.
    Don't start any of these without an explicit request. Ask first if the request is ambiguous. **Never make live
    API calls.**
 6. **This branch is not Phase 9.** `main` uses one shared `RETELL_API_KEY` and agent-id/phone matching
