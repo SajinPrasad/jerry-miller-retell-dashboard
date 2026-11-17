@@ -13,13 +13,35 @@ Companion docs:
   on the development machine.
 - `local_folder/CriticalFindings.md`: contradictions between the spec PDFs and the real GoHighLevel,
   Retell and Twilio APIs, the financial safeguards, and the open questions. Gitignored.
+- `local_folder/hcp_plan.md`: the phased plan for the Housecall Pro integration (§6A), with its
+  open questions. Gitignored.
+- `local_folder/hcp_reference_project_sop.md`: the behavioural spec for the HCP integration, taken
+  from the reference project's own SOP. Gitignored.
+- `local_folder/GHL_Snapshot_Specification.md`: the GHL custom objects, custom fields, calendars
+  and workflows a sub-account must have before HCP sync can run. Handed to the GHL team to build.
+  Gitignored.
+- `local_folder/HCP_GHL_Integration_Document.md`: the client-facing description of the HCP
+  integration. Gitignored.
 - `local_folder/pdfs/`: the source PDFs. Gitignored.
 
 ---
 
 ## 0. Current state (read this first)
 
-**Branch.** `main`. The last commit is `5f4d2a9`. Working tree is clean (nothing uncommitted). Do not commit or push unless asked.
+**Branch.** `feat/hcp-integration`, at `1a20914` — the Housecall Pro integration (§6A), Phases 1-3
+built. All code is committed; the only uncommitted change is this documentation pass itself
+(`handover.md` and `CLAUDE.md`, 17 Nov 2026), held for approval. **Nothing on this branch has been
+pushed**; every HCP commit is local only, by instruction. `main` is at `6c22760` and is a direct
+ancestor of this branch, so nothing on `main` is missing from here. Do not commit or push unless
+asked.
+
+> **The docs commit for `6c22760` is not on `main`.** `a6bf36a`
+> ("docs: update CLAUDE.md and handover.md for automated billing schedule") was written on
+> **`docs/handover-billing-schedule`**, a local branch off `6c22760`, not on `main` as intended.
+> Its content has since been folded into this file and `CLAUDE.md` on `feat/hcp-integration`
+> (the automated monthly billing run in §6.6, the Twilio Beat pause in §1/§6.7, the Paid pill in
+> §5.4), so nothing is lost — but `main`'s own copy of these two files is still a commit behind,
+> and `docs/handover-billing-schedule` is now redundant. Decide whether to merge or delete it.
 
 > ### This branch is not the Phase 9 redesign
 >
@@ -59,6 +81,40 @@ Companion docs:
 
 **Already committed, newest first:**
 
+*On `feat/hcp-integration` (local only, never pushed):*
+
+- `1a20914` — **HCP Phase 3: the inbound webhook, the event dispatch table and the entity
+  handlers.** `POST /api/hcp/webhooks/` records every delivery through `apps.audit` before acting
+  on it, queues a Celery task and answers 200. Customer, lead, estimate, job, job-line-item and
+  appointment events each mirror into a GHL contact or custom-object record. Every handler is an
+  upsert on `(location_id, hcp_*_id)`. See §6A.
+- `17df1bd` — **HCP Phase 2: onboarding.** The typed `httpx` client for Housecall Pro, the connect
+  / employee-mapping / calendar-settings / status endpoints under `/api/hcp/`, and the calendar
+  team-membership check that refuses a save when a mapped GHL user is missing from either
+  calendar's team. See §6A.
+- `68eb69c` — **HCP Phase 1: the data model.** `backend/apps/hcp/`, thirteen models, migration
+  `0001_initial`. See §6A.
+
+*On `main` (the branch above sits on top of all of these):*
+
+- `6c22760` — **Monthly billing is now automatic; the daily Twilio Beat pull is paused.**
+  Supersedes §6.6/§6.7 as they previously read: `run_monthly_billing` (new Celery task,
+  `apps/rebilling/tasks.py`) chains `calculate_bills` then `charge_bills` for the month that just
+  ended (`previous_billing_period()`), scheduled in `CELERY_BEAT_SCHEDULE` at **04:00 UTC on the
+  1st** — an hour after the Retell audit. Live clients are now charged with no human in the loop
+  every month; there is no manual gate before the charge goes out. `calculate_bills` also now
+  isolates one client's failure (logged, counted in a new `failed` key) instead of letting it stop
+  the run for everyone after it. Separately, the `pull-twilio-usage` Beat entry (03:30 daily) is
+  commented out in `config/settings/base.py` — **confirmed intentional**, because GoHighLevel now
+  rebills Twilio minutes natively for these sub-accounts, so the automated pull has nothing left to
+  feed. The manual command (`manage.py pull_twilio_usage`) still exists and still works; it is just
+  not run on a schedule any more. Also adds the green **Paid** pill next to the client name on the
+  Overview tab (`ClientDetail.tsx`) when `bill?.status === 'paid'` — see §5.4.
+- `5348977` — **The audit app: structured logging, webhook payload retention, `TaskRun` and
+  `AuditEvent`.** New `backend/apps/audit/` — every inbound webhook is recorded as a `WebhookEvent`
+  with its raw payload (redacted) before any handler runs, every Celery run is recorded as a
+  `TaskRun`, and `manage.py replay_webhook` re-runs a recorded delivery once the cause of a failure
+  is fixed. The HCP webhook (§6A) is built on it; `WebhookEvent.HCP` is its source value.
 - `5f4d2a9` — **Main agency location is self-added to the sync when `installed-locations` omits it.**
   `_add_main_location()` inserts `AGENCY_LOCATION_ID` into the synced set (named via
   `GET /locations/{id}`, falling back to whatever name is already stored, never to blank) only
@@ -159,16 +215,13 @@ Companion docs:
 - Before those: the automated retry schedule (`bcd48b9`) and the Twilio billing pause (`654c927`)
   — Twilio minutes are no longer billed or shown anywhere, behind `TWILIO_BILLING_ENABLED`.
 
-**Test status (last recorded run, as of `5223da6`):**
+**Test status (run on 17 Nov 2026 at `1a20914`, working tree clean):**
 
-- Backend: `pytest`: **458 passed**.
-- `ruff check .` and `ruff format --check .`: clean. `manage.py check`: clean.
+- Backend: `pytest`: **831 passed** (555 at `68eb69c`, 661 at `17df1bd`, 831 at `1a20914` — the
+  HCP phases added 30, 106 and 231 tests respectively, with zero regressions at each step).
+- Frontend: `npm test -- --run`: **112 passed**, 3 files.
+- `ruff check .` and `ruff format --check .`: clean (125 files).
 - `manage.py makemigrations --check --dry-run`: "No changes detected".
-
-Three commits since (`97a661d`, `404e281`, `5f4d2a9`) added further backend and frontend tests
-(GHL location-sync, admin views, card status, agent-picker filtering) without a freshly recorded
-pass count at the time this section was last edited — re-run `pytest` and
-`npm test -- --run` before relying on an exact number.
 
 **Stripe charging has run live** (settled facts above): the single account, the registered
 webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have
@@ -179,11 +232,20 @@ the `collect card information` tag. The sidebar iframe also needs an SSO
 bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script).
 
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts),
-and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table.
+and the parts of Phase 4 still open: a UI for mapping unassigned calls, and a bills table. On the
+HCP side (§6A): the activate-and-backfill step that closes onboarding, the GHL → HCP reverse sync,
+and every phase after it in `local_folder/hcp_plan.md`. There is **no frontend for HCP at all** —
+Phases 1-3 are backend and API only.
 
-**Not merged into `main`:** only the Phase 9 Retell-workspace-per-subaccount redesign
-(`feat/retell-workspace-per-subaccount`, see the callout above). The dark brand theme is merged
-(see the settled facts and commit list above).
+**Not merged into `main`:**
+
+- `feat/hcp-integration` — the Housecall Pro work described above (§6A). Local only, not pushed.
+- `docs/handover-billing-schedule` — the `a6bf36a` docs commit; its content is already in this
+  file, see the callout at the top of this section.
+- `feat/retell-workspace-per-subaccount` — the parked Phase 9 Retell redesign (see the callout
+  above). Still parked, still not in use.
+
+The dark brand theme **is** merged (see the settled facts and commit list above).
 
 ---
 
@@ -206,10 +268,13 @@ Twilio **SMS/MMS is out of scope** (GHL may rebill messaging natively).
 
 **Twilio voice billing is paused** (`TWILIO_BILLING_ENABLED`, default off). GoHighLevel rebills
 regular call minutes natively for these sub-accounts, so billing them here too would charge the
-client twice. The daily pull still runs and `TwilioUsageDay` rows are still stored, so turning the
-setting back on resumes billing without a backfill. While it is off, no bill line, invoice or
-charge can carry Twilio usage, and the admin page hides every Twilio field. **The product is
-Retell AI minutes only.**
+client twice. **As of `6c22760`, the daily automated pull is paused too** — the `pull-twilio-usage`
+Beat entry is commented out in `config/settings/base.py`, confirmed intentional for the same
+reason (nothing left to feed with it). The manual command (`manage.py pull_twilio_usage`) still
+works and still writes `TwilioUsageDay` rows if run by hand, so turning `TWILIO_BILLING_ENABLED`
+back on and re-running it (or re-enabling the Beat entry) resumes billing without a backfill. While
+it is off, no bill line, invoice or charge can carry Twilio usage, and the admin page hides every
+Twilio field. **The product is Retell AI minutes only.**
 
 ### 1.1 Terms used in the code and this file
 
@@ -229,7 +294,7 @@ Retell AI minutes only.**
 
 ---
 
-## 2. The four tasks and where each stands
+## 2. The tasks and where each stands
 
 | # | Task | Due | Status |
 |---|---|---|---|
@@ -237,7 +302,13 @@ Retell AI minutes only.**
 | 1b | Agency admin page: client list, usage, rates, mapping, bill status | — | **Built.** `/admin` is live (GHL SSO). `/admin/preview` is sample data and never calls the API |
 | 2 | Agency dashboard: MRR, live clients, leads by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (the `client-dashboard` feature folder is empty) |
-| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8 built.** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
+| 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8, 10 built, and the monthly run is now automatic (`6c22760`).** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
+| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-3 built** on `feat/hcp-integration` (local, unpushed): models, onboarding API, inbound webhook and entity handlers. Backend only — no UI. Activate-and-backfill, the reverse GHL → HCP sync and everything after it are not started |
+
+Task 5 was not in the original four-task brief; it arrived separately and is planned in
+`local_folder/hcp_plan.md`. It shares `apps/ghl`'s OAuth service and `apps/audit`'s webhook
+recording with Task 4, and shares nothing else — in particular it has **no tie-in to rebilling**:
+HCP job and invoice amounts are mirrored as display data and are not booked anywhere.
 
 Task 2's "builds finished within 10 business days" KPI must **not** be built yet. Only plan for it:
 its start and end points must be settings. Task 2's voice-revenue tile waits for Task 4.
@@ -261,12 +332,21 @@ dashboard/
     config/                 settings (base / development / production / test), urls, celery.py
     apps/
       common/               EncryptedTextField (Fernet) for secrets
+      audit/                structured logging, webhook payload retention, TaskRun + AuditEvent, replay
+        models.py  recording.py  replay.py  redaction.py  middleware.py  context.py  logs.py  signals.py
+        management/commands/  replay_webhook
       ghl/                  Task 1: GHL OAuth onboarding, sub-account sync, SSO session, location webhook
       rebilling/            Task 4: Retell + Twilio voice rebilling, bills, Stripe charging, admin API
-        models.py  services.py  stripe_billing.py  serializers.py  views.py  urls.py
-        management/commands/  calculate_bills, charge_bills, pull_twilio_usage, reconcile_retell_calls
-        migrations/           0001 to 0006 (see §6.2)
+        models.py  services.py  stripe_billing.py  serializers.py  views.py  urls.py  tasks.py
+        management/commands/  calculate_bills, charge_bills, pull_twilio_usage, reconcile_retell_calls,
+                              retry_failed_charges, backfill_default_rates, verify_live_billing(_cleanup)
+        migrations/           0001 to 0009 (see §6.2)
         tests/                one module per concern, plus conftest.py (shared guards)
+      hcp/                  Task 5: Housecall Pro -> GoHighLevel sync (§6A). Phases 1-3
+        models.py  constants.py  exceptions.py  serializers.py  views.py  urls.py  webhooks.py  tasks.py
+        services/             hcp_client.py, onboarding.py, sync.py, mapping.py, ghl_objects.py
+        migrations/           0001_initial
+        tests/                one module per concern, plus conftest.py and fixtures.py
       dashboards/           Tasks 2-3: EMPTY scaffold
     requirements/           *.in (edit) -> *.txt (pip-compile output, committed)
     .env                    secrets. Gitignored. Never commit, never print
@@ -280,7 +360,8 @@ dashboard/
     src/features/onboarding/  built (GHL connect page)
     src/features/admin/       built (live and preview admin pages, mapping and rates editors)
     src/features/agency-dashboard/, client-dashboard/  EMPTY
-  local_folder/             gitignored: PDFs, plan.md, CriticalFindings.md
+  local_folder/             gitignored: PDFs, plan.md, CriticalFindings.md, the HCP docs (see the
+                            companion-docs list at the top of this file)
 ```
 
 ### 3.2 Stack
@@ -323,10 +404,22 @@ All under `/api/` unless noted.
 | PUT | `/api/rebilling/admin/clients/<location_id>/rates/?month=` | Agency only. Saves the client's two rates from today, returns the refreshed detail |
 | GET | `/api/rebilling/admin/retell-agents/` | Agency only. Every agent on Jerry's Retell account, for the picker. 502 if Retell fails |
 | GET | `/api/rebilling/admin/twilio-subaccounts/` | Agency only. Every subaccount under Jerry's Twilio parent. 502 if Twilio fails |
+| POST | `/api/hcp/webhooks/` | Housecall Pro's single webhook URL per company. Recorded, queued, 200. Knowingly unauthenticated — §6A.3, §16 |
+| POST | `/api/hcp/accounts/` | Connect an HCP company: `location_id` + `api_key`, validated against HCP before anything is stored. Leaves `is_active=False` |
+| GET | `/api/hcp/accounts/<location_id>/status/` | Where this sub-account is in onboarding, and what is configured |
+| GET | `/api/hcp/accounts/<location_id>/employees/` | The company's HCP employees and the sub-account's GHL users, for the mapping screen |
+| PUT | `/api/hcp/accounts/<location_id>/employee-mappings/` | Save step 2's whole table: the HCP employee ↔ GHL user mapping |
+| GET | `/api/hcp/accounts/<location_id>/calendars/` | The sub-account's GHL round-robin calendars |
+| PUT | `/api/hcp/accounts/<location_id>/calendar-settings/` | Save step 3: the estimate/job calendars and fallback users. Runs the calendar team check — §6A.2 |
 | — | `/admin/` | Django admin. `ClientMapping` and `Bill` are the registered rebilling models; GHL models have no admin registration |
+
+Every `/api/hcp/accounts/…` endpoint is behind the same GHL SSO session as the rebilling admin
+endpoints (`X-GHL-Session`): agency scope may configure any sub-account, a sub-account only its
+own. `/api/hcp/webhooks/` is the exception and is unauthenticated — §6A.3.
 
 Frontend routes: `/onboarding` (GHL connect page), `/admin` (live admin page, needs GHL SSO),
 `/admin/preview` (sample data, development only). Anything else redirects to `/onboarding`.
+**There is no frontend for HCP** — Task 5's endpoints exist, the screens that would call them do not.
 
 ---
 
@@ -508,6 +601,10 @@ into another's page — every page opens on **Overview & billing**.
 - **Billing contact card.** Stripe customer's name (or "No name on file in Stripe", or "Matched on the
   first charge" when no customer is matched yet), billing email, and the sub-account row: the GHL owner's
   name, or the client's own name when GHL has no owner on file. Never a raw id.
+- **Paid pill (`6c22760`).** A green **Paid** pill sits next to the client's name in the page
+  heading whenever the current month's bill has `status === 'paid'`. This is separate from the
+  gray **Billing paused** pill next to it (shown when `!detail.active`) and from the headline
+  tile's own status label above — both can be on screen at once.
 
 ### 5.5 As a sub-account sees it
 
@@ -544,7 +641,7 @@ every case except the first: a client that is mapped but empty still opens its o
 
 ---
 
-## 6. Task 4: voice rebilling (Phases 1, 2, 2b, 3, 5, 7, 8 built; Phase 4 mostly built; Phase 6 pending)
+## 6. Task 4: voice rebilling (Phases 1, 2, 2b, 3, 5, 7, 8 and 10 built; Phase 4 mostly built; Phase 6 pending; the monthly run is automatic as of `6c22760`)
 
 ### 6.1 The business rule
 
@@ -571,8 +668,11 @@ them. Do not apply Retell's rounding rule to Twilio.
 
 **Migrations:** `0001_initial`, `0002_call_billing_status`, `0003_twilio_voice_usage`,
 `0004_bill_and_billline`, `0005_bill_stripe_fields_and_billing_email`,
-`0006_bill_charged_at_and_failure_reason`. After any model change, `makemigrations --check --dry-run`
-must report "No changes detected".
+`0006_bill_charged_at_and_failure_reason`, `0007_bill_retry_schedule`,
+`0008_client_mapping_card_requested_at`, `0009_client_mapping_voice_routing` — nine in all. The
+other apps: `apps/audit` has `0001_initial` and `0002_alter_webhookevent_source` (the second adds
+the `hcp` source, `1a20914`), and `apps/hcp` has `0001_initial` (§6A.4). After any model change,
+`makemigrations --check --dry-run` must report "No changes detected".
 
 `0006` is written defensively. Another branch (`feat/ghl-billing-with-stripe-fallback`) also adds a
 `charged_at` column in its own `0006`, so a database that has run that branch already has the column.
@@ -664,9 +764,10 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
 | What | Schedule (UTC) | Celery task | Manual command |
 |---|---|---|---|
 | Retell audit | 03:00 daily | `apps.rebilling.tasks.reconcile_retell_calls` | `python manage.py reconcile_retell_calls` |
-| Twilio pull | 03:30 daily | `apps.rebilling.tasks.pull_twilio_usage` | `python manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]` |
-| Calculate bills | **not scheduled** | — | `python manage.py calculate_bills [--month YYYY-MM]` |
-| Charge bills | **not scheduled** (deliberately) | — | `python manage.py charge_bills [--month YYYY-MM]` |
+| Twilio pull | **paused** (was 03:30 daily; `pull-twilio-usage` commented out in `CELERY_BEAT_SCHEDULE`, `6c22760`) | — | `python manage.py pull_twilio_usage [--start YYYY-MM-DD --end YYYY-MM-DD]` |
+| Monthly billing (calculate + charge) | **04:00 on the 1st** (`6c22760`) | `apps.rebilling.tasks.run_monthly_billing` | — (runs `calculate_bills` then `charge_bills` for the month that just ended) |
+| Calculate bills (standalone) | not scheduled on its own — folded into the monthly run above | — | `python manage.py calculate_bills [--month YYYY-MM]` |
+| Charge bills (standalone) | not scheduled on its own — folded into the monthly run above | — | `python manage.py charge_bills [--month YYYY-MM]` |
 | Retry declined charges | Hourly, at :15 | `apps.rebilling.tasks.retry_failed_charges` | `python manage.py retry_failed_charges` |
 | Live verification (never scheduled) | — | — | `python manage.py verify_live_billing` / `verify_live_billing_cleanup [--recover]` — see §6.6a |
 
@@ -674,12 +775,18 @@ before summing into the day. Applying `RETELL_ROUNDING` on top would round twice
   `config/celery.py` is the Celery app. `config/__init__.py` exposes it so `@shared_task` binds.
 - Running the schedule needs **both** `celery -A config worker` and `celery -A config beat`, plus a
   reachable Redis (`REDIS_URL`). Nothing runs without them. Whether they run on the server is not
-  recorded here; check before relying on the nightly audit or pull.
+  recorded here; check before relying on the nightly audit or the monthly billing run.
 - The Retell command exits non-zero on failure. The Twilio command exits non-zero **only when every
   client fails**, which points to a systemic problem such as bad credentials or Twilio being down.
   A partial failure warns and exits 0. Cron can monitor the exit code.
-- The **first** charge is never automatic. It runs by hand, per month, in order: the Twilio month-close pull
-  (with both dates), then `calculate_bills`, then `charge_bills`.
+- **The monthly charge is now automatic (as of `6c22760`), not manual.** `run_monthly_billing`
+  chains `calculate_bills` then `charge_bills` for the month that just ended
+  (`previous_billing_period()`) at 04:00 UTC on the 1st — an hour after the Retell audit, so the
+  closing month's last night of calls is reconciled first. There is **no human approval step**
+  before live clients are charged. The manual commands above still exist for an off-schedule or
+  re-run, but the first charge of the month no longer waits on anyone running them by hand. The
+  Twilio month-close pull is no longer part of this sequence — see the Twilio pull row above and
+  §6.7 (`TWILIO_BILLING_ENABLED`).
 
 ### 6.6a Live verification: proving the paid and failed paths on the server
 
@@ -726,7 +833,7 @@ once, checking the bill becomes `paid` and the agent id comes back by itself —
 | `TWILIO_AUTH_TOKEN` | none | The **parent** account's auth token. A plain env setting, not encrypted in the database (decided; see plan.md) |
 | `TWILIO_API_BASE_URL` | `https://api.twilio.com` | |
 | `TWILIO_REQUEST_TIMEOUT` | 30 | seconds |
-| `TWILIO_BILLING_ENABLED` | `False` | Whether Twilio call minutes are billed. Off: GHL rebills them natively. The pull still runs; only billing and the UI are paused |
+| `TWILIO_BILLING_ENABLED` | `False` | Whether Twilio call minutes are billed. Off: GHL rebills them natively. The daily Beat pull itself is also paused as of `6c22760` (see §6.6) — only the manual `pull_twilio_usage` command still runs it, on demand |
 | `REDIS_URL` | `redis://localhost:6379/0` | Celery broker |
 | `STRIPE_SECRET_KEY` | none | The API key of the Stripe account bills are charged through. See §15 |
 | `STRIPE_WEBHOOK_SECRET` | none | The webhook signing secret. Different from the API key |
@@ -1103,6 +1210,219 @@ can work.
 
 ---
 
+## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-3 built)
+
+**On `feat/hcp-integration` only, local and unpushed.** Everything in this section is in
+`backend/apps/hcp/` and none of it is on `main` yet. The plan it follows, with its open
+questions, is `local_folder/hcp_plan.md`; the behavioural spec is
+`local_folder/hcp_reference_project_sop.md`; the GHL objects it writes into are specified in
+`local_folder/GHL_Snapshot_Specification.md`. The reference implementation it was built against —
+a working, roughly one-year-old Django+Celery build of the same flow for a different sub-account —
+sits beside this repo at `HCP-Integration`, outside it.
+
+### 6A.1 What it is
+
+Housecall Pro is the field-service system an HVAC client runs their jobs in. This mirrors a
+connected HCP company's **customers, leads, estimates, jobs, job line items and appointments** into
+the matching GoHighLevel sub-account — contacts for customers, custom-object records for the rest,
+round-robin calendar appointments for scheduling — so the GHL side can run marketing and
+automations off real job data.
+
+It is **one-way, HCP → GHL**, in the built phases. The reverse direction is a later phase and is
+not started.
+
+**No tie-in to rebilling.** Job and invoice amounts are mirrored as display data. Nothing here
+feeds `apps/rebilling`, creates a bill, or touches Stripe.
+
+### 6A.2 Onboarding (Phase 2, `17df1bd`)
+
+Four steps, in the SOP's own order, in `apps/hcp/services/onboarding.py`. The state machine is
+`onboarding_status()['state']`: `not_connected` → `needs_employee_mapping` →
+`needs_calendar_settings` → `ready_to_activate` → `active`.
+
+1. **Connect.** An admin pastes the company's HCP API key. `GET /company` proves the key works and
+   names the company before anything is stored. The row lands `is_active=False` — connected,
+   syncing nothing.
+2. **Map employees.** Every HCP employee that should carry an assignment is matched to one GHL
+   user, one-to-one in **both** directions (`HCPEmployeeMapping`'s double-unique constraint).
+3. **Configure calendars.** Pick the estimate and job round-robin calendars and the fallback
+   users, and prove every mapped GHL user is on **both** calendar teams.
+4. **Activate.** Not built — see §6A.7.
+
+**HCP has no OAuth.** The credential is a static API key an admin generates in the HCP UI
+(My Apps → API Key Management) and is shown once. It travels as `Authorization: Token {api_key}`,
+a `Token` scheme and not `Bearer`. It is stored in `HCPAccount.api_key` as an `EncryptedTextField`
+(Fernet) — the reference project stores it in plaintext; this one does not.
+
+**The calendar team check is the point of step 3.** A GHL user who is missing from a calendar's
+team does not fail loudly: GHL rejects that one appointment with "The user id not part of calendar
+team" while the lead, estimate and job it belongs to sync fine. The account looks healthy and
+quietly drops appointments. The save is therefore refused unless every mapped user is on the team
+of both calendars, and the error names who to add and where.
+
+**The HCP client** (`services/hcp_client.py`) is a typed `httpx` client, one instance per connected
+company. Unlike the reference's `(success, payload)` tuples, it **raises**, so onboarding can tell
+apart a rejected key (→ 400), a rate limit (→ 429, with `Retry-After`), and HCP being down or slow
+(→ 502).
+
+**Four decisions made while building Phase 2, all approved on 16 Nov:**
+
+1. **Auth.** The `/api/hcp/accounts/…` endpoints sit behind the existing GHL SSO session
+   (`X-GHL-Session`), like the rebilling admin endpoints: agency scope configures any sub-account,
+   a sub-account only its own. These endpoints accept an HCP API key, and `CriticalFindings.md`
+   already names the unauthenticated `/api/ghl/onboarding/` endpoints as a gap — a second one was
+   not worth opening.
+2. **A default user is required** on the calendar save (the two per-calendar overrides stay
+   optional). It is who an HCP appointment with no technician assigned gets booked to.
+3. **Calendar settings refuse to save with zero employee mappings**, or the team check passes
+   vacuously. This is what enforces the SOP's step-2-before-step-3 ordering.
+4. **`users()`, `calendars()` and `calendar()` were added to the existing `GHLOAuthService`**
+   rather than opening a second GHL HTTP path, along with the `users.readonly` scope they need.
+   **That scope must be added to the marketplace app in GoHighLevel before this works against a
+   real sub-account** — the `/users/` read will 401 until it is.
+
+### 6A.3 The webhook and the dispatch table (Phase 3, `1a20914`)
+
+`POST /api/hcp/webhooks/` — one URL per connected company; the body says which event it is.
+Structured like `apps/ghl`'s location webhook: read the raw body, record the delivery through
+`apps.audit` **before** anything acts on it, hand the work to Celery, answer 200. Recording first
+is what makes a handler bug cost a retry rather than the event — `manage.py replay_webhook` re-runs
+a recorded delivery once the cause is fixed. `WebhookEvent.HCP` is the source value.
+
+**The handshake.** HCP verifies a newly configured webhook URL by POSTing exactly `{"foo": "bar"}`
+and expecting a 200. It carries no company and no event, so it is answered before every other
+check, and deliberately **not** recorded — one row per URL check would bury the real events.
+
+**The endpoint is knowingly unauthenticated.** HCP's webhook signing scheme could not be confirmed
+from its own documentation (`hcp_plan.md`, Open Question 1): third-party guides disagree on both
+the header name and the algorithm, and the reference project verifies nothing at all. Rather than
+ship a guess that looks like security without being any, the endpoint acts only on payloads whose
+`company_id` matches an account that is already connected **and** activated. An attacker who knows
+a company id can cause a mirror of data they would have to already have; they cannot reach another
+sub-account or write anything of their own choosing. **Closing this needs one real webhook delivery
+pulled from a live HCP account** — see §15 and §16.
+
+**Events are HCP's vocabulary, not ours**, and live in `apps/hcp/constants.py`. They are
+transcribed from the reference project's own `hcp_webhook` view, which is effectively the only
+written record of which events HCP emits — its docs do not enumerate them. Five families, one
+Celery task each: customer, lead, estimate (nine names), job (nine names), and job appointment.
+
+**The appointment event names are not the obvious ones.** A cancellation arrives as
+`job.appointment.appointment_discarded`, not `.canceled`; completion arrives on the job itself as
+`job.completed`, not `job.appointment.completed`. The five the reference dispatches on are
+`scheduled`, `rescheduled`, `appointment_pros_assigned`, `appointment_pros_unassigned` and
+`appointment_discarded`. `.canceled` and `.completed` are accepted **as well**, so an account whose
+HCP version does send them is not silently ignored; an event HCP never sends simply never arrives.
+
+An event type nothing handles is recorded, marked `IGNORED`, and answered 200 — not an error.
+
+**An inactive account's events are recorded and ignored, not applied.** A live event landing ahead
+of the historical records it belongs with would be worse than a gap. They are kept as deliveries,
+so replay applies them once the activate-and-backfill step exists (§6A.7).
+
+### 6A.4 The models (Phase 1, `68eb69c`)
+
+Thirteen, in `apps/hcp/models.py`, migration `0001_initial`. `location_id` is a plain indexed
+`CharField` everywhere, never a hard FK to `GHLOAuthToken` — the same convention as
+`ClientMapping` (§6.2), so a row survives independent of that token's lifecycle.
+
+| Model | What it holds |
+|---|---|
+| `HCPAccount` | One connected HCP company ↔ one GHL sub-account. Encrypted `api_key`, `is_active` |
+| `HCPEmployeeMapping` | One HCP employee ↔ one GHL user, per location. Unique in **both** directions |
+| `HCPCalendarSettings` | The estimate and job round-robin calendars and their fallback users |
+| `IntegratedContact` | An HCP customer ↔ a GHL contact |
+| `Lead`, `Estimate`, `EstimateOption`, `Job`, `JobLineItem` | The mirrored entities, each keyed `(location_id, hcp_*_id)` and carrying its `ghl_*_record_id` |
+| `LeadEstimateConversion`, `LeadJobConversion`, `EstimateJobRelation` | The joins between them |
+| `AppointmentIntegration` | One schedule. Estimate: 1:1, keyed on the estimate. Job: 1:N, keyed on the appointment. A check constraint stops a row claiming to be both |
+
+**The nullable-id dedup pattern is load-bearing, not cosmetic.** The local row is written **before**
+the GHL write, with `ghl_*_record_id` left NULL. Two deliveries for the same new job both look it
+up; one creates the row, the other finds it, so only one of them creates the GHL record. NULLs are
+distinct to the database, so two *different* jobs each waiting on their GHL half never collide on
+the unique constraint.
+
+**Models deliberately left out of Phase 1:** `EstimateEmployeeAssignment`,
+`JobEmployeeAssignment`, and the reference's `SyncState` / `IntegrationSyncOrchestrator` models.
+They were not in the requested scope, and `hcp_plan.md` flags the sync-state ones as contingent on
+an open question.
+
+### 6A.5 How the mirror works
+
+`services/sync.py` (`HCPToGHLSync`) holds one handler per entity and **every one of them is an
+upsert on `(location_id, hcp_*_id)`**. That is the design, not a nicety: HCP sends several events
+per entity, each carrying the whole object, so there is no per-event patching to get wrong; a
+failed delivery replays without double-writing; and the backfill will call these same handlers for
+records the webhooks are already delivering.
+
+Nothing in it raises for an entity it cannot mirror. A customer with no name, a job whose estimate
+has not arrived yet — those are facts about the data, returned as an outcome string the webhook
+record keeps. Only an actual failure (GHL rejecting a write, HCP unreachable) raises, so the
+delivery is marked failed and can be replayed.
+
+**Line items reconcile as a three-way diff** — HCP's list, our rows, GHL's records — in the same
+task as the job, so the two cannot be half-applied. An item removed in HCP is deleted in GHL too: a
+quote the customer can still see is worse than a missing one. When an event carries a trimmed job
+with no line items, they are read from HCP rather than read as "the job has none".
+
+**Estimate appointments were built beyond the stated Phase 3 scope, on purpose.** The scope named
+`job.appointment.*` only, but Phase 2 already stores an estimate calendar and its fallback user and
+Phase 1 built `AppointmentIntegration(appointment_type='estimate')` with its own constraint — that
+configuration would otherwise be dead. An estimate carries one schedule on itself rather than
+sending appointment events, so it is keyed on the estimate id and unbooked when HCP clears the
+schedule.
+
+`services/mapping.py` is **pure functions: dict in, dict out**, no database, no HTTP, no settings.
+The field-by-field mapping is the part most likely to be wrong and most tedious to debug through
+two APIs, so it is the part that has to be testable on a fixture alone. Three conventions run
+through it:
+
+- **Money arrives in cents.** HCP sends `total_amount: 45000`; GHL's Monetary Value fields want
+  `{'value': 450.0, 'currency': 'default'}`. A bare number is never sent to a monetary field.
+- **Blank is omitted, not sent.** A key left out leaves GHL's value alone; a key sent empty clears
+  it. HCP routinely omits fields it has nothing for, and clearing a GHL field because HCP did not
+  mention it this time is data loss.
+- **Timestamps pass through as HCP's own UTC ISO-8601 strings**, which is what GHL's Date/Time
+  fields accept. The reference reformats them into the location's local timezone, which loses the
+  offset.
+
+`services/ghl_objects.py` sits **on top of** `GHLOAuthService`, not beside it, so there is still
+exactly one place a GHL request is built. Custom-object ids, association ids and contact
+custom-field ids are per-sub-account lookups (GHL derives an immutable key from the field *name* at
+creation time, so only the key is stable and the id differs everywhere) and are cached for the life
+of one sync run — caching across runs would mean a snapshot fixed mid-flight never takes effect
+without a restart.
+
+### 6A.6 What it depends on outside this app
+
+- **The GHL snapshot must already exist in the sub-account.** Four custom objects (Leads,
+  Estimates, Jobs, Job Line Items), their fields, two round-robin calendars and the contact custom
+  fields, all with the exact names in `local_folder/GHL_Snapshot_Specification.md`. GHL derives the
+  property key from the field name at creation time and renaming later does not fix a typo, so a
+  mismatched name means the write silently drops that field. The reference never automates this;
+  it is a manual prerequisite here too.
+- **The `users.readonly` scope** on the marketplace app (§6A.2, decision 4).
+- **`apps.audit`** for webhook recording and replay, and **`apps.ghl`** for location tokens.
+- **Settings:** `HCP_API_BASE_URL` (default `https://api.housecallpro.com`), `HCP_REQUEST_TIMEOUT`
+  (30), `HCP_PAGE_SIZE` (50). There is **no account-wide HCP credential** — the key is per company
+  and lives encrypted in the database, so none of it is in `.env`.
+
+### 6A.7 What is not built
+
+- **Step 4 of onboarding: activate and backfill.** `is_active` is never flipped, so a connected
+  account records events and applies none of them. This is the gap between what exists and a
+  working integration.
+- **The reverse direction, GHL → HCP**, and every phase after it in `hcp_plan.md` (conflict
+  resolution and rate limits, observability, alerting, rollout).
+- **Any UI.** The endpoints exist; no screen calls them.
+- **Webhook authenticity** (§6A.3, §15, §16).
+- **One thing that could not be verified:** GHL's official docs do not publish the full
+  `GET /calendars/` list-response schema, so `teamMembers` is read from `GET /calendars/{id}` (the
+  documented single-calendar endpoint) rather than trusting the list entries. Worth confirming
+  against a real sub-account.
+
+---
+
 ## 7. Financial safeguards
 
 These are enforced in code, or are explicit requirements.
@@ -1196,6 +1516,10 @@ Everything is in `backend/.env`, which is gitignored. `backend/.env.example` doc
 - **Retell:** `RETELL_API_KEY`, `RETELL_ROUNDING`, `RETELL_API_BASE_URL`, `RETELL_REQUEST_TIMEOUT`.
 - **Twilio:** `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_API_BASE_URL`, `TWILIO_REQUEST_TIMEOUT`.
 - **Stripe:** `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`.
+- **Housecall Pro (§6A):** `HCP_API_BASE_URL`, `HCP_REQUEST_TIMEOUT`, `HCP_PAGE_SIZE` — all
+  optional, all with working defaults. There is **no account-wide HCP credential**: each connected
+  company's API key is pasted during onboarding and stored encrypted in the database, so no HCP
+  secret belongs in `.env` at all.
 
 `GHL_COMPANY_ID` was **removed entirely**. Do not reintroduce it. `AGENCY_LOCATION_ID` replaced it as the way to
 identify the agency location.
@@ -1220,6 +1544,9 @@ python manage.py reconcile_retell_calls                   # manual Retell audit
 python manage.py pull_twilio_usage [--start --end]        # manual Twilio pull (rolling 3-day window by default)
 python manage.py calculate_bills [--month YYYY-MM]        # build the month's bills
 python manage.py charge_bills [--month YYYY-MM]           # charge the month's uncharged bills through Stripe
+python manage.py retry_failed_charges                    # collect bills whose retry is due (also hourly on Beat)
+python manage.py backfill_default_rates                  # one-off: a RateHistory row for pre-auto-seed clients
+python manage.py replay_webhook <id>                     # re-run a recorded webhook delivery (apps/audit)
 python manage.py verify_live_billing                      # live paid+failed path check, Stripe TEST mode only (§6.6a)
 python manage.py verify_live_billing_cleanup [--recover]  # undo it; --recover also proves the resume path
 celery -A config worker -l info                           # background worker
@@ -1255,8 +1582,12 @@ npm run build                        # tsc -b && vite build -> dist/
   a local router) can coexist: an unmocked request on either raises.
 - Shared helpers: `apps/rebilling/tests/test_services.py` (`make_client`, `call_payload`) is reused by the other
   rebilling test modules.
+- `apps/hcp/tests/` follows the same shape: `conftest.py` for the guards and `fixtures.py` for the
+  sample HCP webhook payloads, one module per concern. HCP and GHL HTTP are both mocked with
+  `respx`; nothing in it has ever reached a live Housecall Pro account.
 
-**Counts (last run):** backend 289 passed (`apps/ghl`, `apps/rebilling`). Frontend 69 passed (3 files).
+**Counts (run 17 Nov 2026 at `1a20914`):** backend **831 passed** (`apps/audit`, `apps/ghl`,
+`apps/rebilling`, `apps/hcp`). Frontend **112 passed**, 3 files.
 
 | File | Covers |
 |---|---|
@@ -1371,6 +1702,24 @@ repeated here.
   live — §0.)
 - The SaaS subscription response shape (`GET /saas/get-saas-subscription/{locationId}`), which blocks Task 2's MRR KPI.
 
+**Blocks taking the Housecall Pro integration near production (§6A):**
+
+- **HCP's webhook signing scheme.** The single highest-value thing to obtain. Third-party guides
+  disagree on both the header name and the algorithm (one says `Api-Timestamp`/`Api-Signature`;
+  another says HMAC-SHA256 over `x-housecall-signature`), HCP's own docs do not say, and the
+  reference project verifies nothing. **One real webhook delivery pulled from a live HCP account
+  settles it.** Until then `POST /api/hcp/webhooks/` is knowingly unauthenticated (§6A.3, §16).
+- **`GET /calendars/`'s list-response schema.** GHL does not publish it, so `teamMembers` is read
+  from the documented single-calendar endpoint instead. Confirm against a real sub-account.
+- **The `users.readonly` scope** has to be added to the marketplace app before the employee-mapping
+  screen can read a sub-account's GHL users at all (§6A.2).
+- **The GHL snapshot** (four custom objects, their exact field names, two round-robin calendars)
+  must exist in a sub-account before any of this syncs. Who provisions it per client, and is it
+  confirmed built? See `local_folder/GHL_Snapshot_Specification.md`.
+- **Which sub-accounts get HCP sync** — a single pilot client, or any client who also uses HCP?
+  This is Open Question 2 in `hcp_plan.md` and it decides whether a self-serve connect screen is
+  needed at all. Phases 1-3 assume an internal, per-location setup behind agency SSO.
+
 **Business questions for Jerry:**
 
 - Is billing **inbound as well as outbound** regular calls intended? `calls` covers both, so a client pays for calls
@@ -1384,6 +1733,12 @@ repeated here.
 - If SMS ever comes into scope: does Twilio's `usage` count messages or **segments**?
 
 **Retell multi-location architecture (answered):**
+
+> **This answer was overruled, not refuted.** It rejects workspace isolation; Jerry's team decided
+> on 4 Nov to go with one workspace per sub-account anyway, and that is what
+> `feat/retell-workspace-per-subaccount` (Phase 9) builds. That branch is **parked and not merged**
+> — `main` still runs the model this section describes, so the reasoning below is still the
+> reasoning behind the code that is actually running. See the callout in §0 and `plan.md` Phase 9.
 
 Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one App per sub-account, one agent per sub-account**, all provisioned by script. Attribution (the `agent_id` → `ClientMapping.retell_agent_ids` match) is untouched.
 
@@ -1435,6 +1790,17 @@ Retell's design for an agency with 50+ GHL sub-accounts is **one workspace, one 
   mitigations are file permissions and the gitignore.
 - **`local_folder/` is gitignored.** `plan.md` and `CriticalFindings.md` exist **only on the development machine**. Commit
   `6d0b7b1` claims `plan.md` is in it, and it is not.
+- **The HCP webhook endpoint is unauthenticated** (§6A.3). It is bounded — it acts only on a
+  `company_id` belonging to an already-connected, already-activated account — but it is a real,
+  named gap and it closes the moment HCP's signing scheme is confirmed (§15).
+- **HCP sync cannot actually run yet.** `is_active` is never flipped, because the activate-and-
+  backfill step is not built (§6A.7): a connected account records its deliveries and applies none
+  of them. Nothing is lost — replay applies them once that step exists — but until then the
+  integration mirrors nothing.
+- **Nothing in HCP has run against a live Housecall Pro or a live sub-account.** Every test is a
+  mocked fixture. The event names themselves are transcribed from the reference project rather
+  than from HCP's documentation, so an event family HCP has since renamed would be silently
+  ignored (recorded and marked `IGNORED`, which is at least visible in the audit table).
 - **`apps/dashboards` is empty**, and the `frontend/src/features/*-dashboard` folders hold only placeholders.
 - **The admin page is built and tested, but the live path is only partly verified.** The SSO handshake, all backend
   endpoints, and component rendering are covered by tests. The user has checked the call status badge on the deployed
@@ -1470,7 +1836,7 @@ the entire block below, replacing whatever is currently there (including any exi
 ```javascript
 <script>
 /* ---- Favicon (existing — unchanged) ------------------------------------- */
-var faviconURL = 'https://assets.cdn.filesafe.space/mDdwkGzgCnH4CYSQKWtQ/media/6adf8bf0f0438c2e5e0528b9.png' // Upload an image into a location funnel and then use the URL here.
+var faviconURL = 'PASTE_FAVICON_URL_HERE' // Upload an image into a location funnel, then paste its URL. The real one carries a location id, so it is not written down here.
 var link = document.querySelector("link[rel*='icon']") || document.createElement('link');
 link.type = 'image/x-icon';
 link.rel = 'shortcut icon';
@@ -1746,23 +2112,41 @@ Merged into `main`. Oldest first:
 | `18d88f0` | Stripe invoices collected immediately (`Invoice.pay()`) instead of waiting on Stripe's own queue (§6.10) |
 | `ed16126` | Phase 10: pause/resume a client by clearing/restoring their Retell agent id; manual retry-charge endpoint (§6.10b, §6.10c) |
 | `106cdb1` | GHL `location-token` fixed to the real `v3` kebab-case path; auto-mint retried on an empty `access_token` |
+| `5348977` | `apps/audit`: structured logging, webhook payload retention, `TaskRun` and `AuditEvent`, and `replay_webhook` |
+| `6c22760` | Monthly billing on the Beat schedule (04:00 on the 1st); Twilio Beat pull commented out; the Paid badge (§0, §6.6) |
+
+On `feat/hcp-integration`, on top of `6c22760` — **local only, never pushed** (§6A):
+
+| Commit | Message (abridged) |
+|---|---|
+| `68eb69c` | HCP Phase 1: `apps/hcp` skeleton, thirteen models, `0001_initial`, 30 tests |
+| `17df1bd` | HCP Phase 2: the HCP client, the onboarding endpoints, the calendar team check, 106 tests |
+| `1a20914` | HCP Phase 3: the inbound webhook, the dispatch table and the entity handlers, 231 tests |
+
+On `docs/handover-billing-schedule`, also off `6c22760` and also local:
+
+| Commit | Message (abridged) |
+|---|---|
+| `a6bf36a` | docs: update CLAUDE.md and handover.md for the automated billing schedule. **Intended for `main` and never landed there** — its content is now in this file and `CLAUDE.md` on `feat/hcp-integration` instead (§0) |
 
 Other branches in the repository: `feat/retell-workspace-per-subaccount` (the parked Phase 9 redesign,
 one Retell workspace per sub-account — **not merged, not in use**, see §0), `feat/ghl-billing-with-stripe-fallback`
 (the GHL one-off invoice attempt, with its own `0006` and the `ghl_invoice_*` columns), `feat/stripe-billing`
 (now merged into `main`), `feat/admin-brand-theme` (the dark brand restyle of the admin page, one commit,
 `97d9d59` — **merged into `main` via `7675615`**, see §0), and a couple of older working branches
-(`retell`, `twillio-retell`, `versionone-singleworkspace-backup`).
+(`retell`, `twillio-retell`, `versionone-singleworkspace-backup`). `feat/hcp-integration` and
+`docs/handover-billing-schedule` are the two live local branches, both listed above.
 
 ---
 
 ## 20. Memory and collaboration
 
-- Claude's persistent memory for this project is indexed by `MEMORY.md` and holds notes on: the project overview, a rule
-  to avoid over-engineering, the Phase 5 billing architecture, and the two GHL location ids (which one is for onboarding
-  and which holds the billing contacts). **The Phase 5 note describes the other branch's decision (GHL invoices with
-  Stripe as a fallback). It does not describe this branch, which is Stripe-primary (§18).** Update that note when
-  convenient.
+- **There is no `MEMORY.md` on this machine any more** (checked 17 Nov 2026), so an earlier note here
+  about a persistent memory index no longer applies. The one thing worth carrying forward from it:
+  if any memory or note anywhere says Phase 5 billing is "GHL invoices with Stripe as a fallback",
+  **that describes `feat/ghl-billing-with-stripe-fallback`, not `main`.** `main` is Stripe-primary
+  (§18). This file, `CLAUDE.md` and the `local_folder/` docs are the record; treat anything else as
+  stale until checked against them.
 - The user pastes multi-part specs and expects each part to be worked through in full, with anything not done called out
   explicitly.
 - The user wants short, direct summaries: what changed, what was verified, and what was deliberately left out.
@@ -1773,14 +2157,21 @@ one Retell workspace per sub-account — **not merged, not in use**, see §0), `
 
 1. Read this file, then `CLAUDE.md`.
 2. If the task touches rebilling, read `local_folder/plan.md` and `local_folder/CriticalFindings.md`, if they exist on the machine.
+2b. If the task touches Housecall Pro, read §6A here, then `local_folder/hcp_plan.md` and
+   `local_folder/hcp_reference_project_sop.md`, and `local_folder/GHL_Snapshot_Specification.md`
+   for the GHL side.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **444 passed**. From `frontend/`, run `npm test -- --run` and expect **107 passed**. Also run `ruff check .`,
-   `ruff format --check .` and `manage.py makemigrations --check --dry-run`, and in `frontend/`
-   `./node_modules/.bin/tsc -b` and `./node_modules/.bin/oxlint src`.
-4. Check `git status` and `git log --oneline | head` before changing anything. `main` should be clean at
-   `106cdb1` (§0) unless new work is in flight.
-5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built. Still open: the unassigned-call
-   mapping UI, the bills table, Phase 6 (alerts), and the `send_invoice` path (§16). Tasks 2 and 3 are not started.
+   **831 passed** (run 17 Nov 2026 at `1a20914`). From `frontend/`, run `npm test -- --run` and
+   expect **112 passed**. Also run `ruff check .`, `ruff format --check .` and
+   `manage.py makemigrations --check --dry-run`, and in `frontend/` `./node_modules/.bin/tsc -b`
+   and `./node_modules/.bin/oxlint src`.
+4. Check `git status` and `git log --oneline | head` before changing anything. The working branch is
+   `feat/hcp-integration`, clean at `1a20914`, sitting on `main` at `6c22760` (§0) unless new work is
+   in flight. **Nothing on this branch has been pushed, by instruction.**
+5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built, and the monthly
+   charge now runs automatically (§6.6). Still open: the unassigned-call mapping UI, the bills table,
+   Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-3
+   built and stops short of activate-and-backfill, with no UI. Tasks 2 and 3 are not started.
    Don't start any of these without an explicit request. Ask first if the request is ambiguous. **Never make live
    API calls.**
 6. **This branch is not Phase 9.** `main` uses one shared `RETELL_API_KEY` and agent-id/phone matching
