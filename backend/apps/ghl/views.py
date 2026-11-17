@@ -64,6 +64,40 @@ class LocationSyncView(APIView):
         return Response(_onboarding_payload())
 
 
+class SaasClientCountView(APIView):
+    """GET /api/ghl/saas-client-count/?location_id=...: the "Number of SaaS clients" custom
+    value in the agency's main sub-account, for the separate SurPro Labs AI website.
+
+    `location_id` is checked against `AGENCY_LOCATION_ID`, not used to pick a sub-account - this
+    endpoint only ever reads the one location configured for it. The id is not itself a secret
+    (see the question raised separately about whether this also needs a shared one), so this is
+    a sanity check against a wrong caller or a misconfigured environment, not an auth boundary.
+    """
+
+    authentication_classes: list = []
+    permission_classes: list = []
+
+    def get(self, request):
+        location_id = request.query_params.get('location_id', '')
+        if not settings.AGENCY_LOCATION_ID or location_id != settings.AGENCY_LOCATION_ID:
+            return Response({'detail': 'Unknown location.'}, status=status.HTTP_403_FORBIDDEN)
+
+        custom_value_id = settings.GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID
+        if not custom_value_id:
+            logger.error('ghl: GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID is not configured')
+            return Response(
+                {'detail': 'Not configured.'}, status=status.HTTP_503_SERVICE_UNAVAILABLE
+            )
+
+        try:
+            custom_value = GHLOAuthService().get_custom_value(location_id, custom_value_id)
+        except GHLError:
+            logger.exception('ghl: saas client count read failed')
+            return Response({'detail': 'GHL request failed.'}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({'value': custom_value.get('value', '')})
+
+
 class OAuthCallbackView(APIView):
     """GET /api/oauth/callback/: the redirect URI registered on the marketplace app."""
 

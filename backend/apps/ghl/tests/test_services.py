@@ -798,6 +798,39 @@ def test_reading_custom_values_for_a_sub_account_with_no_token_is_an_error(servi
 
 @pytest.mark.django_db
 @respx.mock
+def test_get_custom_value_reads_one_value_by_id(service):
+    make_location('loc1')
+    read = respx.get(f'{BASE}/locations/loc1/customValues/cv_agent1').mock(
+        return_value=httpx.Response(200, json={'customValue': AGENT_VALUE})
+    )
+
+    found = service.get_custom_value('loc1', 'cv_agent1')
+
+    assert found == AGENT_VALUE
+    assert read.calls.last.request.headers['Authorization'] == 'Bearer loc1-access'
+    assert read.calls.last.request.headers['Version'] == 'v3'
+
+
+@pytest.mark.django_db
+@respx.mock
+def test_a_rejected_custom_value_read_says_why(service):
+    make_location('loc1')
+    respx.get(f'{BASE}/locations/loc1/customValues/cv_missing').mock(
+        return_value=httpx.Response(404, json={'message': 'custom value not found'})
+    )
+
+    with pytest.raises(GHLError, match='custom value not found'):
+        service.get_custom_value('loc1', 'cv_missing')
+
+
+@pytest.mark.django_db
+def test_reading_a_custom_value_for_a_sub_account_with_no_token_is_an_error(service):
+    with pytest.raises(GHLError, match='No GHL token for sub-account loc1'):
+        service.get_custom_value('loc1', 'cv_agent1')
+
+
+@pytest.mark.django_db
+@respx.mock
 def test_set_custom_value_writes_to_the_clients_own_sub_account(service):
     make_location('loc1')
     update = respx.put(f'{BASE}/locations/loc1/customValues/cv_agent1').mock(

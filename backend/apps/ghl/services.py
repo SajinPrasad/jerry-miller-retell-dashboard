@@ -222,6 +222,24 @@ class GHLOAuthService:
         )
         return body.get('customValues') or []
 
+    def get_custom_value(self, location_id: str, custom_value_id: str) -> dict:
+        """One custom value, by id, in a client's own sub-account.
+
+        Unlike `find_custom_value`, which matches by name because an id is only ever valid for
+        the location that created it, this is for a caller that already has the right
+        location's own id - `SaasClientCountView`'s id comes from `.env`, paired one-to-one
+        with `AGENCY_LOCATION_ID`, not discovered by name on every call.
+
+        Docs: https://marketplace.gohighlevel.com/docs/ghl/locations/get-custom-value
+        """
+        body = self._request(
+            'GET',
+            f'/locations/{location_id}/customValues/{custom_value_id}',
+            token=self._location_token(location_id),
+            version=CUSTOM_VALUE_VERSION,
+        )
+        return body.get('customValue') or body
+
     def find_custom_value(self, location_id: str, name: str) -> dict | None:
         """The custom value called `name` in that sub-account, or `None` if it has none.
 

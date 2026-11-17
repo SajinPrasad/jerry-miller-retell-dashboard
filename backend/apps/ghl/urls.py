@@ -7,6 +7,7 @@ urlpatterns = [
     path('onboarding/', views.OnboardingView.as_view(), name='onboarding'),
     path('onboarding/sync/', views.LocationSyncView.as_view(), name='onboarding-sync'),
     path('sso/session/', views.SSOSessionView.as_view(), name='sso-session'),
+    path('saas-client-count/', views.SaasClientCountView.as_view(), name='saas-client-count'),
     path(
         'webhooks/location-created/',
         views.LocationCreatedWebhookView.as_view(),
