@@ -330,14 +330,25 @@ def _assert_calendar_teams(
     calendars: dict[str, dict],
     required: dict[str, str],
 ) -> None:
-    """Every user in `required` must be a team member on every calendar in `calendars`.
+    """Every calendar must be active, and every user in `required` on every calendar's team.
 
     `required` is `{ghl_user_id: display name}`; the names are only so the error can say who is
     missing in words an admin recognises, rather than handing back a list of opaque ids.
     """
     missing: dict[str, list[dict]] = {}
     for field, calendar in calendars.items():
-        team = _team_member_ids(service.calendar(location_id, calendar['id']))
+        detail = service.calendar(location_id, calendar['id'])
+        # A calendar imported with a snapshot can arrive switched off, and GHL then refuses
+        # every appointment with 400 "Calendar is inactive". Only an explicit `False` counts:
+        # a response that omits the flag is not proof the calendar is off.
+        if detail.get('isActive') is False:
+            raise HCPConfigurationError(
+                f'The calendar "{calendar["name"] or calendar["id"]}" is inactive in GoHighLevel. '
+                f'Activate it there, then save again. Appointments cannot be booked on an '
+                f'inactive calendar.',
+                details={'inactive_calendar': {field: calendar['id']}},
+            )
+        team = _team_member_ids(detail)
         absent = [
             {'ghl_user_id': user_id, 'ghl_user_name': name}
             for user_id, name in required.items()

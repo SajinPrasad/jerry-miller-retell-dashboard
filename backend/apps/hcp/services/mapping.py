@@ -22,6 +22,7 @@ from typing import Any
 
 from apps.hcp.constants import (
     ITEM_TYPES,
+    JOB_PROPERTIES,
     MONETARY_CURRENCY,
     TAXABLE_NO,
     TAXABLE_YES,
@@ -342,7 +343,7 @@ def job_properties(job: dict, contact_record_id: str) -> dict:
             'job_type': job_type(job),
             'tags': joined(job.get('tags')),
             'street_line_1': text(address.get('street')),
-            'street_line_2': text(address.get('street_line_2')),
+            JOB_PROPERTIES['street_line_2']: text(address.get('street_line_2')),
             'city': text(address.get('city')),
             'state': text(address.get('state')),
             'postal_code': text(address.get('zip')),

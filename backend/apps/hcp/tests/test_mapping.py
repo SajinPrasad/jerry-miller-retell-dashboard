@@ -6,7 +6,11 @@ vocabularies, money in cents, blank-vs-omitted) and the one that has to be cheap
 
 from decimal import Decimal
 
-from apps.hcp.constants import HCP_CUSTOMER_ID_FIELD, HCP_CUSTOMER_NOTE_FIELD
+from apps.hcp.constants import (
+    HCP_CUSTOMER_ID_FIELD,
+    HCP_CUSTOMER_NOTE_FIELD,
+    JOB_PROPERTIES,
+)
 from apps.hcp.services import mapping
 from apps.hcp.tests import fixtures
 
@@ -265,10 +269,22 @@ def test_a_plain_string_job_type_still_maps():
 
 
 def test_street_line_2_uses_ghls_double_underscore_key():
-    """The field is named `Street Line 2 / Unit`, so GHL derived `street_line_2__unit`."""
-    from apps.hcp.constants import JOB_PROPERTIES
+    """The field is named `Street Line 2 / Unit`, so GHL derived `street_line_2__unit`.
 
-    assert JOB_PROPERTIES['street_line_2'] == 'street_line_2__unit'
+    Asserted on what `job_properties` actually returns: the constant alone passed while the
+    mapper sent the bare `street_line_2`, which GHL rejected with a 400.
+    """
+    properties = mapping.job_properties(fixtures.job(), 'c')
+
+    assert properties['street_line_2__unit'] == 'Apt 4'
+    assert 'street_line_2' not in properties
+
+
+def test_every_job_property_key_is_a_snapshot_key():
+    """No key `job_properties` returns may be one GHL does not know."""
+    properties = mapping.job_properties(fixtures.job(), 'c')
+
+    assert set(properties) <= set(JOB_PROPERTIES.values())
 
 
 def test_job_notes_are_joined_into_one_block():

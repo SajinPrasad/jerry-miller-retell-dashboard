@@ -399,6 +399,36 @@ def test_the_refusal_names_the_users_an_admin_has_to_add(account):
     assert 'User user-1' not in caught.value.message
 
 
+def test_an_inactive_calendar_blocks_the_save(account):
+    """GHL books nothing on a calendar that is switched off, so the save refuses up front."""
+    make_mapping('emp-1', 'user-1')
+    inactive = {**JOB_CALENDAR, 'isActive': False}
+    service = FakeGHL(calendars=[ESTIMATE_CALENDAR, inactive], teams=both_teams('user-1'))
+
+    with pytest.raises(HCPConfigurationError) as caught:
+        save_calendars(service=service)
+
+    assert 'Install' in caught.value.message
+    assert 'Activate it' in caught.value.message
+    assert caught.value.details == {'inactive_calendar': {'job_calendar_id': 'cal-job'}}
+    assert not HCPCalendarSettings.objects.filter(location_id=LOCATION_ID).exists()
+
+
+def test_a_calendar_that_does_not_report_isactive_is_not_treated_as_inactive(account):
+    make_mapping('emp-1', 'user-1')
+    service = FakeGHL(teams=both_teams('user-1'))
+
+    assert save_calendars(service=service).job_calendar_id == 'cal-job'
+
+
+def test_an_active_calendar_saves(account):
+    make_mapping('emp-1', 'user-1')
+    active = [{**ESTIMATE_CALENDAR, 'isActive': True}, {**JOB_CALENDAR, 'isActive': True}]
+    service = FakeGHL(calendars=active, teams=both_teams('user-1'))
+
+    assert save_calendars(service=service).estimate_calendar_id == 'cal-est'
+
+
 def test_a_calendar_with_no_team_at_all_blocks_the_save(account):
     make_mapping('emp-1', 'user-1')
 
