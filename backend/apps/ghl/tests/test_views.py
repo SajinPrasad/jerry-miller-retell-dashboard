@@ -4,6 +4,7 @@ import httpx
 import pytest
 import respx
 from django.conf import settings
+from django.test import override_settings
 from rest_framework.test import APIClient
 
 from apps.ghl.models import GHLOAuthToken
@@ -107,3 +108,74 @@ def test_sync_ghl_failure(api):
     make_agency()
     respx.get(f'{BASE}/oauth/installed-locations').mock(return_value=httpx.Response(500))
     assert api.post('/api/ghl/onboarding/sync/').status_code == 502
+
+
+# --- SaaS client count (external website) -----------------------------------------------
+
+
+SAAS_CLIENT_COUNT_URL = '/api/ghl/saas-client-count/'
+
+
+def _with_custom_value_id(custom_value_id='cv_saas_count'):
+    return override_settings(GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID=custom_value_id)
+
+
+def test_saas_client_count_rejects_a_location_id_that_is_not_the_agency(api):
+    with _with_custom_value_id():
+        response = api.get(SAAS_CLIENT_COUNT_URL, {'location_id': 'some-other-location'})
+
+    assert response.status_code == 403
+
+
+def test_saas_client_count_rejects_a_missing_location_id(api):
+    with _with_custom_value_id():
+        response = api.get(SAAS_CLIENT_COUNT_URL)
+
+    assert response.status_code == 403
+
+
+def test_saas_client_count_is_unavailable_when_the_custom_value_id_is_not_configured(api):
+    # The default in settings/base.py when GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID is unset.
+    with override_settings(GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID=''):
+        response = api.get(SAAS_CLIENT_COUNT_URL, {'location_id': settings.AGENCY_LOCATION_ID})
+
+    assert response.status_code == 503
+
+
+@respx.mock
+def test_saas_client_count_reads_the_configured_value(api):
+    make_location(settings.AGENCY_LOCATION_ID)
+    respx.get(f'{BASE}/locations/{settings.AGENCY_LOCATION_ID}/customValues/cv_saas_count').mock(
+        return_value=httpx.Response(
+            200, json={'customValue': {'id': 'cv_saas_count', 'value': '42'}}
+        )
+    )
+
+    with _with_custom_value_id():
+        response = api.get(SAAS_CLIENT_COUNT_URL, {'location_id': settings.AGENCY_LOCATION_ID})
+
+    assert response.status_code == 200
+    assert response.json() == {'value': '42'}
+
+
+@respx.mock
+def test_saas_client_count_on_a_ghl_failure_is_a_502(api):
+    make_location(settings.AGENCY_LOCATION_ID)
+    respx.get(f'{BASE}/locations/{settings.AGENCY_LOCATION_ID}/customValues/cv_saas_count').mock(
+        return_value=httpx.Response(500)
+    )
+
+    with _with_custom_value_id():
+        response = api.get(SAAS_CLIENT_COUNT_URL, {'location_id': settings.AGENCY_LOCATION_ID})
+
+    assert response.status_code == 502
+
+
+def test_saas_client_count_for_an_agency_with_no_token_is_a_502(api):
+    """The agency's main location is synced like any other client (`_add_main_location`); if it
+    somehow has no token yet, that is GHL being unreachable, not a wrong caller.
+    """
+    with _with_custom_value_id():
+        response = api.get(SAAS_CLIENT_COUNT_URL, {'location_id': settings.AGENCY_LOCATION_ID})
+
+    assert response.status_code == 502

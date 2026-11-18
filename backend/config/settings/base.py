@@ -97,6 +97,14 @@ GHL_CLIENT_SECRET = env('GHL_CLIENT_SECRET', default='')
 GHL_APP_ID = env('GHL_APP_ID', default='')
 # Jerry's agency main location id; used for agency SSO scope and shared billing contacts.
 AGENCY_LOCATION_ID = env('AGENCY_LOCATION_ID', default='')
+# The "Number of SaaS clients" custom value's id in the agency's main sub-account
+# (AGENCY_LOCATION_ID). Read by the external SurPro Labs AI website -
+# apps/ghl/views.py::SaasClientCountView. Never hardcoded: a custom value's id is per
+# sub-account (GHLOAuthService.find_custom_value), so this is only ever valid for this one
+# location, and it must be pasted in after being created in GHL rather than guessed.
+GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID = env(
+    'GHL_NUMBER_OF_SAAS_CLIENTS_CUSTOM_VALUE_ID', default=''
+)
 # Sub-accounts kept off the Clients list: internal GHL accounts, and accounts that run no Retell
 # voice at all. Comma-separated location ids (empty by default). Add `AGENCY_LOCATION_ID` here
 # only if the agency's own main location should stay hidden as well.
