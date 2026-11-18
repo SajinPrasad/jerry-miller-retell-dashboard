@@ -32,9 +32,9 @@ Companion docs:
 (`68eb69c`, `17df1bd`, `1a20914`, `e3f10b3`, a docs commit `ac4a8ef`), then `d2332fa`
 (activate-and-backfill, the backfill state on `HCPAccount`, 429 backoff), then `a4d0ec4`, the
 **Housecall Pro setup tab** (§6A.11), with `CLAUDE.md` and this file brought up to date. HEAD is `a4d0ec4`.
-**Nothing on this branch has been pushed**; every HCP commit is local only, by instruction. `main`
-has moved on to `973d6bd` (a SaaS client count endpoint, `feat(ghl)`), one commit this branch does
-not contain; the two are otherwise the same history. Do not commit or push unless asked.
+`feat/hcp-integration` was merged with `main` (`888aaa4`, which brings in `973d6bd`, the SaaS client
+count endpoint) and **pushed to `origin/feat/hcp-integration`** for server testing. `origin/main` was
+not touched. Do not commit or push further unless asked.
 
 > **Housekeeping, not done:** `a6bf36a` (the billing-schedule docs commit) was written on
 > `docs/handover-billing-schedule` instead of `main`. Its content is now in this file and
@@ -372,7 +372,8 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
 
 **Service:** `GHLOAuthService` (`apps/ghl/services.py`):
 
-- `install_url()` builds the chooselocation URL on `GHL_INSTALL_URL_BASE`.
+- `install_url()` builds the Marketplace v2 URL, `GHL_INSTALL_URL_BASE` + `/v2/oauth/chooselocation`,
+  with `version_id=GHL_APP_ID` added when that setting is set (confirmed in live OAuth testing).
 - `exchange_code(code)` stores the agency token. `company_id` comes **from the token response**,
   not from config.
 - `get_agency_token()` refreshes the token when it is within 5 minutes of expiry. **Refresh tokens
@@ -2196,7 +2197,7 @@ Commits on `main`, oldest first (`git log --reverse`). Superseded items are mark
 | `6c22760` | Monthly billing on the Beat schedule (04:00 on the 1st); Twilio Beat pull commented out; Paid badge (§6.6, §6.7) |
 | `973d6bd` | `feat(ghl)`: SaaS client count endpoint for the external website (not on `feat/hcp-integration`) |
 
-On `feat/hcp-integration`, on top of `6c22760`. **Local only, never pushed** (§6A):
+On `feat/hcp-integration`, on top of `6c22760`. Merged with `main` at `888aaa4` and pushed to `origin/feat/hcp-integration` (§6A):
 
 | Commit | Message (abridged) |
 |---|---|
@@ -2245,7 +2246,7 @@ its own `0006` and `ghl_invoice_*` columns); `feat/stripe-billing` (merged into 
    `manage.py makemigrations --check --dry-run`, and in `frontend/` `./node_modules/.bin/tsc -b`
    and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. The working branch is
-   `feat/hcp-integration` (HEAD `a4d0ec4`), local and unpushed. `main` is at `973d6bd`, one commit this branch does not contain. **Nothing on this branch has been pushed, by instruction.**
+   `feat/hcp-integration` (HEAD `888aaa4`, merged with `main` at `973d6bd`), pushed to `origin/feat/hcp-integration` for server testing. `origin/main` is untouched.
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built, and the monthly
    charge now runs automatically (§6.6). Still open: the unassigned-call mapping UI, the bills table,
    Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-4

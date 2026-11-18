@@ -94,10 +94,11 @@ def test_install_url(service):
     query = {k: v[0] for k, v in parse_qs(url.query).items()}
 
     assert f'{url.scheme}://{url.netloc}{url.path}' == (
-        'https://marketplace.example.com/oauth/chooselocation'
+        'https://marketplace.example.com/v2/oauth/chooselocation'
     )
     assert query['client_id'] == 'app123-abc'
     assert query['redirect_uri'] == settings.GHL_REDIRECT_URI
+    assert query['version_id'] == settings.GHL_APP_ID
     assert query['response_type'] == 'code'
 
 

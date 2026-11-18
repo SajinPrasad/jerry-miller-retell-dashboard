@@ -71,7 +71,9 @@ class GHLOAuthService:
             'redirect_uri': settings.GHL_REDIRECT_URI,
             'scope': settings.GHL_SCOPES,
         }
-        return f'{settings.GHL_INSTALL_URL_BASE}/oauth/chooselocation?{urlencode(params)}'
+        if settings.GHL_APP_ID:
+            params['version_id'] = settings.GHL_APP_ID
+        return f'{settings.GHL_INSTALL_URL_BASE}/v2/oauth/chooselocation?{urlencode(params)}'
 
     def exchange_code(self, code: str) -> GHLOAuthToken:
         """Swap the install's authorization code for the agency token and store it."""

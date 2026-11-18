@@ -30,7 +30,7 @@ def test_onboarding_when_not_connected(api):
     body = api.get('/api/ghl/onboarding/').json()
     assert body['agency'] is None
     assert body['locations'] == []
-    assert body['install_url'].startswith('https://marketplace.example.com/oauth/chooselocation')
+    assert body['install_url'].startswith('https://marketplace.example.com/v2/oauth/chooselocation')
 
 
 def test_onboarding_lists_agency_and_locations_without_tokens(api):
