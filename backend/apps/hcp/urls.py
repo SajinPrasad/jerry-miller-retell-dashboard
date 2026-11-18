@@ -1,15 +1,15 @@
 from django.urls import path
 
-from . import ghl_webhooks, views, webhooks
+from apps.ghl.webhooks import GHLWebhookView
+
+from . import views, webhooks
 
 app_name = 'hcp'
 urlpatterns = [
     path('webhooks/', webhooks.HCPWebhookView.as_view(), name='webhook'),
-    path(
-        'webhooks/ghl/',
-        ghl_webhooks.GHLReverseSyncWebhookView.as_view(),
-        name='ghl-webhook',
-    ),
+    # Earlier URL for the GHL reverse sync. Same view as `/api/ghl/webhooks/`, kept so a
+    # registration made against it keeps working.
+    path('webhooks/ghl/', GHLWebhookView.as_view(), name='ghl-webhook'),
     path('accounts/', views.ConnectAccountView.as_view(), name='connect-account'),
     path(
         'accounts/<str:location_id>/status/',

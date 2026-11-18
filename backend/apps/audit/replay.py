@@ -35,9 +35,14 @@ def _replay_stripe(payload: dict) -> str:
 
 
 def _replay_ghl(payload: dict) -> str:
-    from apps.ghl.views import sync_for_location_created
+    """One GHL delivery, either a `LocationCreate` or a Phase 4 reverse-sync event.
 
-    return 'synced' if sync_for_location_created(payload) else 'ignored'
+    Both are recorded under `WebhookEvent.GHL` by the one GHL view, so the route is chosen by the
+    payload's own `type`, the same way the view chooses it.
+    """
+    from apps.ghl.webhooks import replay_outcome
+
+    return replay_outcome(payload)
 
 
 def _replay_hcp(payload: dict) -> str:

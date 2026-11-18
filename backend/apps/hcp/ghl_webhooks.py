@@ -1,35 +1,17 @@
-"""The inbound GHL webhook for Phase 4 (GHL -> HCP reverse sync).
+"""The routing table for the GHL events Phase 4 (GHL -> HCP reverse sync) handles.
 
-Structured like `apps/hcp/webhooks.py`'s HCP-side webhook and `apps/ghl/views.py`'s
-`LocationCreatedWebhookView`: verify the signature over the raw body first, record the delivery
-through `apps.audit` before anything acts on it, queue a Celery task, always answer quickly.
+The endpoint that receives them is `apps/ghl/webhooks.py` (`POST /api/ghl/webhooks/`), the one GHL
+webhook URL for this marketplace app. That view checks the signature, records the delivery through
+`apps.audit`, and then calls `task_for` here to find the Celery task. Nothing in this module reads
+a request.
 
-**Signature-verified, unlike the HCP-side webhook.** `apps/hcp/webhooks.py` is knowingly
-unauthenticated because Housecall Pro's own signing scheme could not be confirmed from its
-docs. GHL's is already settled and in production use for `LocationCreate`
-(`apps.ghl.views.verify_webhook_signature`, reused here rather than re-implemented) - there is
-no equivalent open question for this webhook.
-
-Must be registered under the marketplace app's Advanced Settings > Webhooks, subscribed to
-`ContactCreate`, `ContactUpdate`, `RecordCreate`, `RecordUpdate`, `RecordDelete` and
-`AppointmentUpdate`, `AppointmentDelete`, pointing at this URL. See `handover.md` §6A for what
-each one does and does not drive.
+The events this table routes must be subscribed on the marketplace app: `ContactCreate`,
+`ContactUpdate`, `RecordCreate`, `RecordUpdate`, `RecordDelete`, `AppointmentUpdate` and
+`AppointmentDelete`. See `handover.md` §6A.8.
 """
 
-import json
-import logging
-
-from rest_framework import status
-from rest_framework.response import Response
-from rest_framework.views import APIView
-
-from apps.audit import recording
-from apps.audit.models import WebhookEvent
-from apps.ghl.views import verify_webhook_signature
 from apps.hcp import constants
 from apps.hcp import reverse_tasks as tasks
-
-logger = logging.getLogger(__name__)
 
 # Every `custom_objects.*` + event-type combination Phase 4 actually handles. Leads, Estimates
 # and Jobs carry `RecordCreate` only - the SOP's asymmetry itself, not a per-event check, is why
@@ -65,59 +47,3 @@ def task_for(event_type: str, object_key: str):
     if event_type in _RECORD_EVENTS:
         return RECORD_DISPATCH.get((object_key, event_type))
     return None
-
-
-class GHLReverseSyncWebhookView(APIView):
-    """POST /api/hcp/webhooks/ghl/: one URL for every Phase 4 event, across every sub-account.
-
-    GHL's own `locationId` on the payload is what the Celery task resolves to an `HCPAccount` -
-    there is one webhook URL for the whole marketplace app, the same as `LocationCreate`, not
-    one per sub-account.
-    """
-
-    authentication_classes: list = []
-    permission_classes: list = []
-
-    def post(self, request):
-        # Read before anything parses the stream: the signature covers the raw body.
-        raw_body = request.body
-        signature = request.headers.get('X-GHL-Signature', '')
-        if not verify_webhook_signature(raw_body, signature):
-            logger.warning('hcp: GHL reverse-sync webhook signature rejected')
-            recording.webhook_rejected(WebhookEvent.GHL, 'Signature rejected.')
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            payload = json.loads(raw_body)
-        except ValueError:
-            payload = None
-        if not isinstance(payload, dict):
-            recording.webhook_rejected(
-                WebhookEvent.GHL, 'Body is not a JSON object.', signature_valid=True
-            )
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        event_type = str(payload.get('type') or '').strip()
-        location_id = str(payload.get('locationId') or '').strip()
-        if not event_type or not location_id:
-            recording.webhook_rejected(
-                WebhookEvent.GHL, 'Missing event type or locationId.', signature_valid=True
-            )
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        object_key = str(payload.get('objectKey') or '').strip()
-        stored = recording.webhook_received(
-            WebhookEvent.GHL,
-            payload,
-            event_type=event_type,
-            event_id=str(payload.get('webhookId') or ''),
-        )
-
-        task = task_for(event_type, object_key)
-        if task is None:
-            logger.info('hcp: unhandled GHL event %s (object %s)', event_type, object_key)
-            recording.webhook_status(stored, WebhookEvent.IGNORED)
-            return Response({'message': 'Unhandled event type.'}, status=status.HTTP_200_OK)
-
-        task.delay(payload, stored.pk)
-        return Response({'message': 'accepted'}, status=status.HTTP_200_OK)

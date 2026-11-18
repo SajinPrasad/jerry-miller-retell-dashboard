@@ -1,6 +1,6 @@
 """The inbound Housecall Pro webhook.
 
-Structured like `apps/ghl/views.py::LocationCreatedWebhookView`: read the raw body first, record
+Structured like `apps/ghl/webhooks.py::GHLWebhookView`: read the raw body first, record
 the delivery through `apps.audit` before anything acts on it, hand the work to Celery, answer
 200. Recording first is what makes the endpoint cheap and the event survivable - a handler bug
 costs a retry, not the event, and `manage.py replay_webhook` re-runs it afterwards.

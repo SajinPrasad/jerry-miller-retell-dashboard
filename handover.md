@@ -28,18 +28,14 @@ Companion docs:
 
 ## 0. Current state (read this first)
 
-**Branch.** `feat/hcp-integration` — the Housecall Pro integration (§6A). Committed: Phases 1-4
-(`68eb69c`, `17df1bd`, `1a20914`, `e3f10b3`, a docs commit `ac4a8ef`), then `d2332fa`
-(activate-and-backfill, the backfill state on `HCPAccount`, 429 backoff), then `a4d0ec4`, the
-**Housecall Pro setup tab** (§6A.11), with `CLAUDE.md` and this file brought up to date. HEAD is `a4d0ec4`.
-`feat/hcp-integration` was merged with `main` (`888aaa4`, which brings in `973d6bd`, the SaaS client
-count endpoint) and **pushed to `origin/feat/hcp-integration`** for server testing. `origin/main` was
-not touched. Do not commit or push further unless asked.
+**Branch.** `feat/hcp-integration` in `D:\tasks\jerry-miller\dashboard` — the Housecall Pro integration
+(§6A). HEAD is `53b87d8`. It is merged with `main` (`888aaa4`, which brings in `973d6bd`, the SaaS
+client count endpoint) and **pushed to `origin/feat/hcp-integration`** for server testing. It is **not
+merged into `main`**, and `origin/main` is untouched. Do not commit or push further unless asked.
 
-> **Housekeeping, not done:** `a6bf36a` (the billing-schedule docs commit) was written on
-> `docs/handover-billing-schedule` instead of `main`. Its content is now in this file and
-> `CLAUDE.md` on this branch, so that local branch is redundant. Merge or delete it when
-> convenient.
+> **Housekeeping, not done:** `a6bf36a` (the billing-schedule docs commit) sits on a local branch,
+> `docs/handover-billing-schedule`, instead of `main`. Its content is already in this file and
+> `CLAUDE.md`, so the branch is redundant. Delete it when convenient.
 
 > ### This branch is not the Phase 9 redesign
 >
@@ -77,8 +73,15 @@ not touched. Do not commit or push further unless asked.
   on Jerry's sub-accounts, not the generic `retell_agent_id` placeholder in `.env.example`. This is
   the value §6.10b's `pause_voice()`/`resume_voice()` look up by name on every pause/resume.
 
-**Recent work on `feat/hcp-integration`** (local only, never pushed; full log in §19):
+**Recent work on `feat/hcp-integration`** (pushed to `origin/feat/hcp-integration`, not on `main`; full log in §19):
 
+- `53b87d8` — **Two live-GHL fixes** (§6A.12): `job_properties` now sends the job's unit under its
+  snapshot key `street_line_2__unit` (it sent `street_line_2`, which GHL refused with a 400); and
+  `save_calendar_settings` refuses a calendar GHL reports as inactive, since GHL rejects every
+  appointment on one with "Calendar is inactive".
+- `518c0db` — **GHL Marketplace v2 install URL** (`/v2/oauth/chooselocation`, with `version_id` =
+  `GHL_APP_ID`), confirmed in live OAuth testing; the eight HCP scopes added to `GHL_SCOPES` (§4).
+- `888aaa4` — merge of `main` into the branch (`973d6bd`); `47ae164` — handover update.
 - `a4d0ec4` — **The Housecall Pro setup tab** in the admin page, agency scope only, also on the
   unmapped-client screen: connect, employee mapping, calendars, activate with live backfill
   progress and retry, Edit employees / Edit calendars. 25 frontend tests (§6A.11).
@@ -111,15 +114,15 @@ not touched. Do not commit or push further unless asked.
 - `a14e0a3` — **Phase 7**, card on file and the card request (§6.11).
 
 Superseded along the way, kept only for the lessons: `ee98a0b` (on/off custom-value toggle) and
-`6f0e544` (Phase 8 contact-field status write). See §6.10b-i.
+`6f0e544` (Phase 8 contact-field status write). See §6.10b, "Earlier mechanisms, replaced".
 
-**Test status (17 Nov 2026):**
+**Test status (18 Nov 2026):**
 
-- Backend `pytest`: **980 passed** at `d2332fa` (926 at `ac4a8ef`). `ruff check .`, `ruff format --check .`,
-  `manage.py check` and `makemigrations --check --dry-run` clean.
-- Frontend at `a4d0ec4`: `npm test -- --run` **137 passed** (4 files). `npm run build` (`tsc -b` and Vite)
-  and `oxlint src` clean.
-- Housecall Pro test functions in `apps/hcp/tests/`: **410** (counted from the files; not estimated).
+- Backend `pytest` (full suite): **993 passed** at `53b87d8`, run after the two HCP fixes
+  (989 at `518c0db`, 980 at `d2332fa`). `ruff check .` and `ruff format --check .` clean. `apps/hcp` alone:
+  **448 passed** at `53b87d8`.
+- Frontend at `a4d0ec4`: `npm test -- --run` **137 passed** (4 files; not re-run since). `npm run build` and
+  `oxlint src` were clean at that commit.
 
 **Stripe charging has run live** (settled facts above): the single account, the registered
 webhook, and end-to-end test payments are all confirmed. **The GHL contact-field writes have
@@ -132,11 +135,13 @@ bridge injected into GHL's Agency Custom JavaScript (§17.1a, the bridge script)
 **Not started:** Task 2 (agency dashboard), Task 3 (client dashboard), Phase 6 of Task 4 (alerts), the
 Retell unassigned-call mapping UI and the bills table. On the HCP side (§6A.10): the conflict-resolution
 half of Phase 5 (the stale-write guard for contacts and line items), per-record sync state, alerting
-(Phases 6–7) and rollout (Phase 9 of `hcp_plan.md`). The Housecall Pro setup tab (§6A.11) is the only HCP screen.
+(Phases 6–7) and rollout (Phase 9 of `hcp_plan.md`; the live pre-checks that are done are in §6A.12). The
+Housecall Pro setup tab (§6A.11) is the only HCP screen.
 
 **Not merged into `main`:**
 
-- `feat/hcp-integration` — the Housecall Pro work described above (§6A). Local only, not pushed.
+- `feat/hcp-integration` — the Housecall Pro work described above (§6A). Pushed to
+  `origin/feat/hcp-integration` for server testing; not merged into `main`.
 - `docs/handover-billing-schedule` — the `a6bf36a` docs commit; its content is already in this
   file, see the callout at the top of this section.
 - `feat/retell-workspace-per-subaccount` — the parked Phase 9 Retell redesign (see the callout
@@ -202,7 +207,7 @@ Twilio field. **The product is Retell AI minutes only.**
 | 2 | Agency dashboard: MRR, live clients, leads by source, clients at risk, voice revenue | Oct 30 | **Not started** (`apps/dashboards` is an empty scaffold) |
 | 3 | Client dashboard: one client's leads, booked jobs, response time, voice usage | Nov 4 | **Not started** (the `client-dashboard` feature folder is empty) |
 | 4 | Voice rebilling: Retell + Twilio voice, split per client | Nov 13 | **Phases 1, 2, 2b, 3, 5, 7, 8, 10 built, and the monthly run is now automatic (`6c22760`).** Phase 4 mostly built (mapping, rates, per-call and bill status). Still open: mapping of unassigned calls and a bills table. Phase 6 (alerts) not started |
-| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-4, activation/backfill and Phase 5 backoff built** on `feat/hcp-integration` (local, unpushed): models, onboarding API including activation, both webhooks, both sync directions, rate-limit backoff, and the Housecall Pro tab in the admin page (§6A.11). Conflict resolution, alerting and rollout are not started |
+| 5 | Housecall Pro ↔ GoHighLevel sync (§6A) | — | **Phases 1-4, activation/backfill and Phase 5 backoff built** on `feat/hcp-integration` (pushed to `origin`, not merged to `main`): models, onboarding API including activation, both webhooks, both sync directions, rate-limit backoff, and the Housecall Pro tab in the admin page (§6A.11). Live GHL checks begun (§6A.12). Conflict resolution, alerting and rollout are not started |
 
 Task 5 was not in the original four-task brief; it arrived separately and is planned in
 `local_folder/hcp_plan.md`. It shares `apps/ghl`'s OAuth service and `apps/audit`'s webhook
@@ -294,7 +299,8 @@ All under `/api/` unless noted.
 | GET | `/api/ghl/onboarding/` | Install link, agency, sub-accounts. **Never returns tokens** |
 | POST | `/api/ghl/onboarding/sync/` | Re-syncs sub-accounts from GHL |
 | POST | `/api/ghl/sso/session/` | Opens the SSO payload the embedded page got from GHL: who is viewing, and at what scope |
-| POST | `/api/ghl/webhooks/location-created/` | GHL's "location created" event. Syncs the new sub-account |
+| POST | `/api/ghl/webhooks/` | **The one GHL marketplace webhook URL.** Verifies `X-GHL-Signature` once, records every delivery under `WebhookEvent.GHL`, and routes by the body's `type`: `LocationCreate` syncs the sub-account in the request; the Phase 4 events are queued to their `apps.hcp` reverse-sync task; anything else is `ignored` and answered 200 (§4, §6A.8) |
+| POST | `/api/ghl/webhooks/location-created/` | Alias for `/api/ghl/webhooks/` (the URL registered before the unification). Kept so an existing registration keeps working |
 | POST | `/api/rebilling/webhooks/retell/` | Retell `call_ended` webhook. Signature-verified, answers 204 |
 | POST | `/api/rebilling/webhooks/stripe/` | Stripe invoice events (`invoice.paid`, `invoice.payment_failed`). Signature-verified, answers 204 |
 | POST | `/api/rebilling/admin/clients/<location_id>/retry-charge/` | Collect a `failed` or `retrying` bill now. Agency scope. Optional `{"month"}`. 200 with the refreshed `bill` and `voice` even on a decline; 409 for a bill in no state to retry; 502 for a Stripe that could not be reached (§6.10c) |
@@ -313,7 +319,7 @@ All under `/api/` unless noted.
 | GET | `/api/hcp/accounts/<location_id>/calendars/` | The sub-account's GHL round-robin calendars |
 | PUT | `/api/hcp/accounts/<location_id>/calendar-settings/` | Save step 3: the estimate/job calendars and fallback users. Runs the calendar team check — §6A.2 |
 | POST | `/api/hcp/accounts/<location_id>/activate/` | Step 4: starts the backfill in the background (202). 409 while one is running. Needs employees mapped and calendars saved (§6A.7) |
-| POST | `/api/hcp/webhooks/ghl/` | GHL's reverse-sync webhook (contacts, records, appointments). Ed25519-verified. Recorded, queued, 200 (§6A.8) |
+| POST | `/api/hcp/webhooks/ghl/` | Alias for `/api/ghl/webhooks/`, kept from before the unification so an earlier registration keeps working. The Phase 4 reverse sync (§6A.8) is routed by the shared view |
 | POST | `/api/rebilling/admin/clients/<location_id>/card-request/` | Agency only. Adds the `collect card information` tag to the billing contact in the main account. 403 for a location session, 404 unmapped, 502 when GHL refuses (§6.11) |
 | POST | `/api/rebilling/webhooks/ghl-card/` | The GHL card workflow's Custom Webhook. Authenticated by `X-Card-Webhook-Token`; a blank setting refuses everything (§6.11) |
 | — | `/admin/` | Django admin. `ClientMapping` and `Bill` are the registered rebilling models; GHL models have no admin registration |
@@ -402,14 +408,21 @@ empty `access_token` when the app isn't yet installed on it; it still appears in
   right after every sync. See §6.10 for why a changed email clears the cached Stripe customer.
 
 **Marketplace app config (set in GHL, must match the code):** redirect URI = `GHL_REDIRECT_URI`;
-scopes = `GHL_SCOPES`; target user = Agency; auto-install on future sub-accounts.
+scopes = `GHL_SCOPES`; target user = Agency; auto-install on future sub-accounts. **Webhook:** GHL's
+Advanced Settings > Webhooks takes **one** URL per app, so register `https://<backend>/api/ghl/webhooks/`
+and subscribe it to `LocationCreate` and the seven Phase 4 events (`ContactCreate`, `ContactUpdate`,
+`RecordCreate`, `RecordUpdate`, `RecordDelete`, `AppointmentUpdate`, `AppointmentDelete`). The older
+`/api/ghl/webhooks/location-created/` and `/api/hcp/webhooks/ghl/` URLs reach the same view.
 
 **Default scopes** (`GHL_SCOPES`): `oauth.readonly`, `oauth.write`, `locations.readonly`,
 `users.readonly` (HCP employee mapping, §6A.2), `contacts.readonly`, `opportunities.readonly`, `calendars.readonly`, `calendars/events.readonly`,
 `conversations.readonly`, `conversations/message.readonly`, `saas/company.read`,
 `saas/location.read`, `contacts.write` (Phase 7, §6.11 — the card request and rebilling-status
 writes), `locations/customValues.readonly` and `locations/customValues.write` (the Retell agent-id
-pause and resume, §6.10b). The `oauth.*` pair is needed to mint sub-account
+pause and resume, §6.10b), and, for Housecall Pro (`518c0db`): `calendars/events.write`,
+`locations/customFields.readonly`, `objects/schema.readonly`, `objects/record.readonly`,
+`objects/record.write`, `associations.readonly`, `associations/relation.readonly` and
+`associations/relation.write`. The `oauth.*` pair is needed to mint sub-account
 tokens. The spec doesn't call it out (CriticalFindings G1). **Every scope added after the app's
 first install needs a re-authorisation** — see §17.1b.
 
@@ -1105,8 +1118,8 @@ can work.
 
 ## 6A. Task 5: Housecall Pro -> GoHighLevel integration (Phases 1-4, activation, Phase 5 backoff and the setup UI built)
 
-**On `feat/hcp-integration` only, local and unpushed.** Everything in this section is in
-`backend/apps/hcp/` and none of it is on `main` yet. The plan it follows, with its open
+**On `feat/hcp-integration` only: pushed to `origin/feat/hcp-integration` for server testing, not merged
+into `main`.** Everything in this section is in `backend/apps/hcp/` and none of it is on `main` yet. The plan it follows, with its open
 questions, is `local_folder/hcp_plan.md`; the behavioural spec is
 `local_folder/hcp_reference_project_sop.md`; the GHL objects it writes into are specified in
 `local_folder/GHL_Snapshot_Specification.md`. The reference implementation it was built against —
@@ -1140,7 +1153,10 @@ Four steps, in the SOP's own order, in `apps/hcp/services/onboarding.py`. The st
 2. **Map employees.** Every HCP employee that should carry an assignment is matched to one GHL
    user, one-to-one in **both** directions (`HCPEmployeeMapping`'s double-unique constraint).
 3. **Configure calendars.** Pick the estimate and job round-robin calendars and the fallback
-   users, and prove every mapped GHL user is on **both** calendar teams.
+   users, and prove every mapped GHL user is on **both** calendar teams. The save also refuses a
+   calendar GHL reports as inactive (`isActive` is `False`): GHL rejects every appointment on it with
+   400 "Calendar is inactive", which was seen live on a freshly imported snapshot (`53b87d8`). Only an
+   explicit `False` counts; a response without the flag is not treated as inactive.
 4. **Activate.** Pulls the company's history, then switches the account on — see §6A.7.
 
 **HCP has no OAuth.** The credential is a static API key an admin generates in the HCP UI
@@ -1172,8 +1188,8 @@ apart a rejected key (→ 400), a rate limit (→ 429, with `Retry-After`), and 
    vacuously. This is what enforces the SOP's step-2-before-step-3 ordering.
 4. **`users()`, `calendars()` and `calendar()` were added to the existing `GHLOAuthService`**
    rather than opening a second GHL HTTP path, along with the `users.readonly` scope they need.
-   **That scope must be added to the marketplace app in GoHighLevel before this works against a
-   real sub-account** — the `/users/` read will 401 until it is.
+   The scope is in the `GHL_SCOPES` default (§4). **The live marketplace app must be re-authorised
+   for it**, or the `/users/` read will 401; whether that has been done is not recorded (§15).
 
 ### 6A.3 The webhook and the dispatch table (Phase 3, `1a20914`)
 
@@ -1296,9 +1312,10 @@ without a restart.
 - **The GHL snapshot must already exist in the sub-account.** Four custom objects (Leads,
   Estimates, Jobs, Job Line Items), their fields, two round-robin calendars and the contact custom
   fields, all with the exact names in `local_folder/GHL_Snapshot_Specification.md`. GHL derives the
-  property key from the field name at creation time and renaming later does not fix a typo, so a
-  mismatched name means the write silently drops that field. The reference never automates this;
-  it is a manual prerequisite here too.
+  property key from the field name at creation time, and renaming later does not fix a typo. A key
+  that does not match is **refused**: GHL answers 400 "We couldn't validate the mapped field: <key>"
+  (seen live for `street_line_2`, §6A.12). The reference never automates this; it is a manual
+  prerequisite here too. The snapshot's 73 field keys passed a live check on 18 Nov 2026.
 - **The `users.readonly` scope** on the marketplace app (§6A.2, decision 4). It is in the `GHL_SCOPES` default; whether the
   app has it and has been re-authorised is unverified (§15).
 - **`apps.audit`** for webhook recording and replay, and **`apps.ghl`** for location tokens.
@@ -1362,16 +1379,17 @@ onboarding endpoints (agency scope any sub-account, a sub-account only its own).
 
 ### 6A.8 The reverse direction, GHL → HCP (Phase 4, `e3f10b3`)
 
-`POST /api/hcp/webhooks/ghl/` (`ghl_webhooks.py`). Unlike the HCP-side webhook it is
-**signature-verified**: GHL's Ed25519 scheme is settled and already in production use for
-`LocationCreate`, so `apps.ghl.views.verify_webhook_signature` is reused. It records the delivery
-through `apps.audit` first, then queues a task in `reverse_tasks.py`, which runs
+Received at `POST /api/ghl/webhooks/`, the one GHL marketplace webhook URL (`apps/ghl/webhooks.py`), which
+also takes `LocationCreate`. `apps/hcp/ghl_webhooks.py` holds the routing table (`task_for`). Unlike the
+HCP-side webhook it is **signature-verified**: GHL's Ed25519 scheme is settled and already in production
+use, so `apps.ghl.views.verify_webhook_signature` is checked once, by the shared view. The delivery is
+recorded through `apps.audit` first (as `WebhookEvent.GHL`), then a task in `reverse_tasks.py` runs
 `services/reverse_sync.py::GHLToHCPSync`. Field mapping is pure functions in
 `services/reverse_mapping.py`. No models or migrations.
 
-**Registration (not verified live):** the marketplace app must subscribe this URL to
-`ContactCreate`, `ContactUpdate`, `RecordCreate`, `RecordUpdate`, `RecordDelete`,
-`AppointmentUpdate` and `AppointmentDelete`.
+**Registration (not verified live):** the marketplace app subscribes its one webhook URL,
+`/api/ghl/webhooks/`, to `ContactCreate`, `ContactUpdate`, `RecordCreate`, `RecordUpdate`,
+`RecordDelete`, `AppointmentUpdate` and `AppointmentDelete`, alongside `LocationCreate` (§4).
 
 The asymmetry is enforced in the dispatch table itself, so an update for a create-only object is
 absent rather than a handler that does nothing:
@@ -1431,10 +1449,11 @@ service.
 - **A screen to replace the HCP API key.** The tab has no way back to the connect step (§6A.11).
 - **Webhook authenticity of the HCP-side webhook** (§6A.3, §15, §16), accepted as a known
   pre-production risk.
-- **Nothing here has run against a live Housecall Pro or GHL sub-account.** Unverified: HCP's list
-  endpoints and their `page`/`page_size` paging (taken from the reference project), the shape of a
-  job row in `GET /jobs`, whether the reverse webhook is registered with its seven subscriptions,
-  and whether `users.readonly` has been added.
+- **No live Housecall Pro call has been made.** GHL writes have run live (§6A.12): the v2 install, the
+  snapshot field keys and a calendar booking refusal. Unverified: HCP's list endpoints and their
+  `page`/`page_size` paging (taken from the reference project), the shape of a job row in `GET /jobs`,
+  whether the reverse webhook is registered with its seven subscriptions, and whether `users.readonly`
+  has been re-authorised on the live app.
 - **One thing that could not be verified:** GHL's official docs do not publish the full
   `GET /calendars/` list-response schema, so `teamMembers` is read from `GET /calendars/{id}` (the
   documented single-calendar endpoint) rather than trusting the list entries. Worth confirming
@@ -1473,6 +1492,23 @@ sub-account to configure its own location.
   backend nulls it); the calendars step then needs the default user chosen again.
 - **Preview:** `/admin/preview` shows a notice in this tab and never calls `/api/hcp/`.
 - **Tests:** `HousecallProTab.test.tsx`, 25 tests, `fetch` routed by method and path.
+
+### 6A.12 Live GHL checks so far (18 Nov 2026)
+
+What has been checked against a live GHL account, and what those checks changed. HCP itself has not been
+called live.
+
+- **Marketplace v2 install.** The install link is `GHL_INSTALL_URL_BASE` + `/v2/oauth/chooselocation`,
+  with `version_id` set to `GHL_APP_ID` (`518c0db`). Confirmed in live OAuth testing.
+- **Snapshot field keys: 73 of 73 passed** against the live snapshot. The check found one bug:
+  `job_properties` sent `street_line_2` where the snapshot key is `street_line_2__unit`. GHL refused it
+  with 400 "We couldn't validate the mapped field: street_line_2". Fixed in `53b87d8`; the test now asserts
+  on the key `job_properties` returns, and a second test fails on any key outside `JOB_PROPERTIES`.
+- **Inactive calendar.** A calendar imported with the snapshot arrived switched off, and GHL rejected
+  appointment booking with 400 "Calendar is inactive". The calendar save now refuses an inactive calendar
+  and tells the admin to activate it in GHL (`53b87d8`, §6A.2 step 3).
+- **Still to check live:** the HCP side (no call made), the HCP webhook signature (§6A.3, N1), the reverse
+  webhook's seven subscriptions, `users.readonly` on the live app, and the `teamMembers` read.
 
 ---
 
@@ -1642,13 +1678,15 @@ npm run build                        # tsc -b && vite build -> dist/
   sample HCP webhook payloads, one module per concern. HCP and GHL HTTP are both mocked with
   `respx`; nothing in it has ever reached a live Housecall Pro account.
 
-**Counts (run 17 Nov 2026 on `feat/hcp-integration`):** backend **980 passed** (`apps/audit`,
-`apps/ghl`, `apps/rebilling`, `apps/hcp`; 926 at `ac4a8ef`). Frontend **137 passed**, 4 files
-(`HousecallProTab.test.tsx` is the new one).
+**Counts (18 Nov 2026 on `feat/hcp-integration`, HEAD `53b87d8`):** backend **993 passed** for the
+whole suite (`apps/audit`, `apps/ghl`, `apps/rebilling`, `apps/hcp`; 980 at `d2332fa`); `apps/hcp` alone
+**448 passed**. Frontend **137 passed** at `a4d0ec4`, 4 files (not re-run since; `HousecallProTab.test.tsx`
+is the newest).
 
 | File | Covers |
 |---|---|
-| `apps/ghl/tests/test_services.py`, `test_views.py`, `test_sso.py`, `test_webhooks.py` | OAuth exchange, refresh, location tokens, sync, callback, SSO vectors, location-created webhook signatures |
+| `apps/ghl/tests/test_services.py`, `test_views.py`, `test_sso.py`, `test_webhooks.py` | OAuth exchange, refresh, location tokens, sync, callback, SSO vectors, the GHL webhook's signatures and `LocationCreate` |
+| `apps/ghl/tests/test_webhook_routing.py` | The one GHL webhook URL: routing by `type` (location sync, Phase 4 tasks, ignored), every URL reaching the same view, and replay of both kinds of `WebhookEvent.GHL` row |
 | `apps/rebilling/tests/test_services.py` | matching, `store_call`, idempotency, billing state, rounding |
 | `apps/rebilling/tests/test_views.py` | Retell webhook signature, 204, 400, 401, event filtering |
 | `apps/rebilling/tests/test_reconciliation.py` | list and paging, backfill, errors, command |
@@ -1665,7 +1703,7 @@ npm run build                        # tsc -b && vite build -> dist/
 | `frontend/src/features/admin/AdminPage.test.tsx` | SSO, live list, detail, mapping, rates save and reset, bill status, billed calls, sub-account view |
 | `frontend/src/features/admin/AdminPreviewPage.test.tsx` | demo rendering, period filter, sample saves, unmapped client setup, billed months |
 | `frontend/src/features/onboarding/OnboardingPage.test.tsx` | the connect page |
-| `backend/apps/hcp/tests/` (the other modules) | mapping, sync handlers, reverse sync, webhooks, onboarding, views: 410 Housecall Pro test functions in all |
+| `backend/apps/hcp/tests/` (the other modules) | mapping (incl. the `street_line_2` key), sync handlers, reverse sync, webhooks, onboarding (incl. the inactive-calendar refusal), views: 448 tests in `apps/hcp` |
 | `backend/apps/hcp/tests/test_backfill.py` | the four backfill stages, failure handling, GHL 429 aborts the stage, progress, activation and held-delivery replay |
 | `backend/apps/hcp/tests/test_activate_view.py` | `POST .../activate/`: the gate, 409 while running, retry after failure, status while backfilling |
 | `backend/apps/hcp/tests/test_client_paging_and_backoff.py` | HCP list paging and de-duplication, empty 204 responses, 429 backoff |
@@ -1723,6 +1761,10 @@ Full detail is in `local_folder/CriticalFindings.md`. These are the ones that wo
 - **GHL's `Version` header** is the real API-version mechanism, not the "v2" or "v3" label in the prose.
 - **GHL's invoice auto-charge does not charge one-off invoices** (tested live on the other branch). That is why
   charging here goes through Stripe.
+- **GHL refuses a mapped field key it does not know** with 400 "We couldn't validate the mapped field". The
+  earlier note that such a write "silently drops" the field was wrong; it fails loudly (seen live, 18 Nov, §6A.12).
+- **GHL refuses an appointment on an inactive calendar** with 400 "Calendar is inactive" (seen live, 18 Nov).
+- **The GHL Marketplace v2 install is `/v2/oauth/chooselocation`, with `version_id` = the app id** (live, 18 Nov).
 - **GHL publishes no charge-failed webhook.** A failed charge through GHL would look like a bill that never
   finishes. Stripe does send `invoice.payment_failed`.
 - **Stripe refuses charges under 50 cents** (`amount_too_small` at charge time).
@@ -1765,19 +1807,24 @@ repeated here.
   live — §0.)
 - The SaaS subscription response shape (`GET /saas/get-saas-subscription/{locationId}`), which blocks Task 2's MRR KPI.
 
-**Blocks taking the Housecall Pro integration near production (§6A):**
+**Blocks taking the Housecall Pro integration near production (§6A):** (The GHL snapshot field keys and the
+v2 install were checked live on 18 Nov; §6A.12.)
 
 - **HCP's webhook signing scheme** (`hcp_plan.md` Open Question 1). Still unknown. Third-party guides disagree, and
   the reference project verifies nothing. **Accepted as a known pre-production risk (18 Nov 2026)**, see §16.
   Closes when one real delivery is captured from a live HCP account and its signature checked.
 - **`GET /calendars/` list-response schema.** Not published by GHL, so `teamMembers` is read from
   `GET /calendars/{id}`. Confirm against a real sub-account.
-- **`users.readonly`.** It is in the `GHL_SCOPES` default. Whether the marketplace app has it and has been
-  re-authorised is not recorded as verified, and the employee-mapping screen cannot read GHL users without it.
+- **`users.readonly`, and the other HCP scopes** (`518c0db`, §4). They are in the `GHL_SCOPES` default. Whether
+  the live marketplace app has been re-authorised for them is not recorded, and the employee-mapping screen
+  cannot read GHL users without `users.readonly`.
 - **The GHL snapshot** (four custom objects with exact field names, two round-robin calendars, contact custom
   fields) must exist in a sub-account before any HCP sync. It is a manual step for the GHL team
-  (`GHL_Snapshot_Specification.md`). Whether it is built for any sub-account is not recorded.
+  (`GHL_Snapshot_Specification.md`). Its 73 field keys passed a live check (§6A.12); whether each pilot
+  sub-account has it, and has an active calendar pair, is not recorded.
 - **HCP list paging and the `GET /jobs` row shape** come from the reference project and are unverified.
+- **The reverse webhook's seven subscriptions** (`ContactCreate`, `ContactUpdate`, `RecordCreate`,
+  `RecordUpdate`, `RecordDelete`, `AppointmentUpdate`, `AppointmentDelete`) are not recorded as registered (§6A.8).
 
 **Answered (do not re-raise):** which sub-accounts (multi-client, one HCP company per `location_id`, set up by an
 internal admin behind agency SSO; no self-serve); the GHL objects (manual Snapshot, not automated); billing tie-in
@@ -1867,10 +1914,10 @@ one shared `RETELL_API_KEY` with agent-id and phone matching, and the reasoning 
   `failed`, and there is no per-record sync state to retry from (§6A.7), so such a record is only
   repaired by the next event for it. A worker killed mid-backfill leaves `backfill_status` at
   `running`, which blocks `activate` (409) until reset by hand.
-- **Nothing in HCP has run against a live Housecall Pro or a live sub-account.** Every test is a
-  mocked fixture. The event names themselves are transcribed from the reference project rather
-  than from HCP's documentation, so an event family HCP has since renamed would be silently
-  ignored (recorded and marked `IGNORED`, which is at least visible in the audit table).
+- **No HCP call has run against a live Housecall Pro account.** Every HCP test is a mocked fixture. GHL writes
+  have run live for the install, snapshot keys and calendar booking (§6A.12). The event names are transcribed
+  from the reference project rather than from HCP's documentation, so an event family HCP has since renamed
+  would be ignored (recorded and marked `IGNORED`, which is at least visible in the audit table).
 - **`apps/dashboards` is empty**, and the `frontend/src/features/*-dashboard` folders hold only placeholders.
 - **The admin page is built and tested, but the live path is only partly verified.** The SSO handshake, all backend
   endpoints, and component rendering are covered by tests. The user has checked the call status badge on the deployed
@@ -1884,9 +1931,6 @@ one shared `RETELL_API_KEY` with agent-id and phone matching, and the reasoning 
 - **Editing a live account's employees can clear a calendar's default user** (the backend nulls the fallback). The
   calendars step must be re-saved before the account can be edited again (§6A.11).
 - **The HCP stale-write guard for contacts and line items is deferred** (§6A.10). Only appointments have one.
-- **The `local_folder/` docs are gitignored.** `plan.md`, `CriticalFindings.md` and the HCP docs live only on the
-  development machine. Commit `6d0b7b1` claims `plan.md` is in the repo; it is not.
-
 ---
 
 ## 17. Deployment and live checks
@@ -2030,9 +2074,13 @@ In this order, because each step is useless without the one before it:
    in `GHL_RETELL_STATUS_CUSTOM_FIELD_ID`. A field id, not a name — the lookup is by id. The card
    request needs nothing created: it adds the `collect card information` tag, and a tag is
    addressed by the word itself.
-2. **Re-authorise the marketplace app**, which now asks for `contacts.write`, `users.readonly` (HCP employee
-   mapping, §6A.2) and `locations/customValues.readonly`/`.write` (the Retell agent-id pause, §6.10b). Until the
-   re-auth, every card request 502s and every status write is logged as a failure.
+2. **Re-authorise the marketplace app**, which now asks for `contacts.write`, `locations/customValues.readonly`/`.write`
+   (the Retell agent-id pause, §6.10b), and the Housecall Pro scopes: `users.readonly` (employee mapping, §6A.2),
+   `calendars/events.write`, `locations/customFields.readonly`, `objects/schema.readonly`, `objects/record.readonly`,
+   `objects/record.write`, `associations.readonly`, `associations/relation.readonly` and `associations/relation.write`
+   (§4). Until the re-auth, every card request 502s, every status write is logged as a failure, and HCP's
+   user and object reads fail. The live app's install link must also be the v2 one (`/v2/oauth/chooselocation`,
+   with `version_id`, §4), which is what the install screen uses from `518c0db` on.
 3. **Check the first search and tag by hand** before trusting the button. `GET
    /contacts/search/duplicate?locationId=<main>&email=<owner>` should answer `{"contact": {...}}` —
    the response shape is not in GHL's published spec, and `_find_contact_id()` reads `contact.id`.
@@ -2123,6 +2171,11 @@ These were each chosen on purpose. Revisit them only with new information.
 - **The Housecall Pro webhook is accepted unauthenticated, for now (18 Nov 2026).** A company id is an identifier,
   not a secret, so an outsider who knows an active company id could write data into that one sub-account. The
   endpoint stays until the signing scheme is captured (§6A.3, §16). Do not run it against real client data before then.
+- **One GHL webhook URL.** GHL's Marketplace app takes one webhook URL, so `LocationCreate` and the Phase 4 events share `/api/ghl/webhooks/`. The signature is checked once there, and the route is chosen by the body's `type`. Replay chooses by the same type (`apps/ghl/webhooks.py::replay_outcome`), since both kinds are stored as `WebhookEvent.GHL`. The two older URLs stay wired to the same view.
+- **Housecall Pro calendar saves refuse an inactive calendar** as well as a missing team member, because GHL rejects
+  every appointment on an inactive calendar and the failure is otherwise silent (`53b87d8`, §6A.2).
+- **The GHL install uses the Marketplace v2 link** (`/v2/oauth/chooselocation`, with `version_id` = the app id), as
+  confirmed in live OAuth testing (`518c0db`).
 - **Housecall Pro sync is gated on `is_active`, in both directions.** Live events are recorded and ignored until
   activation, and activation replays the held ones. `is_active` stays False for the whole backfill, so live events
   cannot land ahead of the records they belong with.
@@ -2170,13 +2223,13 @@ Commits on `main`, oldest first (`git log --reverse`). Superseded items are mark
 | `bcd48b9` | Automated retry schedule; first GHL rebilling-status write |
 | `654c927` | Twilio billing paused |
 | `a14e0a3` | Phase 7: card on file and the card request |
-| `6f0e544` | Phase 8: rebilling status written to a contact field. **Superseded in part** (§6.10b-i) |
+| `6f0e544` | Phase 8: rebilling status written to a contact field. **Superseded in part** (§6.10b, "Earlier mechanisms") |
 | `867f963` | Handover update: SSO bridge script (§17.1a), Retell multi-location research (§15) |
 | `5fd30f1` | Client detail split into Overview & billing / Agent mapping tabs (§5.4) |
 | `d91b450` | Clients list pill reverts to Not mapped once every Retell agent is removed (§5.7) |
 | `2ffe3f1` | Handover update: brought current with `5fd30f1` / `d91b450` |
 | `1d28c35` | An attached but undefaulted card is promoted and charged, not reported as `no_card` (§6.10, §6.11) |
-| `ee98a0b` | Retell on/off custom-value toggle. **Superseded by Phase 10** (§6.10b-i) |
+| `ee98a0b` | Retell on/off custom-value toggle. **Superseded by Phase 10** (§6.10b, "Earlier mechanisms") |
 | `dec0681` | Handover update: the custom-value toggle, card promotion, the brand theme not yet merged |
 | `97d9d59` | Admin page restyled to the SurPro Labs AI brand dark theme |
 | `d67f2a0` | Rates auto-seeded on mapping; no client is rate-less (§6.2) |
@@ -2197,7 +2250,7 @@ Commits on `main`, oldest first (`git log --reverse`). Superseded items are mark
 | `6c22760` | Monthly billing on the Beat schedule (04:00 on the 1st); Twilio Beat pull commented out; Paid badge (§6.6, §6.7) |
 | `973d6bd` | `feat(ghl)`: SaaS client count endpoint for the external website (not on `feat/hcp-integration`) |
 
-On `feat/hcp-integration`, on top of `6c22760`. Merged with `main` at `888aaa4` and pushed to `origin/feat/hcp-integration` (§6A):
+On `feat/hcp-integration`, on top of `6c22760`. Merged with `main` at `888aaa4`; pushed to `origin/feat/hcp-integration`, not on `main` (§6A):
 
 | Commit | Message (abridged) |
 |---|---|
@@ -2208,6 +2261,10 @@ On `feat/hcp-integration`, on top of `6c22760`. Merged with `main` at `888aaa4` 
 | `ac4a8ef` | Updated CLAUDE.md and handover |
 | `d2332fa` | Activation and backfill, backfill state (`0002`), 429 backoff, empty 204 bodies |
 | `a4d0ec4` | The Housecall Pro setup tab in the admin page; CLAUDE.md and handover synced |
+| `47ae164` | Handover update (§0 and §6A) |
+| `888aaa4` | Merge `main` (`973d6bd`) into `feat/hcp-integration`; pushed to `origin/feat/hcp-integration` |
+| `518c0db` | GHL Marketplace v2 install link with `version_id`; the eight HCP scopes added to `GHL_SCOPES` (§4, §6A.12) |
+| `53b87d8` | `job_properties` sends `street_line_2__unit`; calendar save refuses an inactive calendar (§6A.2, §6A.12) |
 
 On `docs/handover-billing-schedule`, also off `6c22760` and local only:
 
@@ -2242,11 +2299,11 @@ its own `0006` and `ghl_invoice_*` columns); `feat/stripe-billing` (merged into 
    `local_folder/hcp_reference_project_sop.md`, and `local_folder/GHL_Snapshot_Specification.md`
    for the GHL side.
 3. Confirm the baseline. From `backend/`, run `.venv/Scripts/python.exe -m pytest -q` and expect
-   **980 passed** at `d2332fa`. From `frontend/`, run `npm test -- --run` and expect **137 passed** at `a4d0ec4`. Also run `ruff check .`, `ruff format --check .` and
+   **993 passed** at `53b87d8` (`apps/hcp` alone: 448). From `frontend/`, run `npm test -- --run` and expect **137 passed** at `a4d0ec4`. Also run `ruff check .`, `ruff format --check .` and
    `manage.py makemigrations --check --dry-run`, and in `frontend/` `./node_modules/.bin/tsc -b`
    and `./node_modules/.bin/oxlint src`.
 4. Check `git status` and `git log --oneline | head` before changing anything. The working branch is
-   `feat/hcp-integration` (HEAD `888aaa4`, merged with `main` at `973d6bd`), pushed to `origin/feat/hcp-integration` for server testing. `origin/main` is untouched.
+   `feat/hcp-integration` (HEAD `53b87d8`, merged with `main` at `973d6bd`), pushed to `origin/feat/hcp-integration` for server testing. `origin/main` is untouched.
 5. **Note:** Task 4 Phases 1, 2, 2b, 3, 5, 7, 8 and 10, and most of 4, are built, and the monthly
    charge now runs automatically (§6.6). Still open: the unassigned-call mapping UI, the bills table,
    Phase 6 (alerts), and the `send_invoice` path (§16). Task 5 (Housecall Pro, §6A) has Phases 1-4

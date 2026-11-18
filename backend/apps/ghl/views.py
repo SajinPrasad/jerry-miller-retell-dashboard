@@ -1,6 +1,5 @@
 import base64
 import binascii
-import json
 import logging
 from urllib.parse import urlencode
 
@@ -11,9 +10,6 @@ from django.http import HttpResponseRedirect
 from rest_framework import status
 from rest_framework.response import Response
 from rest_framework.views import APIView
-
-from apps.audit import recording
-from apps.audit.models import WebhookEvent
 
 from . import sso
 from .exceptions import GHLError, GHLNotConnectedError
@@ -148,61 +144,6 @@ def sync_for_location_created(payload: dict) -> bool:
     service = GHLOAuthService()
     service.sync_locations(service.get_agency())
     return True
-
-
-class LocationCreatedWebhookView(APIView):
-    """POST /api/ghl/webhooks/location-created/: GHL's `LocationCreate` event.
-
-    Lets a new sub-account show up automatically, the moment Jerry creates it in GHL, instead of
-    waiting for someone to click "Refresh clients". GHL retries up to 12 times on anything but a
-    2xx, so this always answers quickly; a sync failure here is logged and left for the next
-    webhook, manual refresh or install callback to catch - the same as the initial sync in
-    `OAuthCallbackView`.
-    """
-
-    # The signature in `X-GHL-Signature` is the authentication.
-    authentication_classes: list = []
-    permission_classes: list = []
-
-    def post(self, request):
-        # Read before anything parses the stream: the signature covers the raw body.
-        raw_body = request.body
-        signature = request.headers.get('X-GHL-Signature', '')
-        if not verify_webhook_signature(raw_body, signature):
-            logger.warning('ghl: webhook signature rejected')
-            recording.webhook_rejected(WebhookEvent.GHL, 'Signature rejected.')
-            return Response(status=status.HTTP_401_UNAUTHORIZED)
-
-        try:
-            payload = json.loads(raw_body)
-        except ValueError:
-            payload = None
-        if not isinstance(payload, dict):
-            recording.webhook_rejected(
-                WebhookEvent.GHL, 'Body is not a JSON object.', signature_valid=True
-            )
-            return Response(status=status.HTTP_400_BAD_REQUEST)
-
-        stored = recording.webhook_received(
-            WebhookEvent.GHL,
-            payload,
-            event_type=payload.get('type', ''),
-            event_id=payload.get('webhookId', ''),
-        )
-        with recording.processing(stored):
-            try:
-                if not sync_for_location_created(payload):
-                    recording.webhook_status(stored, WebhookEvent.IGNORED)
-            except GHLError as exc:
-                # Still answered 200 (GHL retries anything else), but the delivery is kept as
-                # failed with the reason, so a replay can finish the sync.
-                logger.exception(
-                    'ghl: webhook-triggered location sync failed',
-                    extra={'context': {'webhook_event': stored.pk}},
-                )
-                recording.webhook_failed(stored, exc)
-
-        return Response(status=status.HTTP_200_OK)
 
 
 class SSOSessionView(APIView):

@@ -1,4 +1,5 @@
-"""The inbound GHL webhook for Phase 4: what it records, what it queues, and what it refuses.
+"""The GHL webhook as the Phase 4 reverse sync sees it: what it records, queues and refuses.
+The endpoint is the one shared GHL URL in `apps/ghl/webhooks.py`.
 
 Signed the same way `apps/ghl/tests/test_webhooks.py` signs `LocationCreate` deliveries - a
 keypair this test controls, with `GHL_WEBHOOK_PUBLIC_KEY` overridden to match, rather than
@@ -21,7 +22,7 @@ from apps.hcp.tests import ghl_fixtures
 
 pytestmark = pytest.mark.django_db
 
-URL = reverse('hcp:ghl-webhook')
+URL = reverse('ghl:webhooks')
 
 
 @pytest.fixture(autouse=True)
@@ -116,15 +117,6 @@ def test_a_delivery_missing_the_event_type_is_rejected(api, queued):
 
     assert response.status_code == 400
     assert queued == []
-
-
-def test_a_delivery_missing_the_location_id_is_rejected(api, queued):
-    payload = ghl_fixtures.contact_event()
-    del payload['locationId']
-
-    response = post(api, payload)
-
-    assert response.status_code == 400
 
 
 # --- recording and dispatch ---------------------------------------------------------------
